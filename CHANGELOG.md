@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-08-01
+
+### Changed
+
+- Updated OpenCode plugin compatibility to 1.18.9.
+- Updated the release toolchain to TypeScript 6.0, esbuild 0.28, and VSCE 3.9.
+
+### Fixed
+
+- Release verification now exercises the dependency versions declared by the
+  repository instead of separate hardcoded versions.
+
 ## 0.1.0 - 2026-08-01
 
 ### Added
