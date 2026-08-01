@@ -117,7 +117,7 @@
     "test": "deno test --sloppy-imports test"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.1.2",
     "@types/vscode": "1.95.0",
     "esbuild": "^0.25.0",
     "typescript": "^5.7.0"
