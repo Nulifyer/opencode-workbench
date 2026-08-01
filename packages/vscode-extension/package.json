@@ -1,0 +1,125 @@
+{
+  "name": "opencode-workbench-vscode",
+  "displayName": "OpenCode Workbench",
+  "description": "Native VS Code sessions and chat for a shared OpenCode server.",
+  "version": "0.1.0",
+  "publisher": "opencode-workbench",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nulifyer/opencode-workbench",
+    "directory": "packages/vscode-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/nulifyer/opencode-workbench/issues"
+  },
+  "homepage": "https://github.com/nulifyer/opencode-workbench#readme",
+  "keywords": [
+    "opencode",
+    "vscode",
+    "ai",
+    "chat",
+    "coding-agent"
+  ],
+  "files": [
+    "dist/**",
+    "media/**",
+    "README.md",
+    "DESIGN.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": ["Other", "Machine Learning"],
+  "extensionKind": ["workspace"],
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "onView:opencodeWorkbench.sessions",
+    "onView:opencodeWorkbench.chat",
+    "onCommand:opencodeWorkbench.newSession",
+    "onCommand:opencodeWorkbench.refresh",
+    "onCommand:opencodeWorkbench.deleteSession",
+    "onCommand:opencodeWorkbench.abortSession",
+    "onCommand:opencodeWorkbench.launchTerminal",
+    "onCommand:opencodeWorkbench.attachTerminal",
+    "onCommand:opencodeWorkbench.setServerPassword"
+  ],
+  "contributes": {
+    "commands": [
+      { "command": "opencodeWorkbench.newSession", "title": "OpenCode: New Session", "icon": "$(add)" },
+      { "command": "opencodeWorkbench.refresh", "title": "OpenCode: Refresh", "icon": "$(refresh)" },
+      { "command": "opencodeWorkbench.deleteSession", "title": "OpenCode: Delete Session", "icon": "$(trash)" },
+      { "command": "opencodeWorkbench.abortSession", "title": "OpenCode: Abort Active Session", "icon": "$(debug-stop)" },
+      { "command": "opencodeWorkbench.launchTerminal", "title": "OpenCode: Launch in Terminal" },
+      { "command": "opencodeWorkbench.attachTerminal", "title": "OpenCode: Attach Terminal to Server" },
+      { "command": "opencodeWorkbench.setServerPassword", "title": "OpenCode: Set Server Password" }
+    ],
+    "configuration": {
+      "title": "OpenCode Workbench",
+      "properties": {
+        "opencodeWorkbench.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:4096",
+          "scope": "machine",
+          "description": "URL of the shared OpenCode HTTP server."
+        },
+        "opencodeWorkbench.serverUsername": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "HTTP Basic authentication username. An empty value reads OPENCODE_SERVER_USERNAME from the owner-only environment file."
+        },
+        "opencodeWorkbench.serverEnvironmentFile": {
+          "type": "string",
+          "default": "~/.config/opencode-workbench/server.env",
+          "scope": "machine",
+          "description": "Owner-only environment file containing OPENCODE_SERVER_USERNAME and OPENCODE_SERVER_PASSWORD. Secret Storage and explicit password settings take precedence."
+        },
+        "opencodeWorkbench.confirmPermissions": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Show OpenCode permission requests as modal VS Code confirmations."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "opencodeWorkbench",
+          "title": "OpenCode",
+          "icon": "media/opencodeWorkbench.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencodeWorkbench": [
+        { "id": "opencodeWorkbench.sessions", "name": "Sessions" },
+        { "id": "opencodeWorkbench.chat", "name": "Chat", "type": "webview" }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "opencodeWorkbench.newSession", "when": "view == opencodeWorkbench.sessions", "group": "navigation@1" },
+        { "command": "opencodeWorkbench.refresh", "when": "view == opencodeWorkbench.sessions", "group": "navigation@2" },
+        { "command": "opencodeWorkbench.abortSession", "when": "view == opencodeWorkbench.chat", "group": "navigation@1" }
+      ],
+      "view/item/context": [
+        { "command": "opencodeWorkbench.deleteSession", "when": "view == opencodeWorkbench.sessions && viewItem == opencodeWorkbench.session", "group": "inline@1" }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node ./esbuild.mjs",
+    "check": "tsc --noEmit",
+    "test": "deno test --sloppy-imports test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.95.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}

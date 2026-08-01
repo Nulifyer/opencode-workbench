@@ -1,0 +1,22 @@
+{
+  "name": "@opencode-workbench/opencode-plugin",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Shared preference, skill-candidate, and VS Code bridge tools for OpenCode.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nulifyer/opencode-workbench.git",
+    "directory": "packages/opencode-plugin"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "deno test tests"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.8"
+  }
+}

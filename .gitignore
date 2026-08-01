@@ -1,0 +1,7 @@
+node_modules/
+dist/
+packages/*/dist/
+packages/vscode-extension/media/chat.js
+packages/vscode-extension/media/chat.js.map
+*.vsix
+.DS_Store
