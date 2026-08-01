@@ -8,7 +8,7 @@
   },
   "tasks": {
     "build": "deno run -A scripts/build.ts",
-    "check": "deno check packages/shared/src/index.ts packages/opencode-plugin/src/index.ts scripts/build.ts scripts/package.ts scripts/install.ts scripts/release.ts && deno run -A npm:typescript@5.7.3/lib/tsc.js -p packages/vscode-extension/tsconfig.json",
+    "check": "deno check packages/shared/src/index.ts packages/opencode-plugin/src/index.ts scripts/build.ts scripts/package.ts scripts/install.ts scripts/release.ts && deno run -A ./node_modules/typescript/lib/tsc.js -p packages/vscode-extension/tsconfig.json",
     "test": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run packages/shared/test packages/opencode-plugin/tests packages/vscode-extension/test",
     "package": "deno task build && deno run -A scripts/package.ts",
     "release": "deno task verify && deno run -A scripts/release.ts",

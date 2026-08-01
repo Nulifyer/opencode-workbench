@@ -5,7 +5,15 @@ const manifest = JSON.parse(await Deno.readTextFile(join(root, "package.json")))
 const output = join(root, "dist", `opencode-workbench-vscode-${manifest.version}.vsix`)
 const command = new Deno.Command(Deno.execPath(), {
   cwd: join(root, "packages", "vscode-extension"),
-  args: ["run", "-A", "npm:@vscode/vsce@3.6.0", "package", "--no-dependencies", "--out", output],
+  args: [
+    "run",
+    "-A",
+    join(root, "node_modules", "@vscode", "vsce", "vsce"),
+    "package",
+    "--no-dependencies",
+    "--out",
+    output,
+  ],
   stdout: "inherit",
   stderr: "inherit",
 })

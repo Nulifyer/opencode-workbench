@@ -1,4 +1,4 @@
-import { build } from "npm:esbuild@0.25.8"
+import { build } from "esbuild"
 import { dirname, fromFileUrl, join } from "jsr:@std/path@1.1.2"
 
 const root = dirname(dirname(fromFileUrl(import.meta.url)))

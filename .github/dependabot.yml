@@ -10,8 +10,9 @@ updates:
           - "@opencode-ai/*"
       vscode:
         patterns:
-          - "@types/vscode"
           - "@vscode/*"
+    ignore:
+      - dependency-name: "@types/vscode"
   - package-ecosystem: github-actions
     directory: /
     schedule:
