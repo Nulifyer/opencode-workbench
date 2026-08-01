@@ -4,6 +4,7 @@ interface PackageManifest {
   version: string
   engines?: { vscode?: string }
   dependencies?: Record<string, string>
+  compatibility?: { minimumOpenCode?: string }
 }
 
 const root = dirname(dirname(fromFileUrl(import.meta.url)))
@@ -23,7 +24,24 @@ if (!opencodeVersion || !/^\d+\.\d+\.\d+$/.test(opencodeVersion) ||
   pluginManifest.dependencies?.["@opencode-ai/plugin"] !== opencodeVersion) {
   throw new Error("Root and plugin must use the same exact @opencode-ai/plugin version")
 }
-const nextOpenCodeMajor = `${Number(opencodeVersion.split(".", 1)[0]) + 1}.0.0`
+const minimumOpenCode = rootManifest.compatibility?.minimumOpenCode
+if (!minimumOpenCode || !/^\d+\.\d+\.\d+$/.test(minimumOpenCode)) {
+  throw new Error("Root compatibility.minimumOpenCode must be an exact semantic version")
+}
+const versionParts = (version: string): number[] => version.split(".").map(Number)
+const compareVersions = (left: string, right: string): number => {
+  const leftParts = versionParts(left)
+  const rightParts = versionParts(right)
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] !== rightParts[index]) return leftParts[index] - rightParts[index]
+  }
+  return 0
+}
+const minimumMajor = versionParts(minimumOpenCode)[0]
+if (minimumMajor !== versionParts(opencodeVersion)[0] || compareVersions(minimumOpenCode, opencodeVersion) > 0) {
+  throw new Error("Minimum OpenCode version must share the build dependency major and not exceed its version")
+}
+const nextOpenCodeMajor = `${minimumMajor + 1}.0.0`
 const tag = Deno.env.get("GITHUB_REF_NAME")
 if (tag && tag !== `v${rootManifest.version}`) {
   throw new Error(`Tag ${tag} does not match package version ${rootManifest.version}`)
@@ -43,7 +61,7 @@ const release = {
   version: rootManifest.version,
   protocolVersion: 1,
   compatibility: {
-    minimumOpenCode: opencodeVersion,
+    minimumOpenCode,
     maximumOpenCodeExclusive: nextOpenCodeMajor,
     minimumVSCode: (extensionManifest.engines?.vscode ?? "^1.95.0").replace(/^\^/, ""),
   },

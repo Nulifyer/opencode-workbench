@@ -2,7 +2,7 @@
   "name": "opencode-workbench-vscode",
   "displayName": "OpenCode Workbench",
   "description": "Native VS Code sessions and chat for a shared OpenCode server.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "opencode-workbench",
   "license": "MIT",
   "repository": {

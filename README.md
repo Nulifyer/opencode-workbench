@@ -84,6 +84,10 @@ checks from a clean checkout, builds the plugin and VSIX, creates a machine-
 readable release manifest and checksums, generates GitHub build provenance,
 and attaches all artifacts to the GitHub release.
 
+Current releases support OpenCode 1.18.8 or newer within major version 1 and
+VS Code 1.95 or newer. Build-time dependency updates do not raise the minimum
+runtime version unless Workbench uses a newer API.
+
 Dotfiles consumers track the stable release channel. Each install or update
 resolves the newest stable release, verifies GitHub build provenance for every
 artifact, validates the release manifest and checksums, checks local OpenCode
