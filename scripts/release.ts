@@ -1,6 +1,8 @@
 import { dirname, fromFileUrl, join } from "jsr:@std/path@1.1.2"
 
 interface PackageManifest {
+  name?: string
+  publisher?: string
   version: string
   engines?: { vscode?: string }
   dependencies?: Record<string, string>
@@ -42,6 +44,10 @@ if (minimumMajor !== versionParts(opencodeVersion)[0] || compareVersions(minimum
   throw new Error("Minimum OpenCode version must share the build dependency major and not exceed its version")
 }
 const nextOpenCodeMajor = `${minimumMajor + 1}.0.0`
+const extensionID = `${extensionManifest.publisher ?? ""}.${extensionManifest.name ?? ""}`
+if (!/^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$/.test(extensionID)) {
+  throw new Error("VS Code extension publisher and name must form a valid Marketplace identifier")
+}
 const tag = Deno.env.get("GITHUB_REF_NAME")
 if (tag && tag !== `v${rootManifest.version}`) {
   throw new Error(`Tag ${tag} does not match package version ${rootManifest.version}`)
@@ -65,6 +71,7 @@ const release = {
     maximumOpenCodeExclusive: nextOpenCodeMajor,
     minimumVSCode: (extensionManifest.engines?.vscode ?? "^1.95.0").replace(/^\^/, ""),
   },
+  vscodeExtension: { id: extensionID },
   assets,
 }
 await Deno.writeTextFile(join(dist, "release.json"), `${JSON.stringify(release, null, 2)}\n`)

@@ -1,9 +1,9 @@
 {
-  "name": "opencode-workbench-vscode",
+  "name": "opencode-workbench",
   "displayName": "OpenCode Workbench",
   "description": "Native VS Code sessions and chat for a shared OpenCode server.",
-  "version": "0.1.2",
-  "publisher": "opencode-workbench",
+  "version": "0.2.0",
+  "publisher": "nulifyer",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -21,6 +21,23 @@
     "chat",
     "coding-agent"
   ],
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
+  "badges": [
+    {
+      "url": "https://img.shields.io/visual-studio-marketplace/v/nulifyer.opencode-workbench",
+      "href": "https://marketplace.visualstudio.com/items?itemName=nulifyer.opencode-workbench",
+      "description": "Visual Studio Marketplace version"
+    },
+    {
+      "url": "https://img.shields.io/visual-studio-marketplace/i/nulifyer.opencode-workbench",
+      "href": "https://marketplace.visualstudio.com/items?itemName=nulifyer.opencode-workbench",
+      "description": "Visual Studio Marketplace installs"
+    }
+  ],
+  "icon": "media/opencodeWorkbench.png",
   "files": [
     "dist/**",
     "media/**",
@@ -30,7 +47,7 @@
   ],
   "type": "module",
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.106.0"
   },
   "categories": ["Other", "Machine Learning"],
   "extensionKind": ["workspace"],
@@ -38,6 +55,8 @@
   "activationEvents": [
     "onView:opencodeWorkbench.sessions",
     "onView:opencodeWorkbench.chat",
+    "onCommand:opencodeWorkbench.openChat",
+    "onCommand:opencodeWorkbench.showSessions",
     "onCommand:opencodeWorkbench.newSession",
     "onCommand:opencodeWorkbench.refresh",
     "onCommand:opencodeWorkbench.deleteSession",
@@ -48,6 +67,8 @@
   ],
   "contributes": {
     "commands": [
+      { "command": "opencodeWorkbench.openChat", "title": "OpenCode: Open Chat", "icon": "$(sparkle)" },
+      { "command": "opencodeWorkbench.showSessions", "title": "OpenCode: Show Sessions", "icon": "$(history)" },
       { "command": "opencodeWorkbench.newSession", "title": "OpenCode: New Session", "icon": "$(add)" },
       { "command": "opencodeWorkbench.refresh", "title": "OpenCode: Refresh", "icon": "$(refresh)" },
       { "command": "opencodeWorkbench.deleteSession", "title": "OpenCode: Delete Session", "icon": "$(trash)" },
@@ -85,8 +106,16 @@
         }
       }
     },
+    "keybindings": [
+      {
+        "command": "opencodeWorkbench.newSession",
+        "key": "ctrl+alt+n",
+        "mac": "ctrl+alt+n",
+        "when": "workspaceFolderCount != 0"
+      }
+    ],
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "opencodeWorkbench",
           "title": "OpenCode",
@@ -96,15 +125,22 @@
     },
     "views": {
       "opencodeWorkbench": [
-        { "id": "opencodeWorkbench.sessions", "name": "Sessions" },
-        { "id": "opencodeWorkbench.chat", "name": "Chat", "type": "webview" }
+        { "id": "opencodeWorkbench.chat", "name": "Chat", "type": "webview", "visibility": "visible", "initialSize": 4 },
+        { "id": "opencodeWorkbench.sessions", "name": "Sessions", "visibility": "collapsed", "initialSize": 1 }
       ]
     },
     "menus": {
       "view/title": [
+        { "command": "opencodeWorkbench.newSession", "when": "view == opencodeWorkbench.chat", "group": "navigation@1" },
+        { "command": "opencodeWorkbench.showSessions", "when": "view == opencodeWorkbench.chat", "group": "navigation@2" },
+        { "command": "opencodeWorkbench.refresh", "when": "view == opencodeWorkbench.chat", "group": "navigation@3" },
+        { "command": "opencodeWorkbench.abortSession", "when": "view == opencodeWorkbench.chat && opencodeWorkbench.sessionBusy", "group": "navigation@4" },
         { "command": "opencodeWorkbench.newSession", "when": "view == opencodeWorkbench.sessions", "group": "navigation@1" },
         { "command": "opencodeWorkbench.refresh", "when": "view == opencodeWorkbench.sessions", "group": "navigation@2" },
-        { "command": "opencodeWorkbench.abortSession", "when": "view == opencodeWorkbench.chat", "group": "navigation@1" }
+        { "command": "opencodeWorkbench.openChat", "when": "view == opencodeWorkbench.sessions", "group": "navigation@3" }
+      ],
+      "editor/title": [
+        { "command": "opencodeWorkbench.openChat", "when": "workspaceFolderCount != 0 && (resourceScheme == file || resourceScheme == vscode-remote)", "group": "navigation@100" }
       ],
       "view/item/context": [
         { "command": "opencodeWorkbench.deleteSession", "when": "view == opencodeWorkbench.sessions && viewItem == opencodeWorkbench.session", "group": "inline@1" }
@@ -118,7 +154,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
-    "@types/vscode": "1.95.0",
+    "@types/vscode": "1.106.0",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   }

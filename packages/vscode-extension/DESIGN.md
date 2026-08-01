@@ -17,7 +17,12 @@ be stored in workspace settings, and non-loopback servers require HTTPS.
 
 ## UI Boundaries
 
-The session list is a native `TreeView`. The chat is a `WebviewView` with a nonce-based content security policy and no network access. Both directions use discriminated message schemas and runtime validators from `@opencode-workbench/shared`.
+The chat is the primary view in a Secondary Side Bar container. Its header has
+a compact session switcher, while the native `TreeView` remains available as a
+collapsed session work queue. The chat is a `WebviewView` with a nonce-based
+content security policy and no network access. Both directions use
+discriminated message schemas and runtime validators from
+`@opencode-workbench/shared`.
 
 Markdown is rendered by an escaping-first renderer. Raw HTML is never passed through. Only `http:` and `https:` links are emitted, and link opening is delegated to the extension host after a second protocol check.
 

@@ -40,18 +40,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <title>OpenCode Chat</title>
 </head>
 <body>
-  <header>
-    <div class="session-line"><strong id="session-title">No session</strong><span id="connection" class="pill offline">offline</span></div>
-    <div class="selectors">
-      <label>Agent<select id="agent" aria-label="Agent"><option value="">Default</option></select></label>
-      <label>Model<select id="model" aria-label="Model"><option value="">Default</option></select></label>
+  <header class="chat-header">
+    <div class="session-picker">
+      <label class="visually-hidden" for="session">Current session</label>
+      <select id="session" aria-label="Current session"><option value="">No session</option></select>
+      <button id="create-header" class="icon-action" type="button" title="New session" aria-label="New session">New</button>
     </div>
+    <span id="connection" class="connection offline" role="status">Offline</span>
   </header>
-  <main id="messages" aria-live="polite"></main>
-  <section id="empty" class="empty"><p>Select a session or create a new one.</p><button id="create">New session</button></section>
-  <footer>
-    <textarea id="draft" rows="3" placeholder="Ask OpenCode..." aria-label="Prompt"></textarea>
-    <div class="actions"><span id="status">idle</span><button id="abort" class="secondary">Abort</button><button id="send">Send</button></div>
+  <main id="messages" role="log" aria-label="OpenCode conversation" aria-live="polite" aria-relevant="additions text"></main>
+  <section id="empty" class="empty">
+    <div class="empty-mark" aria-hidden="true">OC</div>
+    <h1>Work with OpenCode</h1>
+    <p>Ask about this workspace, plan a change, or start implementing.</p>
+    <div class="starters" aria-label="Suggested prompts">
+      <button type="button" data-prompt="Explain the architecture of this workspace.">Explain this workspace</button>
+      <button type="button" data-prompt="Review the current changes for bugs and missing tests.">Review current changes</button>
+      <button type="button" data-prompt="Help me plan the next implementation step.">Plan next steps</button>
+    </div>
+    <button id="create-empty" class="primary-action" type="button">New session</button>
+  </section>
+  <footer class="composer-region">
+    <div class="composer" id="composer">
+      <textarea id="draft" rows="2" placeholder="Ask OpenCode..." aria-label="Message OpenCode"></textarea>
+      <div class="composer-toolbar">
+        <div class="selectors">
+          <label class="visually-hidden" for="agent">Agent</label>
+          <select id="agent" aria-label="Agent"><option value="">Default agent</option></select>
+          <label class="visually-hidden" for="model">Model</label>
+          <select id="model" aria-label="Model"><option value="">Default model</option></select>
+        </div>
+        <div class="actions">
+          <span id="status" role="status" aria-live="polite">Idle</span>
+          <button id="abort" class="secondary" type="button">Stop</button>
+          <button id="send" type="button" title="Send (Ctrl+Enter)">Send</button>
+        </div>
+      </div>
+    </div>
+    <div class="composer-hint">Ctrl+Enter to send</div>
   </footer>
   <script nonce="${nonce}" src="${script}"></script>
 </body>
@@ -67,25 +93,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     try {
       switch (message.type) {
         case "ready":
-          if (message.draft !== undefined) this.controller?.setDraft(message.draft)
           await this.postSnapshot()
           break
         case "setDraft":
+          if (this.controller?.snapshot.selectedID !== message.sessionID) throw new Error("Session changed before the draft update completed")
           this.controller?.setDraft(message.draft)
           break
         case "setPreference":
+          if (this.controller?.snapshot.selectedID !== message.sessionID) throw new Error("Session changed before the preference update completed")
           this.controller?.setPreference(message.agent, message.model)
           break
         case "send":
           if (!this.controller) throw new Error("Open a folder to use OpenCode")
+          if (this.controller.snapshot.selectedID !== message.sessionID) throw new Error("Session changed before the prompt was sent")
           await this.controller.send(message.text, message.agent, message.model)
           break
         case "abort":
+          if (this.controller?.snapshot.selectedID !== message.sessionID) throw new Error("Session changed before the abort request completed")
           await this.controller?.abortSelected()
           break
         case "createSession":
           if (!this.controller) throw new Error("Open a folder to create a session")
-          await this.controller.createSession()
+          await this.controller.createSession(undefined, message.draft)
+          break
+        case "selectSession":
+          if (!this.controller) throw new Error("Open a folder to select a session")
+          if (!Object.hasOwn(this.controller.snapshot.sessions, message.sessionID)) throw new Error("Unknown OpenCode session")
+          await this.controller.select(message.sessionID)
           break
         case "openLink": {
           const url = new URL(message.url)
@@ -100,9 +134,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private postSnapshot(): Thenable<boolean> | undefined {
+    const snapshot = this.controller?.chatSnapshot() ?? { connected: false, sessions: [], agents: [], models: [] }
+    if (this.view) {
+      this.view.description = snapshot.session?.title
+      const unread = snapshot.sessions.reduce((total, session) => total + session.unread, 0)
+      this.view.badge = unread ? { value: unread, tooltip: `${unread} unread OpenCode message${unread === 1 ? "" : "s"}` } : undefined
+    }
     return this.post({
       type: "snapshot",
-      snapshot: this.controller?.chatSnapshot() ?? { connected: false, agents: [], models: [] },
+      snapshot,
     })
   }
 

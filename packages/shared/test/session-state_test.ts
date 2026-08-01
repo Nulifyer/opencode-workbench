@@ -66,3 +66,17 @@ Deno.test("streamed parts update only their owning session", () => {
   assert(state.sessions.one.messages[0].parts[0].text === "hello", "part was not added")
   assert(state.sessions.two.messages.length === 0, "unrelated session changed")
 })
+
+Deno.test("prototype-like session IDs remain ordinary data", () => {
+  const prototypeSession: SessionInfo = {
+    ...one,
+    id: "constructor",
+    title: "Constructor",
+  }
+  let state = sessionReducer(initialWorkbenchState, { type: "reconcile", sessions: [prototypeSession] })
+  state = sessionReducer(state, { type: "draft", sessionID: "constructor", draft: "safe" })
+  assert(Object.getPrototypeOf(state.sessions) === null, "session record regained an object prototype")
+  assert(state.sessions["constructor"]?.draft === "safe", "prototype-like session ID was not stored safely")
+  const unchanged = sessionReducer(state, { type: "select", sessionID: "toString" })
+  assert(unchanged === state, "inherited unknown session ID was accepted")
+})

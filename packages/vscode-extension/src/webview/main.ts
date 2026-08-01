@@ -3,24 +3,27 @@ import type { ChatSnapshot, MessageBundle, MessagePart, WebviewToHostMessage } f
 
 declare function acquireVsCodeApi<T = unknown>(): {
   postMessage(message: WebviewToHostMessage): void
-  getState(): T | undefined
-  setState(state: T): void
 }
 
-const vscode = acquireVsCodeApi<{ draft?: string }>()
+const vscode = acquireVsCodeApi()
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const messages = element<HTMLElement>("messages")
 const empty = element<HTMLElement>("empty")
 const draft = element<HTMLTextAreaElement>("draft")
 const send = element<HTMLButtonElement>("send")
 const abort = element<HTMLButtonElement>("abort")
-const create = element<HTMLButtonElement>("create")
+const createHeader = element<HTMLButtonElement>("create-header")
+const createEmpty = element<HTMLButtonElement>("create-empty")
 const status = element<HTMLElement>("status")
 const connection = element<HTMLElement>("connection")
-const title = element<HTMLElement>("session-title")
+const sessionSelect = element<HTMLSelectElement>("session")
 const agent = element<HTMLSelectElement>("agent")
 const model = element<HTMLSelectElement>("model")
-let snapshot: ChatSnapshot = { connected: false, agents: [], models: [] }
+const composer = element<HTMLElement>("composer")
+let snapshot: ChatSnapshot = { connected: false, sessions: [], agents: [], models: [] }
+let renderedSessions = ""
+let renderedSessionID: string | undefined
+const renderedMessages = new Map<string, { node: HTMLElement; signature: string }>()
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character)
@@ -88,13 +91,16 @@ function markdown(source: string): string {
 function partHtml(part: MessagePart): string {
   if (part.synthetic) return ""
   if ((part.type === "text" || part.type === "reasoning") && typeof part.text === "string") {
-    return `<div class="markdown${part.type === "reasoning" ? " reasoning" : ""}">${markdown(part.text)}</div>`
+    return part.type === "reasoning"
+      ? `<details class="reasoning"><summary>Reasoning</summary><div class="markdown">${markdown(part.text)}</div></details>`
+      : `<div class="markdown">${markdown(part.text)}</div>`
   }
   if (part.type === "tool") {
     const state = part.state
     const heading = state?.title || part.tool || "tool"
     const detail = state?.error || state?.output || ""
-    return `<details class="tool" ${state?.status === "running" ? "open" : ""}><summary>${escapeHtml(heading)} <span>${escapeHtml(state?.status || "")}</span></summary>${detail ? `<pre>${escapeHtml(detail)}</pre>` : ""}</details>`
+    const toolStatus = state?.status || "pending"
+    return `<details class="tool tool-${escapeHtml(toolStatus)}" ${toolStatus === "running" ? "open" : ""}><summary><span class="tool-dot" aria-hidden="true"></span><span class="tool-title">${escapeHtml(heading)}</span><span class="tool-status">${escapeHtml(toolStatus)}</span></summary>${detail ? `<pre>${escapeHtml(detail)}</pre>` : ""}</details>`
   }
   return ""
 }
@@ -102,39 +108,124 @@ function partHtml(part: MessagePart): string {
 function messageHtml(message: MessageBundle): string {
   const role = message.info.role === "user" ? "You" : "OpenCode"
   const body = message.parts.map(partHtml).join("")
-  const serializedError = message.info.error ? JSON.stringify(message.info.error, null, 2) ?? String(message.info.error) : ""
+  let serializedError = ""
+  try {
+    serializedError = message.info.error ? JSON.stringify(message.info.error, null, 2) ?? String(message.info.error) : ""
+  } catch {
+    serializedError = "The server returned an unreadable error."
+  }
   const error = serializedError ? `<pre class="message-error">${escapeHtml(serializedError)}</pre>` : ""
-  return `<article class="message ${message.info.role}"><div class="role">${role}</div><div class="content">${body || "<span class=\"pending\">...</span>"}${error}</div></article>`
+  return `<article class="message ${message.info.role}" data-message-id="${escapeHtml(message.info.id)}"><div class="message-heading">${role}</div><div class="content">${body || "<span class=\"pending\">Working…</span>"}${error}</div></article>`
 }
 
-function fillSelect(select: HTMLSelectElement, options: Array<{ value: string; label: string }>, selected?: string): void {
-  const html = [`<option value="">Default</option>`, ...options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`)]
+function messageNode(html: string): HTMLElement {
+  const template = document.createElement("template")
+  template.innerHTML = html
+  const node = template.content.firstElementChild
+  if (!(node instanceof HTMLElement)) throw new Error("Could not render OpenCode message")
+  return node
+}
+
+function clearMessages(): void {
+  messages.replaceChildren()
+  renderedMessages.clear()
+  renderedSessionID = undefined
+}
+
+function renderTranscript(session: NonNullable<ChatSnapshot["session"]>): void {
+  if (renderedSessionID !== session.id) {
+    clearMessages()
+    renderedSessionID = session.id
+  }
+  const expected = new Set<string>()
+  session.messages.forEach((message, index) => {
+    expected.add(message.info.id)
+    const signature = String(session.messageRevisions[message.info.id] ?? 0)
+    let rendered = renderedMessages.get(message.info.id)
+    if (!rendered) {
+      rendered = { node: messageNode(messageHtml(message)), signature }
+      renderedMessages.set(message.info.id, rendered)
+    } else if (rendered.signature !== signature) {
+      const openDetails = Array.from(rendered.node.querySelectorAll("details"), (detail) => detail.open)
+      const replacement = messageNode(messageHtml(message))
+      Array.from(replacement.querySelectorAll("details")).forEach((detail, detailIndex) => {
+        if (openDetails[detailIndex] !== undefined) detail.open = openDetails[detailIndex]!
+      })
+      rendered.node.replaceWith(replacement)
+      rendered = { node: replacement, signature }
+      renderedMessages.set(message.info.id, rendered)
+    }
+    const current = messages.children.item(index)
+    if (current !== rendered.node) messages.insertBefore(rendered.node, current)
+  })
+  for (const [messageID, rendered] of renderedMessages) {
+    if (expected.has(messageID)) continue
+    rendered.node.remove()
+    renderedMessages.delete(messageID)
+  }
+}
+
+function fillSelect(select: HTMLSelectElement, defaultLabel: string, options: Array<{ value: string; label: string }>, selected?: string): void {
+  const html = [`<option value="">${escapeHtml(defaultLabel)}</option>`, ...options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`)]
   select.innerHTML = html.join("")
   select.value = selected || ""
 }
 
+function sessionLabel(session: ChatSnapshot["sessions"][number]): string {
+  const suffix = [session.status.type !== "idle" ? session.status.type : "", session.unread ? `${session.unread} unread` : ""].filter(Boolean).join(" · ")
+  return suffix ? `${session.title} — ${suffix}` : session.title
+}
+
+function fillSessions(selected?: string): void {
+  const options = snapshot.sessions.map((session) => `<option value="${escapeHtml(session.id)}">${escapeHtml(sessionLabel(session))}</option>`)
+  const html = options.length ? options.join("") : `<option value="">No sessions</option>`
+  if (html !== renderedSessions) {
+    sessionSelect.innerHTML = html
+    renderedSessions = html
+  }
+  sessionSelect.value = selected || ""
+}
+
+function resizeDraft(): void {
+  draft.style.height = "auto"
+  draft.style.height = `${Math.min(Math.max(draft.scrollHeight, 46), 180)}px`
+}
+
 function render(): void {
   const session = snapshot.session
-  connection.textContent = snapshot.connected ? "connected" : "offline"
-  connection.className = `pill ${snapshot.connected ? "online" : "offline"}`
-  title.textContent = session?.title || "No session"
-  empty.hidden = Boolean(session)
-  messages.hidden = !session
+  const active = session?.status.type === "busy" || session?.status.type === "retry"
+  connection.textContent = snapshot.connected ? "Connected" : "Offline"
+  connection.className = `connection ${snapshot.connected ? "online" : "offline"}`
+  fillSessions(session?.id)
+  sessionSelect.disabled = snapshot.sessions.length === 0
+  createHeader.disabled = !snapshot.connected
+  createEmpty.disabled = !snapshot.connected
+  const emptyConversation = Boolean(session && session.messages.length === 0)
+  empty.hidden = Boolean(session && !emptyConversation)
+  messages.hidden = !session || emptyConversation
+  createEmpty.hidden = Boolean(session)
   draft.disabled = !session
-  send.disabled = !session || !snapshot.connected || session.status.type === "busy" || session.status.type === "retry"
-  abort.disabled = !session || session.status.type === "idle"
-  status.textContent = session?.status.type || "idle"
-  fillSelect(agent, snapshot.agents.map((item) => ({ value: item.name, label: item.name })), session?.agent)
-  fillSelect(model, snapshot.models.map((item) => ({ value: `${item.providerID}/${item.id}`, label: `${item.providerID} / ${item.name}` })), session?.model)
+  composer.setAttribute("aria-busy", String(Boolean(active)))
+  messages.setAttribute("aria-busy", String(Boolean(active)))
+  send.disabled = !session || !snapshot.connected || active
+  send.hidden = Boolean(active)
+  abort.disabled = !session || !active
+  abort.hidden = !active
+  status.textContent = session ? session.status.type[0]?.toUpperCase() + session.status.type.slice(1) : snapshot.connected ? "Ready" : "Offline"
+  fillSelect(agent, "Default agent", snapshot.agents.map((item) => ({ value: item.name, label: item.name })), session?.agent)
+  fillSelect(model, "Default model", snapshot.models.map((item) => ({ value: `${item.providerID}/${item.id}`, label: `${item.providerID} / ${item.name}` })), session?.model)
   agent.disabled = !session
   model.disabled = !session
   if (!session) {
-    messages.replaceChildren()
+    clearMessages()
+    draft.value = ""
+    resizeDraft()
     return
   }
   const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80
-  messages.innerHTML = session.messages.map(messageHtml).join("")
+  renderTranscript(session)
   if (draft.value !== session.draft) draft.value = session.draft
+  resizeDraft()
   if (nearBottom) messages.scrollTop = messages.scrollHeight
 }
 
@@ -143,8 +234,9 @@ function post(message: WebviewToHostMessage): void {
 }
 
 draft.addEventListener("input", () => {
-  vscode.setState({ draft: draft.value })
-  post({ type: "setDraft", draft: draft.value })
+  resizeDraft()
+  const sessionID = snapshot.session?.id
+  if (sessionID) post({ type: "setDraft", sessionID, draft: draft.value })
 })
 draft.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -153,13 +245,40 @@ draft.addEventListener("keydown", (event) => {
   }
 })
 send.addEventListener("click", () => {
-  if (!draft.value.trim()) return
-  post({ type: "send", text: draft.value, agent: agent.value || undefined, model: model.value || undefined })
+  const sessionID = snapshot.session?.id
+  if (!sessionID || !draft.value.trim()) return
+  post({ type: "send", sessionID, text: draft.value, agent: agent.value || undefined, model: model.value || undefined })
 })
-abort.addEventListener("click", () => post({ type: "abort" }))
-create.addEventListener("click", () => post({ type: "createSession" }))
-agent.addEventListener("change", () => post({ type: "setPreference", agent: agent.value, model: model.value }))
-model.addEventListener("change", () => post({ type: "setPreference", agent: agent.value, model: model.value }))
+abort.addEventListener("click", () => {
+  const sessionID = snapshot.session?.id
+  if (sessionID) post({ type: "abort", sessionID })
+})
+createHeader.addEventListener("click", () => post({ type: "createSession" }))
+createEmpty.addEventListener("click", () => post({ type: "createSession" }))
+sessionSelect.addEventListener("change", () => {
+  if (sessionSelect.value) post({ type: "selectSession", sessionID: sessionSelect.value })
+})
+agent.addEventListener("change", () => {
+  const sessionID = snapshot.session?.id
+  if (sessionID) post({ type: "setPreference", sessionID, agent: agent.value, model: model.value })
+})
+model.addEventListener("change", () => {
+  const sessionID = snapshot.session?.id
+  if (sessionID) post({ type: "setPreference", sessionID, agent: agent.value, model: model.value })
+})
+document.querySelectorAll<HTMLButtonElement>("[data-prompt]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const prompt = button.dataset.prompt || ""
+    if (!snapshot.session) {
+      post({ type: "createSession", draft: prompt })
+      return
+    }
+    draft.value = prompt
+    resizeDraft()
+    post({ type: "setDraft", sessionID: snapshot.session.id, draft: draft.value })
+    draft.focus()
+  })
+})
 messages.addEventListener("click", (event) => {
   const anchor = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-url]") : undefined
   const url = anchor?.dataset.url
@@ -177,5 +296,5 @@ window.addEventListener("message", (event) => {
   render()
 })
 
-draft.value = vscode.getState()?.draft || ""
-post({ type: "ready", draft: draft.value })
+resizeDraft()
+post({ type: "ready" })

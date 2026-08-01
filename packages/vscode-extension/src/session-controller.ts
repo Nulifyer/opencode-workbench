@@ -18,6 +18,30 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function boundedError(value: unknown, depth = 0, budget = { nodes: 0, characters: 0 }): unknown {
+  budget.nodes += 1
+  if (budget.nodes > 1_000 || depth > 8) return "[Truncated]"
+  if (value === null || typeof value === "boolean" || typeof value === "number") return value
+  if (typeof value === "string") {
+    const remaining = Math.max(0, 100_000 - budget.characters)
+    budget.characters += Math.min(value.length, remaining)
+    return value.slice(0, remaining)
+  }
+  if (Array.isArray(value)) return value.slice(0, 100).map((entry) => boundedError(entry, depth + 1, budget))
+  if (typeof value === "object") {
+    const output: Record<string, unknown> = {}
+    let properties = 0
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue
+      output[key.slice(0, 1_024)] = boundedError((value as Record<string, unknown>)[key], depth + 1, budget)
+      properties += 1
+      if (properties >= 100) break
+    }
+    return output
+  }
+  return String(value).slice(0, 1_024)
+}
+
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(resolve, milliseconds)
@@ -64,6 +88,9 @@ export class SessionController {
   private readonly removedMessages = new Map<string, Map<string, number>>()
   private readonly removedParts = new Map<string, Map<string, number>>()
   private readonly sendGenerations = new Map<string, number>()
+  private readonly draftRevisions = new Map<string, number>()
+  private readonly messageRevisions = new Map<string, Map<string, number>>()
+  private selectionIntent = 0
 
   constructor(private readonly client: OpenCodeClient, private readonly callbacks: ControllerCallbacks) {}
 
@@ -105,6 +132,27 @@ export class SessionController {
     if (next === this.state) return
     this.state = next
     for (const listener of this.listeners) listener()
+  }
+
+  private updateDraft(sessionID: string, draft: string): number {
+    const revision = (this.draftRevisions.get(sessionID) ?? 0) + 1
+    this.draftRevisions.set(sessionID, revision)
+    this.dispatch({ type: "draft", sessionID, draft })
+    return revision
+  }
+
+  private bumpMessageRevision(sessionID: string, messageID: string): void {
+    const revisions = this.messageRevisions.get(sessionID) ?? new Map<string, number>()
+    revisions.set(messageID, (revisions.get(messageID) ?? 0) + 1)
+    this.messageRevisions.set(sessionID, revisions)
+  }
+
+  private refreshMessageRevisions(sessionID: string, messages: WorkbenchState["sessions"][string]["messages"]): void {
+    const revisions = this.messageRevisions.get(sessionID) ?? new Map<string, number>()
+    const current = new Set(messages.map((entry) => entry.info.id))
+    for (const entry of messages) revisions.set(entry.info.id, (revisions.get(entry.info.id) ?? 0) + 1)
+    for (const messageID of revisions.keys()) if (!current.has(messageID)) revisions.delete(messageID)
+    this.messageRevisions.set(sessionID, revisions)
   }
 
   private async runEventLoop(signal: AbortSignal): Promise<void> {
@@ -173,11 +221,13 @@ export class SessionController {
     }
   }
 
-  async createSession(title?: string): Promise<string> {
+  async createSession(title?: string, draft?: string): Promise<string> {
+    const intent = ++this.selectionIntent
     const session = await this.client.createSession(title)
     this.sessionRevision += 1
     this.dispatch({ type: "event", event: { type: "session.created", properties: { info: session } } })
-    await this.select(session.id)
+    if (draft) this.updateDraft(session.id, draft)
+    if (intent === this.selectionIntent) await this.selectKnown(session.id)
     return session.id
   }
 
@@ -191,6 +241,12 @@ export class SessionController {
   }
 
   async select(sessionID: string): Promise<void> {
+    if (!Object.hasOwn(this.state.sessions, sessionID)) throw new Error("Unknown OpenCode session")
+    this.selectionIntent += 1
+    await this.selectKnown(sessionID)
+  }
+
+  private async selectKnown(sessionID: string): Promise<void> {
     this.dispatch({ type: "select", sessionID })
     if (!this.state.sessions[sessionID]?.loaded) await this.loadTranscript(sessionID)
   }
@@ -214,6 +270,7 @@ export class SessionController {
         ...message,
         parts: message.parts.filter((part) => (removedParts?.get(`${message.info.id}:${part.id}`) ?? 0) <= revision),
       }))
+    this.refreshMessageRevisions(sessionID, transcript)
     this.dispatch({ type: "transcript", sessionID, messages: transcript })
     for (const [id, removedAt] of removedMessages ?? []) if (removedAt <= revision) removedMessages?.delete(id)
     for (const [id, removedAt] of removedParts ?? []) if (removedAt <= revision) removedParts?.delete(id)
@@ -236,7 +293,7 @@ export class SessionController {
 
   setDraft(draft: string): void {
     const sessionID = this.state.selectedID
-    if (sessionID) this.dispatch({ type: "draft", sessionID, draft })
+    if (sessionID) this.updateDraft(sessionID, draft)
   }
 
   setPreference(agent?: string, model?: string): void {
@@ -252,14 +309,14 @@ export class SessionController {
     const generation = (this.sendGenerations.get(sessionID) ?? 0) + 1
     this.sendGenerations.set(sessionID, generation)
     this.dispatch({ type: "preference", sessionID, agent, model })
-    this.dispatch({ type: "draft", sessionID, draft: "" })
+    const clearedDraftRevision = this.updateDraft(sessionID, "")
     this.statusRevision += 1
     this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } } })
     try {
       await this.client.sendAsync(sessionID, text, agent, model)
     } catch (error) {
       if (this.sendGenerations.get(sessionID) === generation) {
-        this.dispatch({ type: "draft", sessionID, draft: text })
+        if (this.draftRevisions.get(sessionID) === clearedDraftRevision) this.updateDraft(sessionID, text)
         this.statusRevision += 1
         this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "error", message: message(error) } } } })
       }
@@ -277,6 +334,15 @@ export class SessionController {
     const current = this.state.selectedID ? this.state.sessions[this.state.selectedID] : undefined
     return {
       connected: this.state.connected,
+      sessions: this.state.order.flatMap((id) => {
+        const session = this.state.sessions[id]
+        return session ? [{
+          id,
+          title: session.info.title || "Untitled session",
+          status: session.status,
+          unread: session.unread,
+        }] : []
+      }),
       agents: this.agents,
       models: this.models,
       session: current ? {
@@ -284,7 +350,10 @@ export class SessionController {
         title: current.info.title,
         draft: current.draft,
         status: current.status,
-        messages: current.messages,
+        messages: current.messages.map((entry) => entry.info.error === undefined
+          ? entry
+          : { ...entry, info: { ...entry.info, error: boundedError(entry.info.error) } }),
+        messageRevisions: Object.fromEntries(this.messageRevisions.get(current.info.id) ?? []),
         agent: current.agent,
         model: current.model,
       } : undefined,
@@ -316,6 +385,15 @@ export class SessionController {
         removed.set(`${event.properties.messageID}:${event.properties.partID}`, revision)
         this.removedParts.set(sessionID, removed)
       }
+      const messageID = typeof event.properties.messageID === "string"
+        ? event.properties.messageID
+        : info && typeof info === "object" && "id" in info && typeof info.id === "string"
+        ? info.id
+        : part && typeof part === "object" && "messageID" in part && typeof part.messageID === "string"
+        ? part.messageID
+        : undefined
+      if (messageID && event.type === "message.removed") this.messageRevisions.get(sessionID)?.delete(messageID)
+      else if (messageID) this.bumpMessageRevision(sessionID, messageID)
     }
     this.dispatch({ type: "event", event })
     const permission = parsePermission(event)

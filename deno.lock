@@ -6,7 +6,7 @@
     "npm:@opencode-ai/plugin@1.18.9": "1.18.9",
     "npm:@types/node@26.1.2": "26.1.2",
     "npm:@types/node@^26.1.2": "26.1.2",
-    "npm:@types/vscode@1.95.0": "1.95.0",
+    "npm:@types/vscode@1.106.0": "1.106.0",
     "npm:@vscode/vsce@3.9.2": "3.9.2",
     "npm:esbuild@0.28.1": "0.28.1",
     "npm:esbuild@~0.28.1": "0.28.1",
@@ -471,8 +471,8 @@
     "@types/sarif@2.1.7": {
       "integrity": "sha512-kRz0VEkJqWLf1LLVN4pT1cg1Z9wAuvI6L97V3m2f5B76Tg8d413ddvLBPTEHAZJlnn4XSvu0FkZtViCQGVyrXQ=="
     },
-    "@types/vscode@1.95.0": {
-      "integrity": "sha512-0LBD8TEiNbet3NvWsmn59zLzOFu/txSlGxnv5yAFHCrhG9WvAnR3IvfHzMOs2aeWqgvNjq9pO99IUw8d3n+unw=="
+    "@types/vscode@1.106.0": {
+      "integrity": "sha512-88oUcEl9Wmlyt64pbvjLzyyFuFuPotdjwy+P+5ggg3DyTJSMWJD3ShX2ppya5mqrAYTKEhcaJBerdc5JTeb32w=="
     },
     "@typespec/ts-http-runtime@0.3.8": {
       "integrity": "sha512-bLMpVcWZNzq6lYOybwFwOAR1IXKcHnhUNqYeHjl1bET/qE3jFPFH+p8Wrh3rU4xwdnifPxmKNESBYnvnmc75aA==",
@@ -1982,7 +1982,7 @@
       "dependencies": [
         "npm:@opencode-ai/plugin@1.18.9",
         "npm:@types/node@26.1.2",
-        "npm:@types/vscode@1.95.0",
+        "npm:@types/vscode@1.106.0",
         "npm:@vscode/vsce@3.9.2",
         "npm:esbuild@0.28.1",
         "npm:typescript@^6.0.3"
@@ -2000,7 +2000,7 @@
         "packageJson": {
           "dependencies": [
             "npm:@types/node@^26.1.2",
-            "npm:@types/vscode@1.95.0",
+            "npm:@types/vscode@1.106.0",
             "npm:esbuild@~0.28.1",
             "npm:typescript@^6.0.3"
           ]

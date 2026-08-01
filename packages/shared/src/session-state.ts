@@ -28,9 +28,17 @@ export type SessionAction =
   | { type: "event"; event: OpenCodeEvent }
 
 export const initialWorkbenchState: WorkbenchState = {
-  sessions: {},
+  sessions: Object.create(null) as Record<string, SessionViewState>,
   order: [],
   connected: false,
+}
+
+function hasSession(sessions: Record<string, SessionViewState>, sessionID: string): boolean {
+  return Object.hasOwn(sessions, sessionID)
+}
+
+function copySessions(sessions: Record<string, SessionViewState>): Record<string, SessionViewState> {
+  return Object.assign(Object.create(null) as Record<string, SessionViewState>, sessions)
 }
 
 function newSession(info: SessionInfo, status: SessionStatus = { type: "idle" }): SessionViewState {
@@ -88,54 +96,58 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
   if (action.type === "connected") return { ...state, connected: action.connected }
 
   if (action.type === "reconcile") {
-    const sessions: Record<string, SessionViewState> = {}
+    const sessions = Object.create(null) as Record<string, SessionViewState>
     for (const info of action.sessions) {
-      const existing = state.sessions[info.id]
+      const existing = hasSession(state.sessions, info.id) ? state.sessions[info.id] : undefined
+      const status = action.statuses && Object.hasOwn(action.statuses, info.id) ? action.statuses[info.id] : undefined
       sessions[info.id] = existing
-        ? { ...existing, info, status: action.statuses?.[info.id] ?? { type: "idle" } }
-        : newSession(info, action.statuses?.[info.id])
+        ? { ...existing, info, status: status ?? { type: "idle" } }
+        : newSession(info, status)
     }
     const order = action.sessions
       .slice()
       .sort((left, right) => right.time.updated - left.time.updated)
       .map((session) => session.id)
-    const selectedID = state.selectedID && sessions[state.selectedID] ? state.selectedID : order[0]
+    const selectedID = state.selectedID && hasSession(sessions, state.selectedID) ? state.selectedID : order[0]
     return { ...state, sessions, order, selectedID }
   }
 
   if (action.type === "select") {
-    if (action.sessionID && !state.sessions[action.sessionID]) return state
-    const sessions = { ...state.sessions }
+    if (action.sessionID && !hasSession(state.sessions, action.sessionID)) return state
+    const sessions = copySessions(state.sessions)
     if (action.sessionID) sessions[action.sessionID] = { ...sessions[action.sessionID]!, unread: 0 }
     return { ...state, selectedID: action.sessionID, sessions }
   }
 
   if (action.type === "draft") {
+    if (!hasSession(state.sessions, action.sessionID)) return state
     const current = state.sessions[action.sessionID]
-    if (!current) return state
-    return { ...state, sessions: { ...state.sessions, [action.sessionID]: { ...current, draft: action.draft } } }
+    const sessions = copySessions(state.sessions)
+    sessions[action.sessionID] = { ...current!, draft: action.draft }
+    return { ...state, sessions }
   }
   if (action.type === "preference") {
+    if (!hasSession(state.sessions, action.sessionID)) return state
     const current = state.sessions[action.sessionID]
-    if (!current) return state
+    const sessions = copySessions(state.sessions)
+    sessions[action.sessionID] = {
+      ...current!,
+      agent: action.agent === undefined ? current!.agent : action.agent || undefined,
+      model: action.model === undefined ? current!.model : action.model || undefined,
+    }
     return {
       ...state,
-      sessions: {
-        ...state.sessions,
-        [action.sessionID]: {
-          ...current,
-          agent: action.agent === undefined ? current.agent : action.agent || undefined,
-          model: action.model === undefined ? current.model : action.model || undefined,
-        },
-      },
+      sessions,
     }
   }
   if (action.type === "transcript") {
+    if (!hasSession(state.sessions, action.sessionID)) return state
     const current = state.sessions[action.sessionID]
-    if (!current) return state
+    const sessions = copySessions(state.sessions)
+    sessions[action.sessionID] = { ...current!, messages: action.messages, loaded: true }
     return {
       ...state,
-      sessions: { ...state.sessions, [action.sessionID]: { ...current, messages: action.messages, loaded: true } },
+      sessions,
     }
   }
   if (action.type !== "event") return state
@@ -144,24 +156,24 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
   if (event.type === "session.created" || event.type === "session.updated") {
     const info = event.properties.info as SessionInfo | undefined
     if (!info?.id) return state
-    const existing = state.sessions[info.id]
-    const sessions = { ...state.sessions, [info.id]: existing ? { ...existing, info } : newSession(info) }
+    const existing = hasSession(state.sessions, info.id) ? state.sessions[info.id] : undefined
+    const sessions = copySessions(state.sessions)
+    sessions[info.id] = existing ? { ...existing, info } : newSession(info)
     const order = [info.id, ...state.order.filter((id) => id !== info.id)]
     return { ...state, sessions, order, selectedID: state.selectedID ?? info.id }
   }
   if (event.type === "session.deleted") {
     const info = event.properties.info as SessionInfo | undefined
-    if (!info?.id || !state.sessions[info.id]) return state
-    const sessions = { ...state.sessions }
+    if (!info?.id || !hasSession(state.sessions, info.id)) return state
+    const sessions = copySessions(state.sessions)
     delete sessions[info.id]
     const order = state.order.filter((id) => id !== info.id)
     return { ...state, sessions, order, selectedID: state.selectedID === info.id ? order[0] : state.selectedID }
   }
 
   const sessionID = eventSessionID(event)
-  if (!sessionID) return state
-  const session = state.sessions[sessionID]
-  if (!session) return state
+  if (!sessionID || !hasSession(state.sessions, sessionID)) return state
+  const session = state.sessions[sessionID]!
   let updated = session
 
   if (event.type === "session.status") {
@@ -199,5 +211,8 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
     updated = { ...session, messages: removePart(session.messages, event.properties.messageID, event.properties.partID) }
   }
 
-  return updated === session ? state : { ...state, sessions: { ...state.sessions, [sessionID]: updated } }
+  if (updated === session) return state
+  const sessions = copySessions(state.sessions)
+  sessions[sessionID] = updated
+  return { ...state, sessions }
 }

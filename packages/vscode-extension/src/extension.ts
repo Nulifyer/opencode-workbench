@@ -128,8 +128,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     treeProvider,
     chatProvider,
     vscode.window.registerTreeDataProvider("opencodeWorkbench.sessions", treeProvider),
-    vscode.window.registerWebviewViewProvider("opencodeWorkbench.chat", chatProvider, { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.window.registerWebviewViewProvider("opencodeWorkbench.chat", chatProvider),
   )
+
+  const updateSessionContext = (): void => {
+    const selected = controller?.snapshot.selectedID
+    const status = selected ? controller?.snapshot.sessions[selected]?.status.type : undefined
+    void vscode.commands.executeCommand("setContext", "opencodeWorkbench.sessionBusy", status === "busy" || status === "retry")
+  }
+  updateSessionContext()
+  const contextSubscription = controller?.subscribe(updateSessionContext)
+  if (contextSubscription) context.subscriptions.push(contextSubscription)
 
   const run = (operation: () => Promise<unknown>) => async (): Promise<void> => {
     try {
@@ -140,12 +149,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("opencodeWorkbench.openChat", async () => {
+      await vscode.commands.executeCommand("opencodeWorkbench.chat.focus")
+    }),
+    vscode.commands.registerCommand("opencodeWorkbench.showSessions", async () => {
+      await vscode.commands.executeCommand("opencodeWorkbench.sessions.focus")
+    }),
     vscode.commands.registerCommand("opencodeWorkbench.selectSession", async (sessionID: string) => {
-      if (controller && typeof sessionID === "string") await controller.select(sessionID)
+      if (controller && typeof sessionID === "string") {
+        await controller.select(sessionID)
+        await vscode.commands.executeCommand("opencodeWorkbench.chat.focus")
+      }
     }),
     vscode.commands.registerCommand("opencodeWorkbench.newSession", run(async () => {
       if (!controller) throw new Error("Open a workspace folder before creating an OpenCode session")
       await controller.createSession()
+      await vscode.commands.executeCommand("opencodeWorkbench.chat.focus")
     })),
     vscode.commands.registerCommand("opencodeWorkbench.refresh", run(async () => {
       if (!controller) throw new Error("Open a workspace folder before refreshing OpenCode")

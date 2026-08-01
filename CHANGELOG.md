@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-01
+
+### Added
+
+- Added a Secondary Side Bar chat container, editor-title chat action, compact
+  session switcher, and `Ctrl+Alt+N` new-session keybinding.
+- Added Visual Studio Marketplace metadata and verified release publication.
+
+### Changed
+
+- Redesigned chat around VS Code's built-in Copilot interaction patterns while
+  preserving multi-session state, agent and model selection, tool output,
+  permissions, terminal fallbacks, and background sessions.
+- Kept the native Sessions work queue as a collapsed secondary view instead of
+  consuming most of the chat surface.
+- Raised the minimum VS Code version to 1.106 for stable extension-owned
+  Secondary Side Bar placement.
+- Changed the extension identity from the development-only
+  `opencode-workbench.opencode-workbench-vscode` ID to the Marketplace ID
+  `nulifyer.opencode-workbench`.
+- Expanded Linux, macOS, and Windows installation and usage documentation.
+
 ## 0.1.2 - 2026-08-01
 
 ### Fixed
