@@ -139,6 +139,10 @@
 - Rendered fenced code blocks when their opening or closing fences are indented.
 - Labeled active patch tools as preparing rather than applied until execution
   completes.
+- Matched VS Code's suggested-context behavior with a subdued current-editor
+  chip, distinct folder labels, and no duplicate suggestion after attach.
+- Allowed typing and submitting the first prompt to create a new session
+  automatically when no session is selected.
 
 ### Removed
 

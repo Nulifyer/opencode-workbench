@@ -34,7 +34,7 @@ export type WebviewToHostMessage =
   | { type: "setDraft"; sessionID: string; draft: string }
   | { type: "send"; sessionID: string; text: string; agent?: string; model?: string; variant?: string; attachments?: InlineAttachment[]; contextIDs?: string[] }
   | { type: "abort"; sessionID: string }
-  | { type: "createSession"; draft?: string }
+  | { type: "createSession"; draft?: string; submit?: boolean }
   | { type: "selectSession"; sessionID: string }
   | { type: "setPreference"; sessionID: string; agent?: string; model?: string; variant?: string }
   | { type: "removeQueued"; sessionID: string; promptID: string }
@@ -185,7 +185,10 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         ? { type: "abort", sessionID: value.sessionID }
         : undefined
     case "createSession":
-      return boundedOptionalString(value.draft, PROMPT_TEXT_CHARACTER_LIMIT) ? { type: "createSession", draft: value.draft } : undefined
+      return exactKeys(value, ["type", "draft", "submit"]) && boundedOptionalString(value.draft, PROMPT_TEXT_CHARACTER_LIMIT) &&
+          (value.submit === undefined || typeof value.submit === "boolean") && (!value.submit || Boolean(value.draft?.trim()))
+        ? { type: "createSession", draft: value.draft, submit: value.submit }
+        : undefined
     case "ready":
       return { type: "ready" }
     case "openInEditor":
@@ -619,8 +622,9 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
   if (value.type === "editorContextChanged") {
     if (!exactKeys(value, ["type", "context"])) return undefined
     if (value.context === undefined) return { type: "editorContextChanged" }
-    return record(value.context) && exactKeys(value.context, ["name", "detail", "dirty"]) && boundedString(value.context.name, 255) &&
-        boundedOptionalString(value.context.detail, 255) && (value.context.dirty === undefined || typeof value.context.dirty === "boolean")
+    return record(value.context) && exactKeys(value.context, ["name", "detail", "dirty", "attached"]) && boundedString(value.context.name, 255) &&
+        boundedOptionalString(value.context.detail, 255) && (value.context.dirty === undefined || typeof value.context.dirty === "boolean") &&
+        (value.context.attached === undefined || typeof value.context.attached === "boolean")
       ? { type: "editorContextChanged", context: value.context as unknown as EditorContextSummary }
       : undefined
   }

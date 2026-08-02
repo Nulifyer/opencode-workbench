@@ -319,8 +319,11 @@ a { color: var(--vscode-textLink-foreground); }
 .attachment-chip button { width: 18px; height: 18px; flex: none; padding: 0; border: 0; border-radius: 50%; color: var(--vscode-descriptionForeground); background: transparent; line-height: 16px; }
 .attachment-chip button:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
 .implicit-context, .add-context-chip { cursor: pointer; }
-.implicit-context { color: var(--vscode-descriptionForeground); background: transparent; }
-.implicit-context:hover, .add-context-chip:hover { color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); background: var(--vscode-toolbar-hoverBackground); }
+.implicit-context { border-color: transparent; color: var(--vscode-foreground); background: transparent; }
+.implicit-context > b { opacity: .65; }
+.implicit-context > span { font-style: italic; opacity: .72; }
+.implicit-context:hover, .add-context-chip:hover { color: var(--vscode-foreground); border-color: color-mix(in srgb, var(--vscode-widget-border) 62%, transparent); background: var(--vscode-toolbar-hoverBackground); }
+.implicit-context:hover > b, .implicit-context:hover > span { opacity: 1; }
 .attachment-chip > b { flex: none; font-weight: 500; }
 .composer.drag-active::after { position: absolute; z-index: 4; inset: 3px; display: grid; place-items: center; border: 1px dashed var(--vscode-focusBorder); border-radius: 7px; color: var(--vscode-foreground); background: color-mix(in srgb, var(--vscode-input-background) 92%, var(--vscode-focusBorder)); content: "Drop files to attach · hold Shift when dragging from VS Code"; pointer-events: none; }
 .transcript-attachments { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }

@@ -134,6 +134,7 @@ export interface EditorContextSummary {
   name: string
   detail?: string
   dirty?: boolean
+  attached?: boolean
 }
 
 export interface TodoItem {

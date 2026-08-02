@@ -979,6 +979,15 @@ export class SessionController {
     return session.id
   }
 
+  async createSessionWithPrompt(text: string): Promise<string> {
+    if (!text.trim() || text.length > PROMPT_TEXT_CHARACTER_LIMIT) throw new Error("Prompt must contain text")
+    const sessionID = await this.createSession(undefined, text)
+    if (this.state.selectedID !== sessionID) throw new Error("Session selection changed while creating the conversation")
+    const composer = this.chatSnapshot().session
+    await this.send(text, composer?.agent, composer?.model, composer?.variant)
+    return sessionID
+  }
+
   async deleteSession(sessionID: string): Promise<void> {
     if (await this.client.deleteSession(sessionID) !== true) throw new Error("OpenCode did not delete the session")
     this.sessionRevision += 1

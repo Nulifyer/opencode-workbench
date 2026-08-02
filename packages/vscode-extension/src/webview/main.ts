@@ -99,6 +99,7 @@ let suggestedFiles: string[] = []
 let editorContext: EditorContextSummary | undefined
 let pendingSessionID: string | undefined
 let stoppingSessionID: string | undefined
+let creatingSession = false
 const localDrafts = new Map<string, string>()
 const draftRevisions = new Map<string, number>()
 const submittedDrafts = new Map<string, string>()
@@ -121,6 +122,7 @@ const PRIMARY_ICONS = {
   stopping: `<svg class="stopping-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4h8v8H4V4Z"/></svg>`,
 }
 const FILE_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 1.8h6l4 4V14H3V1.8Zm1.2 1.4v9.6h7.6V6.4H8.4V3.2H4.2Zm5.4.5v1.5h1.5L9.6 3.7Z"/></svg>`
+const FOLDER_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 3h5l1.4 1.6h6V13h-12.4V3Zm1.3 1.3v7.4h9.8V5.9H7.6L6.2 4.3H3.1Z"/></svg>`
 const COPY_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2h8v9h-2V9.8h.8V3.2H6.2V4H5V2Zm-2 3h8v9H3V5Zm1.2 1.2v6.6h5.6V6.2H4.2Z"/></svg>`
 const EDIT_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m11.7 1.8 2.5 2.5-8.1 8.1-3.3.8.8-3.3 8.1-8.1Zm0 1.7-7 7-.3 1.1 1.1-.3 7-7-.8-.8Z"/></svg>`
 const OPEN_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5h-1.3V4.2L7.4 9.5l-.9-.9 5.3-5.3H9V2ZM3.2 3.2h4.1v1.3H4.5v7h7V8.7h1.3v4.1H3.2V3.2Z"/></svg>`
@@ -1144,8 +1146,8 @@ function renderAttachments(): void {
   const context = sessionContextAttachments(sessionID)
   attachmentDock.hidden = Boolean(pendingSessionID) || !sessionID || (!editorContext && !context.length && !inline.length)
   attachmentDock.innerHTML = sessionID ? [
-    editorContext ? `<button type="button" class="attachment-chip implicit-context" data-add-editor-context title="Add ${escapeHtml(editorContext.name)}${editorContext.detail ? ` · ${escapeHtml(editorContext.detail)}` : ""}"><b>+</b><span>${escapeHtml(editorContext.name)}</span></button>` : "",
-    ...context.map((attachment) => `<span class="attachment-chip context-chip" title="${escapeHtml(attachment.detail || attachment.name)}">${FILE_ICON}<span>${escapeHtml(attachment.name)}</span><button type="button" data-remove-context="${escapeHtml(attachment.id)}" title="Remove attachment" aria-label="Remove ${escapeHtml(attachment.name)}">×</button></span>`),
+    editorContext && !editorContext.attached ? `<button type="button" class="attachment-chip implicit-context" data-add-editor-context title="Add ${escapeHtml(editorContext.name)}${editorContext.detail ? ` · ${escapeHtml(editorContext.detail)}` : ""}"><b>+</b><span>${escapeHtml(editorContext.name)}</span></button>` : "",
+    ...context.map((attachment) => `<span class="attachment-chip context-chip context-${escapeHtml(attachment.kind)}" title="${escapeHtml(attachment.detail || attachment.name)}">${attachment.kind === "folder" ? FOLDER_ICON : FILE_ICON}<span>${escapeHtml(attachment.name)}</span><button type="button" data-remove-context="${escapeHtml(attachment.id)}" title="Remove from context" aria-label="Remove ${escapeHtml(attachment.name)} from context">×</button></span>`),
     ...inline.map((attachment, index) => `<span class="attachment-chip" title="${escapeHtml(`${attachment.name} · ${attachment.mime}`)}"><span>${escapeHtml(attachment.name)}</span><button type="button" data-remove-attachment="${index}" title="Remove attachment" aria-label="Remove ${escapeHtml(attachment.name)}">×</button></span>`),
   ].join("") : ""
 }
@@ -1182,7 +1184,7 @@ async function addInlineFiles(files: File[]): Promise<void> {
 
 function insertComposerText(text: string): void {
   const sessionID = snapshot.session?.id
-  if (!sessionID || !text) return
+  if (!text) return
   const start = draft.selectionStart
   const end = draft.selectionEnd
   const before = draft.value.slice(0, start)
@@ -1192,13 +1194,22 @@ function insertComposerText(text: string): void {
   draft.value = `${before}${prefix}${text}${suffix}${after}`
   const cursor = before.length + prefix.length + text.length + suffix.length
   draft.setSelectionRange(cursor, cursor)
-  postDraftNow(sessionID, draft.value)
+  if (sessionID) postDraftNow(sessionID, draft.value)
   resizeDraft()
   updatePrimaryAction()
   draft.focus()
 }
 
 function updatePrimaryAction(): void {
+  if (creatingSession) {
+    send.dataset.action = "idle"
+    send.disabled = true
+    send.classList.remove("stop-action", "queue-action")
+    send.innerHTML = PRIMARY_ICONS.send
+    send.title = "Starting new session…"
+    send.setAttribute("aria-label", "Starting new session")
+    return
+  }
   if (pendingSessionID) {
     send.dataset.action = "idle"
     send.disabled = true
@@ -1218,10 +1229,19 @@ function updatePrimaryAction(): void {
     send.setAttribute("aria-label", "Loading session")
     return
   }
-  const active = session?.status.type === "busy" || session?.status.type === "retry"
+  const hasDraft = Boolean(draft.value.trim() || sessionAttachments(session?.id).length || sessionContextAttachments(session?.id).length)
+  if (!session) {
+    send.dataset.action = hasDraft ? "send" : "idle"
+    send.disabled = !snapshot.connected || !hasDraft
+    send.classList.remove("stop-action", "queue-action")
+    send.innerHTML = PRIMARY_ICONS.send
+    send.title = hasDraft ? "Start new session" : "Send message"
+    send.setAttribute("aria-label", send.title)
+    return
+  }
+  const active = session.status.type === "busy" || session.status.type === "retry"
   if (stoppingSessionID === session?.id && !active) stoppingSessionID = undefined
   const stopping = stoppingSessionID === session?.id
-  const hasDraft = Boolean(draft.value.trim() || sessionAttachments(session?.id).length || sessionContextAttachments(session?.id).length)
   const action = stopping ? "stopping" : active ? hasDraft ? "queue" : "stop" : hasDraft ? "send" : "idle"
   send.dataset.action = action
   send.disabled = !session || !snapshot.connected || action === "idle" || action === "stopping"
@@ -1263,10 +1283,9 @@ function renderCommandSuggestions(): void {
 function chooseCommand(index = selectedCommandIndex): void {
   const command = matchingCommands()[index]
   const sessionID = snapshot.session?.id
-  if (!command || !sessionID) return
+  if (!command) return
   draft.value = `/${command.name} `
-  localDrafts.set(sessionID, draft.value)
-  postDraftNow(sessionID, draft.value)
+  if (sessionID) postDraftNow(sessionID, draft.value)
   renderCommandSuggestions()
   resizeDraft()
   draft.focus()
@@ -1371,8 +1390,8 @@ function activeThrobberHtml(): string {
 
 function syncDraft(session?: NonNullable<ChatSnapshot["session"]>): void {
   if (!session) {
+    if (draftSessionID !== undefined) draft.value = ""
     draftSessionID = undefined
-    draft.value = ""
     return
   }
   if (draftSessionID !== session.id) {
@@ -1470,7 +1489,7 @@ function render(): void {
   empty.hidden = loading || Boolean(session && !emptyConversation)
   messages.hidden = loading || !session || emptyConversation
   createEmpty.hidden = Boolean(session)
-  draft.disabled = !session || loading
+  draft.disabled = loading || !snapshot.connected || creatingSession
   composer.setAttribute("aria-busy", String(Boolean(active)))
   messages.setAttribute("aria-busy", String(Boolean(active)))
   updatePrimaryAction()
@@ -1697,6 +1716,13 @@ send.addEventListener("click", () => {
     return
   }
   const text = draft.value
+  if (!sessionID) {
+    if (!text.trim() || !snapshot.connected || creatingSession) return
+    creatingSession = true
+    updatePrimaryAction()
+    post({ type: "createSession", draft: text, submit: true })
+    return
+  }
   const files = sessionAttachments(sessionID)
   const contexts = sessionContextAttachments(sessionID)
   if (!sessionID || (!text.trim() && !files.length && !contexts.length) || !snapshot.connected) return
@@ -2221,6 +2247,10 @@ window.addEventListener("message", (event) => {
   const message = parseHostMessage(event.data)
   if (!message) return
   if (message.type === "error") {
+    if (creatingSession) {
+      creatingSession = false
+      updatePrimaryAction()
+    }
     if (stoppingSessionID) {
       stoppingSessionID = undefined
       updatePrimaryAction()
@@ -2330,6 +2360,7 @@ window.addEventListener("message", (event) => {
   if (pendingSessionID === message.snapshot.session?.id) pendingSessionID = undefined
   const previousSession = snapshot.session
   const nextSession = message.snapshot.session
+  if (creatingSession && nextSession) creatingSession = false
   if (previousSession && nextSession && previousSession.id === nextSession.id && (previousSession.status.type === "busy" || previousSession.status.type === "retry") && nextSession.status.type === "idle") {
     announce("OpenCode response complete")
   }

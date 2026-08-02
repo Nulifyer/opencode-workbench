@@ -36,6 +36,7 @@ interface StoredContextAttachment {
   key: string
   file: PromptFilePart
   summary: ContextAttachmentSummary
+  sourceUri?: string
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -358,10 +359,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private editorContext(): EditorContextSummary | undefined {
+    const sessionID = this.controller?.snapshot.selectedID
+    const isAttached = (uri: vscode.Uri): boolean => Boolean(sessionID && [...this.contextAttachments.values()].some((attachment) =>
+      attachment.sessionID === sessionID && attachment.sourceUri === uri.toString()))
     const notebook = vscode.window.activeTextEditor ? undefined : vscode.window.activeNotebookEditor
     if (notebook) {
       const selected = notebook.selections.reduce((total, range) => total + Math.max(0, range.end - range.start), 0)
-      return { name: path.basename(notebook.notebook.uri.fsPath) || "Untitled notebook", detail: selected ? `${selected} selected cell${selected === 1 ? "" : "s"}` : `${notebook.notebook.cellCount} cells`, dirty: notebook.notebook.isDirty }
+      return { name: path.basename(notebook.notebook.uri.fsPath) || "Untitled notebook", detail: selected ? `${selected} selected cell${selected === 1 ? "" : "s"}` : `${notebook.notebook.cellCount} cells`, dirty: notebook.notebook.isDirty, attached: isAttached(notebook.notebook.uri) }
     }
     const editor = this.lastEditor && !this.lastEditor.document.isClosed ? this.lastEditor : undefined
     const document = editor?.document ?? this.currentTextDocument()
@@ -370,6 +374,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       name: path.basename(document.fileName) || "Untitled",
       detail: editor && editor.document === document ? this.selectionLines(editor.selection) ?? (document.isDirty ? "Unsaved changes" : "Current editor") : document.isDirty ? "Unsaved changes" : "Open editor",
       dirty: document.isDirty,
+      attached: isAttached(document.uri),
     }
   }
 
@@ -409,11 +414,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private async publishContextAttachments(sessionID: string): Promise<void> {
-    const message = { type: "contextAttachmentsChanged", sessionID, attachments: this.contextSummaries(sessionID) } satisfies HostToWebviewMessage
-    await Promise.all([
-      this.view?.visible ? this.view.webview.postMessage(message) : undefined,
-      this.panel?.visible ? this.panel.webview.postMessage(message) : undefined,
-    ].filter(Boolean))
+    if (sessionID !== this.controller?.snapshot.selectedID) return
+    this.editorContextSignature = ""
+    await this.publishEditorContext()
   }
 
   private async handleMessage(raw: unknown, source: vscode.Webview): Promise<void> {
@@ -521,7 +524,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           break
         case "createSession":
           if (!this.controller) throw new Error("Open a folder to create a session")
-          await this.controller.createSession(undefined, message.draft)
+          if (message.submit) await this.controller.createSessionWithPrompt(message.draft!)
+          else await this.controller.createSession(undefined, message.draft)
           break
         case "selectSession":
           if (!this.controller || !Object.hasOwn(this.controller.snapshot.sessions, message.sessionID)) throw new Error("Unknown OpenCode session")
@@ -762,7 +766,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       mime: "text/plain",
       url: `data:text/plain;base64,${bytes.toString("base64")}`,
       filename: `${name}.txt`.slice(0, 255),
-    }, { name, detail: `${chunks.length} cell${chunks.length === 1 ? "" : "s"}`, kind: "notebook" })
+    }, { name, detail: `${chunks.length} cell${chunks.length === 1 ? "" : "s"}`, kind: "notebook" }, notebook.uri.toString())
   }
 
   private async storeEditorAttachment(sessionID: string, editor: vscode.TextEditor, useSelection = true): Promise<void> {
@@ -790,11 +794,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         mime: "text/plain",
         url: `data:text/plain;base64,${bytes.toString("base64")}`,
         filename: name,
-      }, { name, detail: selected ? this.selectionLines(selection!) ?? "Selection" : "Unsaved buffer", kind: selected ? "selection" : "buffer" })
+      }, { name, detail: selected ? this.selectionLines(selection!) ?? "Selection" : "Unsaved buffer", kind: selected ? "selection" : "buffer" }, document.uri.toString())
       return
     }
     const attachment = await this.workspaceAttachment(document.uri, selection)
-    this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary)
+    this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary, document.uri.toString())
   }
 
   private async resolveDroppedUris(sessionID: string, values: string[]): Promise<void> {
@@ -810,23 +814,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (uris.length) {
       for (const uri of uris) {
         const attachment = await this.workspaceAttachment(uri)
-        this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary)
+        this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary, uri.toString())
       }
     }
     await this.publishContextAttachments(sessionID)
   }
 
-  private storeContextAttachment(sessionID: string, key: string, file: PromptFilePart, summary: Omit<ContextAttachmentSummary, "id">): void {
+  private storeContextAttachment(sessionID: string, key: string, file: PromptFilePart, summary: Omit<ContextAttachmentSummary, "id">, sourceUri?: string): void {
     if ([...this.contextAttachments.values()].some((attachment) => attachment.sessionID === sessionID && attachment.key === key)) return
     if (this.contextSummaries(sessionID).length >= 20) throw new Error("This prompt already has 20 context attachments")
     const id = randomUUID()
-    this.contextAttachments.set(id, { sessionID, key, file, summary: { id, ...summary } })
+    this.contextAttachments.set(id, { sessionID, key, file, summary: { id, ...summary }, sourceUri })
   }
 
   private async addWorkspaceAttachments(sessionID: string, uris: vscode.Uri[]): Promise<void> {
     for (const uri of uris) {
       const attachment = await this.workspaceAttachment(uri)
-      this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary)
+      this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary, uri.toString())
     }
     await this.publishContextAttachments(sessionID)
   }

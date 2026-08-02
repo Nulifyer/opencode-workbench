@@ -223,6 +223,21 @@ Deno.test("starter draft stays with its new session", async () => {
   controller.dispose()
 })
 
+Deno.test("first prompt creates and submits a session", async () => {
+  const sent: string[] = []
+  const fake = {
+    createSession: async () => session("new", 2),
+    messages: async () => [],
+    sendPrompt: async (_sessionID: string, _id: string, text: string) => sent.push(text),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+
+  const sessionID = await controller.createSessionWithPrompt("Review this workspace")
+
+  if (sessionID !== "new" || sent[0] !== "Review this workspace") throw new Error("First prompt was not submitted to its new session")
+  controller.dispose()
+})
+
 Deno.test("slower session creation cannot replace newer selection intent", async () => {
   const first = deferred<SessionInfo>()
   const second = deferred<SessionInfo>()
