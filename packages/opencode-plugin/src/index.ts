@@ -175,6 +175,19 @@ const PluginImplementation: Plugin = async ({ worktree }) => {
       }),
       vscode_list_open_editors: bridgeTool(registryPath, "vscode_list_open_editors", "List open VS Code text and diff editors contained in this worktree.", {}),
       vscode_get_selection: bridgeTool(registryPath, "vscode_get_selection", "Read the active VS Code selection in this worktree.", {}),
+      vscode_get_active_buffer: bridgeTool(registryPath, "vscode_get_active_buffer", "Read bounded live text from the last active VS Code editor, including unsaved changes. Defaults to visible ranges.", {
+        scope: s.enum(["selection", "visible", "document"]).default("visible"),
+        maxCharacters: s.number().int().min(1).max(48_000).default(32_000),
+      }),
+      vscode_get_definitions: bridgeTool(registryPath, "vscode_get_definitions", "Ask VS Code language providers for definitions at a contained document position.", {
+        uri: s.string().min(1).max(4_096), line: s.number().int().min(1).max(10_000_000), column: s.number().int().min(1).max(10_000_000),
+      }),
+      vscode_get_references: bridgeTool(registryPath, "vscode_get_references", "Ask VS Code language providers for references at a contained document position.", {
+        uri: s.string().min(1).max(4_096), line: s.number().int().min(1).max(10_000_000), column: s.number().int().min(1).max(10_000_000), includeDeclaration: s.boolean().default(true),
+      }),
+      vscode_get_symbols: bridgeTool(registryPath, "vscode_get_symbols", "Ask VS Code language providers for bounded symbols in a contained document.", {
+        uri: s.string().min(1).max(4_096),
+      }),
       vscode_get_diagnostics: bridgeTool(registryPath, "vscode_get_diagnostics", "Read VS Code diagnostics for the worktree or one contained file URI.", {
         uri: s.string().min(1).max(4_096).optional(),
       }),
@@ -189,9 +202,25 @@ const PluginImplementation: Plugin = async ({ worktree }) => {
         executable: s.string().min(1).max(4_096),
         args: s.array(s.string().max(32_768)).max(256).default([]),
       }),
+      vscode_list_tasks: bridgeTool(registryPath, "vscode_list_tasks", "List bounded metadata for VS Code tasks available in this workspace.", {}),
+      vscode_run_task: bridgeTool(registryPath, "vscode_run_task", "Run one unambiguously matched VS Code task by name and source.", {
+        name: s.string().min(1).max(512), source: s.string().min(1).max(512),
+      }),
+      vscode_get_code_actions: bridgeTool(registryPath, "vscode_get_code_actions", "Preview bounded VS Code code actions and text edits for a contained range. Commands are never executed.", {
+        uri: s.string().min(1).max(4_096), startLine: s.number().int().min(1).max(10_000_000), startColumn: s.number().int().min(1).max(10_000_000), endLine: s.number().int().min(1).max(10_000_000), endColumn: s.number().int().min(1).max(10_000_000),
+      }),
+      vscode_preview_rename: bridgeTool(registryPath, "vscode_preview_rename", "Preview bounded text edits from VS Code's rename provider without applying them.", {
+        uri: s.string().min(1).max(4_096), line: s.number().int().min(1).max(10_000_000), column: s.number().int().min(1).max(10_000_000), newName: s.string().min(1).max(1_024),
+      }),
       vscode_open_url: bridgeTool(registryPath, "vscode_open_url", "Ask VS Code to open an HTTP or HTTPS URL externally.", {
         url: s.string().min(1).max(8_192),
       }),
+      vscode_request_opencode_reload: bridgeTool(
+        registryPath,
+        "vscode_request_opencode_reload",
+        "Request a deferred managed OpenCode reload after the current session turn becomes idle. The VS Code host returns before reloading and restores the current Workbench session afterward. Use only after an approved skill or configuration change requires reload.",
+        { reason: s.enum(["skill-activation", "configuration-change"]) },
+      ),
     },
     event: async ({ event }) => {
       const evidence = evidenceFromEvent(event, { kind: "project", project }, Date.now(), crypto.randomUUID())

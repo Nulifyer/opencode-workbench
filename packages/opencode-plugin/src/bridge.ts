@@ -54,7 +54,7 @@ async function canonical(path: string): Promise<string> {
   return realpath(path).catch(() => resolve(path))
 }
 
-async function selectBridge(registryPath: string, worktree: string, operation: BridgeOperation): Promise<BridgeEntry> {
+export async function selectBridge(registryPath: string, worktree: string, operation: BridgeOperation, affinity?: string): Promise<BridgeEntry> {
   let contents: string
   try {
     contents = await readFile(registryPath, "utf8")
@@ -70,10 +70,11 @@ async function selectBridge(registryPath: string, worktree: string, operation: B
   const candidates: BridgeEntry[] = []
   for (const entry of registry.entries) {
     if (!bridgeEntryIsFresh(entry, now, processIsAlive)) continue
-    if (!entry.operations.includes(operation) || await canonical(entry.worktree) !== target) continue
+    if (!entry.operations.includes(operation) || await canonical(entry.worktree) !== target || (affinity && entry.id !== affinity)) continue
     assertLoopbackEndpoint(entry.endpoint)
     candidates.push(entry)
   }
+  if (!affinity && candidates.length > 1) throw new Error("Multiple VS Code bridges are registered for this worktree; use the managed Workbench server for exact window affinity")
   const selected = candidates.sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))[0]
   if (!selected) throw new Error(`No fresh VS Code bridge for this worktree supports ${operation}`)
   return selected
@@ -90,17 +91,20 @@ export async function proxyBridge(
   await context.ask({
     permission: policy.permission,
     patterns: [operation, context.worktree, parameterPattern],
-    always: [operation, context.worktree],
+    always: operation === "vscode_request_opencode_reload" ? [] : [operation, context.worktree],
     metadata: { operation, parameters: params, sideEffect: policy.sideEffect, worktree: context.worktree },
   })
+  const affinity = process.env.OPENCODE_WORKBENCH_BRIDGE_ID
+  if (affinity !== undefined && (!affinity || affinity.length > 128)) throw new Error("Invalid VS Code bridge affinity")
+  const bridge = await selectBridge(registryPath, context.worktree, operation, affinity)
   const encoded = JSON.stringify({
     version: 1,
+    bridgeID: bridge.id,
     operation,
     params,
     context: { worktree: context.worktree, directory: context.directory, sessionID: context.sessionID },
   })
   if (Buffer.byteLength(encoded) > LIMITS.bridgeRequest) throw new Error("VS Code bridge request exceeds the size limit")
-  const bridge = await selectBridge(registryPath, context.worktree, operation)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(new Error("VS Code bridge timed out")), 10_000)
   const abort = () => controller.abort(context.abort.reason)

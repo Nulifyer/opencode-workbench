@@ -1,6 +1,6 @@
 {
   "name": "opencode-workbench",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Shared OpenCode runtime integration and multi-session VS Code client.",
   "license": "MIT",
@@ -9,13 +9,14 @@
     "url": "https://github.com/nulifyer/opencode-workbench.git"
   },
   "compatibility": {
-    "minimumOpenCode": "1.18.8"
+    "minimumOpenCode": "1.18.11"
   },
   "workspaces": [
     "packages/*"
   ],
   "dependencies": {
-    "@opencode-ai/plugin": "1.18.9"
+    "@opencode-ai/plugin": "1.18.9",
+    "jsonc-parser": "3.3.1"
   },
   "devDependencies": {
     "@types/node": "26.1.2",

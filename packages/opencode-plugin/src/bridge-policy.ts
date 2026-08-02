@@ -1,11 +1,20 @@
 export const BRIDGE_OPERATIONS = {
   vscode_list_open_editors: { permission: "vscode.read", sideEffect: false },
   vscode_get_selection: { permission: "vscode.read", sideEffect: false },
+  vscode_get_active_buffer: { permission: "vscode.read_buffer", sideEffect: false },
+  vscode_get_definitions: { permission: "vscode.language", sideEffect: false },
+  vscode_get_references: { permission: "vscode.language", sideEffect: false },
+  vscode_get_symbols: { permission: "vscode.language", sideEffect: false },
   vscode_get_diagnostics: { permission: "vscode.read", sideEffect: false },
   vscode_open_file: { permission: "vscode.open_file", sideEffect: true },
   vscode_get_debug_context: { permission: "vscode.read", sideEffect: false },
   vscode_execute_terminal: { permission: "vscode.execute_terminal", sideEffect: true },
+  vscode_list_tasks: { permission: "vscode.tasks", sideEffect: false },
+  vscode_run_task: { permission: "vscode.execute_task", sideEffect: true },
+  vscode_get_code_actions: { permission: "vscode.language", sideEffect: false },
+  vscode_preview_rename: { permission: "vscode.language", sideEffect: false },
   vscode_open_url: { permission: "vscode.open_url", sideEffect: true },
+  vscode_request_opencode_reload: { permission: "vscode.reload_opencode", sideEffect: true },
 } as const
 
 export type BridgeOperation = keyof typeof BRIDGE_OPERATIONS

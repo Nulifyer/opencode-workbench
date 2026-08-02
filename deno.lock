@@ -10,6 +10,7 @@
     "npm:@vscode/vsce@3.9.2": "3.9.2",
     "npm:esbuild@0.28.1": "0.28.1",
     "npm:esbuild@~0.28.1": "0.28.1",
+    "npm:jsonc-parser@3.3.1": "3.3.1",
     "npm:typescript@^6.0.3": "6.0.3"
   },
   "jsr": {
@@ -1978,6 +1979,9 @@
     }
   },
   "workspace": {
+    "dependencies": [
+      "npm:jsonc-parser@3.3.1"
+    ],
     "packageJson": {
       "dependencies": [
         "npm:@opencode-ai/plugin@1.18.9",
@@ -1985,6 +1989,7 @@
         "npm:@types/vscode@1.106.0",
         "npm:@vscode/vsce@3.9.2",
         "npm:esbuild@0.28.1",
+        "npm:jsonc-parser@3.3.1",
         "npm:typescript@^6.0.3"
       ]
     },

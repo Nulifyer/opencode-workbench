@@ -2,15 +2,16 @@ import * as vscode from "vscode"
 import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import type { PermissionRequest } from "@opencode-workbench/shared"
 import { VsCodeBridge } from "./bridge.js"
-import { OpenCodeClient, type OpenCodeConnection, validateServerUrl } from "./opencode-client.js"
-import { SessionController } from "./session-controller.js"
+import { DeferredOpenCodeReload, type OpenCodeReloadRequest } from "./deferred-reload.js"
+import { ManagedOpenCodeServer } from "./managed-server.js"
+import { OpenCodeClient, type OpenCodeConnection } from "./opencode-client.js"
+import { SessionController, type ComposerPreferences } from "./session-controller.js"
 import { ChatViewProvider } from "./views/chat-view.js"
-import { SessionItem, SessionTreeProvider } from "./views/session-tree.js"
 
 const PASSWORD_SECRET = "opencodeWorkbench.serverPassword"
 let activeBridge: VsCodeBridge | undefined
+let activeManagedServer: ManagedOpenCodeServer | undefined
 
 async function serverEnvironment(file: string): Promise<Record<string, string>> {
   if ((process.platform as string) === "win32") return {}
@@ -62,7 +63,42 @@ async function executeInTerminal(terminal: vscode.Terminal, executable: string, 
   return integration.executeCommand(executable, args)
 }
 
-async function connection(context: vscode.ExtensionContext, directory: string): Promise<OpenCodeConnection> {
+function serverMode(): "managed" | "external" {
+  return vscode.workspace.getConfiguration("opencodeWorkbench").get<"managed" | "external">("serverMode", "managed")
+}
+
+async function waitForControllerConnection(controller: SessionController, timeoutMilliseconds = 30_000): Promise<void> {
+  if (controller.snapshot.connected) return
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      subscription.dispose()
+      if (error) reject(error)
+      else resolve()
+    }
+    const subscription = controller.subscribe(() => {
+      if (controller.snapshot.connected) finish()
+    })
+    const timeout = setTimeout(() => finish(new Error("OpenCode did not reconnect after reload")), timeoutMilliseconds)
+    if (controller.snapshot.connected) finish()
+  })
+}
+
+async function reloadController(controller: SessionController, request: OpenCodeReloadRequest): Promise<void> {
+  const selectedID = controller.snapshot.selectedID
+  await controller.refresh()
+  await waitForControllerConnection(controller)
+  await controller.reconcile()
+  const restoreID = selectedID && Object.hasOwn(controller.snapshot.sessions, selectedID) ? selectedID : request.sessionID
+  if (restoreID && Object.hasOwn(controller.snapshot.sessions, restoreID) && controller.snapshot.selectedID !== restoreID) {
+    await controller.select(restoreID)
+  }
+}
+
+async function externalConnection(context: vscode.ExtensionContext, directory: string): Promise<OpenCodeConnection> {
   const configuration = vscode.workspace.getConfiguration("opencodeWorkbench")
   const environment = await serverEnvironment(configuration.get<string>("serverEnvironmentFile", "~/.config/opencode-workbench/server.env"))
   const configuredPassword = await context.secrets.get(PASSWORD_SECRET)
@@ -74,60 +110,86 @@ async function connection(context: vscode.ExtensionContext, directory: string): 
   }
 }
 
-async function confirmPermission(request: PermissionRequest): Promise<"once" | "always" | "reject"> {
-  if (!vscode.workspace.getConfiguration("opencodeWorkbench").get<boolean>("confirmPermissions", true)) return "reject"
-  const pattern = Array.isArray(request.pattern) ? request.pattern.join("\n") : request.pattern
-  const always = request.always?.join("\n")
-  const metadata = request.metadata && Object.keys(request.metadata).length ? JSON.stringify(request.metadata, null, 2) : undefined
-  const detail = [`Session: ${request.sessionID}`, request.type ? `Permission: ${request.type}` : undefined, pattern ? `Current scope: ${pattern}` : undefined, always ? `Persistent scope: ${always}` : undefined, metadata].filter(Boolean).join("\n\n")
-  if (detail.length > 8_000) {
-    void vscode.window.showErrorMessage("OpenCode permission request was rejected because its full details exceed the 8,000-character display limit")
-    return "reject"
-  }
-  const choices = request.always?.length ? ["Allow once", "Always allow", "Reject"] as const : ["Allow once", "Reject"] as const
-  const choice = await vscode.window.showWarningMessage(
-    request.title,
-    { modal: true, detail: detail || "OpenCode needs permission to continue." },
-    ...choices,
-  )
-  if (choice === "Allow once") return "once"
-  if (choice === "Always allow") return "always"
-  return "reject"
-}
-
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  const output = vscode.window.createOutputChannel("OpenCode Workbench", { log: true })
+  context.subscriptions.push(output)
+  const report = (message: string): void => output.appendLine(message)
+  const folders = vscode.workspace.workspaceFolders ?? []
+  let workspaceFolder = folders[0]
+  if (folders.length > 1) {
+    const remembered = context.workspaceState.get<string>("opencodeWorkbench.workspaceRoot")
+    workspaceFolder = folders.find((folder) => folder.uri.toString() === remembered) ?? await vscode.window.showWorkspaceFolderPick({ placeHolder: "Choose the workspace root for OpenCode Workbench" })
+    if (workspaceFolder) await context.workspaceState.update("opencodeWorkbench.workspaceRoot", workspaceFolder.uri.toString())
+  }
+  const workspacePath = workspaceFolder?.uri.fsPath
   let client: OpenCodeClient | undefined
   let controller: SessionController | undefined
+  let chatProvider: ChatViewProvider | undefined
+  let deferredReload: DeferredOpenCodeReload | undefined
 
   if (workspacePath) {
+    const mode = serverMode()
+    activeBridge = new VsCodeBridge(workspacePath, {
+      requestOpenCodeReload: mode === "managed" ? (request) => {
+        if (!deferredReload) throw new Error("Managed OpenCode reload is not ready")
+        return deferredReload.request(request)
+      } : undefined,
+    })
     try {
-      client = new OpenCodeClient(await connection(context, workspacePath))
+      let initialConnection: OpenCodeConnection
+      if (mode === "managed") {
+        const configuration = vscode.workspace.getConfiguration("opencodeWorkbench")
+        activeManagedServer = new ManagedOpenCodeServer({
+          directory: workspacePath,
+          extensionPath: context.extensionPath,
+          executablePath: configuration.get<string>("executablePath")?.trim() || undefined,
+          bridgeID: activeBridge.bridgeID,
+          output,
+          onRestart: (next) => {
+            client?.update(next)
+            controller?.reconnect()
+          },
+          onFailure: (message) => report(`Managed OpenCode server failed: ${message}`),
+        })
+        initialConnection = await activeManagedServer.start()
+        context.subscriptions.push(activeManagedServer)
+      } else initialConnection = await externalConnection(context, workspacePath)
+      client = new OpenCodeClient(initialConnection)
+      const globalPreferences = context.globalState.get<ComposerPreferences>("opencodeWorkbench.composerPreferences")
+      const preferences = globalPreferences ?? context.workspaceState.get<ComposerPreferences>("opencodeWorkbench.composerPreferences")
+      if (!globalPreferences && preferences) await context.globalState.update("opencodeWorkbench.composerPreferences", preferences)
       controller = new SessionController(client, {
-        permission: confirmPermission,
-        error: (message) => void vscode.window.showErrorMessage(message),
-      })
+        error: report,
+        preferencesChanged: (preferences) => void context.globalState.update("opencodeWorkbench.composerPreferences", preferences),
+      }, preferences)
       controller.start()
       context.subscriptions.push(controller)
+      if (mode === "managed") {
+        deferredReload = new DeferredOpenCodeReload(controller, {
+          reload: async (request) => await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Window, title: "Reloading OpenCode", cancellable: false },
+            () => reloadController(controller!, request),
+          ),
+          completed: () => report("OpenCode reloaded and restored the current Workbench session"),
+          failed: (_request, error) => report(`Could not reload OpenCode: ${errorMessage(error)}`),
+        })
+        context.subscriptions.push(deferredReload)
+      }
     } catch (error) {
-      void vscode.window.showErrorMessage(`OpenCode connection setup failed: ${errorMessage(error)}`)
+      report(`OpenCode connection setup failed: ${errorMessage(error)}`)
     }
     try {
-      activeBridge = new VsCodeBridge(workspacePath)
       await activeBridge.start()
       context.subscriptions.push(activeBridge)
     } catch (error) {
       activeBridge = undefined
-      void vscode.window.showErrorMessage(`OpenCode VS Code bridge failed: ${errorMessage(error)}`)
+      report(`OpenCode VS Code bridge failed: ${errorMessage(error)}`)
     }
   }
 
-  const treeProvider = new SessionTreeProvider(controller)
-  const chatProvider = new ChatViewProvider(context.extensionUri, controller)
+  chatProvider = new ChatViewProvider(context.extensionUri, controller, workspacePath)
   context.subscriptions.push(
-    treeProvider,
     chatProvider,
-    vscode.window.registerTreeDataProvider("opencodeWorkbench.sessions", treeProvider),
     vscode.window.registerWebviewViewProvider("opencodeWorkbench.chat", chatProvider),
   )
 
@@ -144,7 +206,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     try {
       await operation()
     } catch (error) {
-      void vscode.window.showErrorMessage(errorMessage(error))
+      report(errorMessage(error))
     }
   }
 
@@ -152,9 +214,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("opencodeWorkbench.openChat", async () => {
       await vscode.commands.executeCommand("opencodeWorkbench.chat.focus")
     }),
-    vscode.commands.registerCommand("opencodeWorkbench.showSessions", async () => {
-      await vscode.commands.executeCommand("opencodeWorkbench.sessions.focus")
+    vscode.commands.registerCommand("opencodeWorkbench.openChatInEditor", () => {
+      chatProvider.openInEditor()
     }),
+    vscode.commands.registerCommand("opencodeWorkbench.attachResource", run(async (uri?: vscode.Uri, selected?: vscode.Uri[]) => {
+      const resources = selected?.length ? selected : uri ? [uri] : []
+      if (!resources.length) throw new Error("Select a workspace file or folder to attach")
+      await chatProvider.attachResources(resources)
+      await vscode.commands.executeCommand("opencodeWorkbench.chat.focus")
+    })),
     vscode.commands.registerCommand("opencodeWorkbench.selectSession", async (sessionID: string) => {
       if (controller && typeof sessionID === "string") {
         await controller.select(sessionID)
@@ -168,11 +236,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })),
     vscode.commands.registerCommand("opencodeWorkbench.refresh", run(async () => {
       if (!controller) throw new Error("Open a workspace folder before refreshing OpenCode")
-      await controller.reconcile()
-      treeProvider.refresh()
+      await controller.refresh()
     })),
-    vscode.commands.registerCommand("opencodeWorkbench.deleteSession", async (value: SessionItem | string) => {
-      const sessionID = value instanceof SessionItem ? value.sessionID : value
+    vscode.commands.registerCommand("opencodeWorkbench.deleteSession", async (value: string) => {
+      const sessionID = value
       if (!controller || typeof sessionID !== "string") return
       const session = controller.snapshot.sessions[sessionID]
       const choice = await vscode.window.showWarningMessage(
@@ -186,53 +253,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await controller?.abortSelected()
     })),
     vscode.commands.registerCommand("opencodeWorkbench.setServerPassword", async () => {
+      if (serverMode() !== "external") {
+        vscode.window.setStatusBarMessage("OpenCode server passwords apply only in external mode", 4_000)
+        return
+      }
       const password = await vscode.window.showInputBox({ title: "OpenCode server password", password: true, prompt: "Leave empty to remove the stored password" })
       if (password === undefined) return
       if (password) await context.secrets.store(PASSWORD_SECRET, password)
       else await context.secrets.delete(PASSWORD_SECRET)
       if (client && controller && workspacePath) {
-        client.update(await connection(context, workspacePath))
+        client.update(await externalConnection(context, workspacePath))
         controller.reconnect()
       }
     }),
     vscode.commands.registerCommand("opencodeWorkbench.launchTerminal", run(async () => {
       const terminal = vscode.window.createTerminal({ name: "OpenCode", cwd: workspacePath })
-      await executeInTerminal(terminal, "opencode", [])
-    })),
-    vscode.commands.registerCommand("opencodeWorkbench.attachTerminal", run(async () => {
-      if (!workspacePath) throw new Error("Open a workspace folder before attaching OpenCode")
-      const settings = await connection(context, workspacePath)
-      const url = new URL(settings.baseUrl)
-      validateServerUrl(url.toString())
-      const terminal = vscode.window.createTerminal({
-        name: "OpenCode Attach",
-        cwd: workspacePath,
-        env: {
-          OPENCODE_SERVER_USERNAME: settings.username,
-          OPENCODE_SERVER_PASSWORD: settings.password,
-        },
-      })
-      try {
-        await executeInTerminal(terminal, "opencode", ["attach", url.toString(), "--dir", workspacePath])
-      } catch (error) {
-        terminal.dispose()
-        throw error
-      }
+      const executable = vscode.workspace.getConfiguration("opencodeWorkbench").get<string>("executablePath")?.trim() || "opencode"
+      await executeInTerminal(terminal, executable, [])
     })),
   )
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
-    if (!event.affectsConfiguration("opencodeWorkbench.serverUrl") && !event.affectsConfiguration("opencodeWorkbench.serverUsername") && !event.affectsConfiguration("opencodeWorkbench.serverEnvironmentFile")) return
+    if (event.affectsConfiguration("opencodeWorkbench.serverMode") || event.affectsConfiguration("opencodeWorkbench.executablePath")) {
+      vscode.window.setStatusBarMessage("Reload this VS Code window to apply the OpenCode server change", 6_000)
+      return
+    }
+    if (serverMode() !== "external" || (!event.affectsConfiguration("opencodeWorkbench.serverUrl") && !event.affectsConfiguration("opencodeWorkbench.serverUsername") && !event.affectsConfiguration("opencodeWorkbench.serverEnvironmentFile"))) return
     if (!client || !controller || !workspacePath) return
-    void connection(context, workspacePath).then((next) => {
+    void externalConnection(context, workspacePath).then((next) => {
       client?.update(next)
       controller?.reconnect()
-    }).catch((error) => void vscode.window.showErrorMessage(errorMessage(error)))
+    }).catch((error) => report(errorMessage(error)))
   }))
 }
 
 export async function deactivate(): Promise<void> {
+  const managed = activeManagedServer
+  activeManagedServer = undefined
   const bridge = activeBridge
   activeBridge = undefined
-  await bridge?.stop()
+  await Promise.all([managed?.stop(), bridge?.stop()])
 }

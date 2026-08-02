@@ -8,8 +8,9 @@ await Promise.all([
     platform: "node",
     format: "cjs",
     target: "node20",
+    mainFields: ["module", "main"],
     external: ["vscode"],
-    sourcemap: true,
+    sourcemap: false,
   }),
   build({
     entryPoints: ["src/webview/main.ts"],
@@ -18,6 +19,6 @@ await Promise.all([
     platform: "browser",
     format: "iife",
     target: "es2022",
-    sourcemap: true,
+    sourcemap: false,
   }),
 ])
