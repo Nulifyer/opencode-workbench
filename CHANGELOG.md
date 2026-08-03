@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-08-03
+
 ### Added
 
 - Added queued follow-up prompts, `Enter` submission, inline permission and

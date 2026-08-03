@@ -17,6 +17,6 @@
     "test": "deno test tests"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.18.9"
+    "@opencode-ai/plugin": "1.18.11"
   }
 }

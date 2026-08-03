@@ -3,7 +3,7 @@
   "specifiers": {
     "jsr:@std/internal@^1.0.10": "1.0.14",
     "jsr:@std/path@1.1.2": "1.1.2",
-    "npm:@opencode-ai/plugin@1.18.9": "1.18.9",
+    "npm:@opencode-ai/plugin@1.18.11": "1.18.11",
     "npm:@types/node@26.1.2": "26.1.2",
     "npm:@types/node@^26.1.2": "26.1.2",
     "npm:@types/vscode@1.106.0": "1.106.0",
@@ -319,8 +319,8 @@
         "fastq"
       ]
     },
-    "@opencode-ai/plugin@1.18.9": {
-      "integrity": "sha512-0kFX9Usj+3N+WupIe9VnEdDNzMNbW4/C5GeIzdj02/t5kQoXsNrFpW3Br9aABebazcaYsQEWdlaLV0zQISy3OA==",
+    "@opencode-ai/plugin@1.18.11": {
+      "integrity": "sha512-mgn7+YO2J5tM2sWtV8pPBz6Lz6vWZswBOjUWssLvGaxKPuHR60sZ3Py4/tjI9RNl74aB4lhI0NUlanuWZS8NfA==",
       "dependencies": [
         "@ai-sdk/provider",
         "@opencode-ai/sdk",
@@ -328,8 +328,8 @@
         "zod"
       ]
     },
-    "@opencode-ai/sdk@1.18.9": {
-      "integrity": "sha512-oDJSmsmiGW+3lNLmZYj3EpUkpiT3ITZBKffH3mrmu2KMJXlkxQ/Nvv7jqPffSM7o8lCdBZS/aCE+2GkA3/92gQ==",
+    "@opencode-ai/sdk@1.18.11": {
+      "integrity": "sha512-yDImmNv4PhxdMgtiHVNWQWEVwQlAm7Dr0y4XU7CT4dOIbzgO+VP+9I02lAP7Zva1FhGeyI7oKMI2tzB9RUsWaQ==",
       "dependencies": [
         "cross-spawn"
       ]
@@ -1984,7 +1984,7 @@
     ],
     "packageJson": {
       "dependencies": [
-        "npm:@opencode-ai/plugin@1.18.9",
+        "npm:@opencode-ai/plugin@1.18.11",
         "npm:@types/node@26.1.2",
         "npm:@types/vscode@1.106.0",
         "npm:@vscode/vsce@3.9.2",
@@ -1997,7 +1997,7 @@
       "packages/opencode-plugin": {
         "packageJson": {
           "dependencies": [
-            "npm:@opencode-ai/plugin@1.18.9"
+            "npm:@opencode-ai/plugin@1.18.11"
           ]
         }
       },
