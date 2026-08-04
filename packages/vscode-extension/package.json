@@ -2,7 +2,7 @@
   "name": "opencode-workbench",
   "displayName": "OpenCode Workbench",
   "description": "Native VS Code sessions and chat powered by your OpenCode installation.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "publisher": "nulifyer",
   "license": "MIT",
   "repository": {

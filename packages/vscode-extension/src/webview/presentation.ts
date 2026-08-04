@@ -138,68 +138,6 @@ export function questionAnswerValues(checked: string[], custom: string, multiple
   return multiple ? [...checked, value] : [value]
 }
 
-export function markdownFenceLanguage(line: string): string | undefined {
-  const match = /^[ \t]*```([^`]*)$/.exec(line)
-  return match ? match[1]!.trim() : undefined
-}
-
-export function markdownFenceEnd(line: string): boolean {
-  return /^[ \t]*```[ \t]*$/.test(line)
-}
-
-export function orderedListItem(line: string): { ordinal: number; content: string } | undefined {
-  const match = /^\s*(\d+)\.\s+(.+)$/.exec(line)
-  if (!match) return undefined
-  const ordinal = Number(match[1])
-  return Number.isSafeInteger(ordinal) && ordinal > 0 ? { ordinal, content: match[2]! } : undefined
-}
-
-export function markdownTableRow(line: string): string[] | undefined {
-  const cells: string[] = []
-  let cell = ""
-  let code = false
-  let separators = 0
-  const source = line.trim()
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index]!
-    if (character === "\\" && ["|", "\\", "`"].includes(source[index + 1] ?? "")) {
-      cell += source[index + 1]
-      index += 1
-      continue
-    }
-    if (character === "`") {
-      code = !code
-      cell += character
-      continue
-    }
-    if (character === "|" && !code) {
-      cells.push(cell.trim())
-      cell = ""
-      separators += 1
-      continue
-    }
-    cell += character
-  }
-  cells.push(cell.trim())
-  if (!separators) return undefined
-  if (cells[0] === "") cells.shift()
-  if (cells.at(-1) === "") cells.pop()
-  return cells.length ? cells : undefined
-}
-
-export type MarkdownTableAlignment = "left" | "center" | "right" | undefined
-
-export function markdownTableDelimiter(line: string, columns: number): MarkdownTableAlignment[] | undefined {
-  const cells = markdownTableRow(line)
-  if (!cells || cells.length !== columns) return undefined
-  const alignments: MarkdownTableAlignment[] = []
-  for (const cell of cells) {
-    if (!/^:?-{3,}:?$/.test(cell)) return undefined
-    alignments.push(cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : "left")
-  }
-  return alignments
-}
-
 export function currentTodoContent(todos: Array<{ content: string; status: string }>): string {
   const working = todos.find((todo) => ["in_progress", "in-progress", "active"].includes(todo.status.toLowerCase()))
   if (working) return working.content

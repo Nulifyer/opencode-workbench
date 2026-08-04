@@ -2,7 +2,8 @@
   "nodeModulesDir": "auto",
   "imports": {
     "@opencode-workbench/shared": "./packages/shared/src/index.ts",
-    "jsonc-parser": "npm:jsonc-parser@3.3.1"
+    "jsonc-parser": "npm:jsonc-parser@3.3.1",
+    "markdown-it": "npm:markdown-it@14.1.0"
   },
   "compilerOptions": {
     "strict": true

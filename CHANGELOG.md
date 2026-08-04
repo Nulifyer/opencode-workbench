@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.4.3 - 2026-08-04
+
+### Changed
+
+- Replaced the custom chat Markdown parser with `markdown-it` to support
+  CommonMark blocks and GFM tables, strikethrough, autolinks, and task lists.
+
+### Security
+
+- Continued to escape raw HTML and restricted externally opened links to HTTP(S).
+
 ## 0.4.2 - 2026-08-03
 
 ### Added

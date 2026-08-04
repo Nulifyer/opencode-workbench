@@ -1,4 +1,4 @@
-import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
@@ -99,26 +99,6 @@ Deno.test("formats attachment references and collapses only substantial pastes",
   assertEquals(shouldCollapsePaste("x".repeat(1_000)), true)
   assertEquals(attachmentDisplay("[Image 1] image.png"), { label: "[Image 1]", name: "image.png" })
   assertEquals(attachmentDisplay("[Pasted text 2 · ~15 lines] pasted-text-2.txt"), { label: "[Pasted text 2 · ~15 lines]", name: "pasted-text-2.txt" })
-})
-
-Deno.test("recognizes indented fenced code blocks", () => {
-  assertEquals(markdownFenceLanguage("  ```yaml"), "yaml")
-  assertEquals(markdownFenceLanguage("\t```"), "")
-  assertEquals(markdownFenceLanguage("not a fence"), undefined)
-  assertEquals(markdownFenceEnd("  ```  "), true)
-})
-
-Deno.test("preserves explicit ordered-list ordinals across separated blocks", () => {
-  assertEquals(orderedListItem("3. Third item"), { ordinal: 3, content: "Third item" })
-  assertEquals(orderedListItem("  12. Twelfth item"), { ordinal: 12, content: "Twelfth item" })
-  assertEquals(orderedListItem("Not a list"), undefined)
-})
-
-Deno.test("parses Markdown tables with alignment and escaped pipes", () => {
-  assertEquals(markdownTableRow("| Stage | `a|b` | Result \\| detail |"), ["Stage", "`a|b`", "Result | detail"])
-  assertEquals(markdownTableRow("| Path | C:\\repo\\file.ts |"), ["Path", "C:\\repo\\file.ts"])
-  assertEquals(markdownTableDelimiter("| :--- | :---: | ---: |", 3), ["left", "center", "right"])
-  assertEquals(markdownTableDelimiter("| -- | --- |", 2), undefined)
 })
 
 Deno.test("collapsed todos summarize current work", () => {

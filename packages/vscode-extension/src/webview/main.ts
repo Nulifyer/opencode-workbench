@@ -1,6 +1,7 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
 import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type WebviewToHostMessage } from "@opencode-workbench/shared"
-import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
+import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
+import { renderMarkdown } from "./markdown.js"
 
 interface WebviewState {
   todoExpanded?: boolean
@@ -190,66 +191,6 @@ function clearNotice(kind?: "error" | "offline"): void {
   notice.hidden = true
 }
 
-function safeHttpUrl(value: string): string | undefined {
-  try {
-    const url = new URL(value)
-    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function styledPlainInline(source: string): string {
-  return escapeHtml(source)
-    .replace(/(\[(?:Image|PDF) \d+\]|\[Pasted text \d+ · ~\d+ lines\])/g, '<span class="inline-attachment-reference">$1</span>')
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
-    .replace(/\n/g, "<br>")
-}
-
-function plainInline(source: string): string {
-  let result = ""
-  let offset = 0
-  for (const match of source.matchAll(/@<([^>\r\n]+)>/g)) {
-    const index = match.index ?? 0
-    result += styledPlainInline(source.slice(offset, index))
-    const reference = workspaceMentionReference(match[1]!)
-    result += reference ? fileButton(reference, `@${match[1]!}`) : styledPlainInline(match[0])
-    offset = index + match[0].length
-  }
-  return result + styledPlainInline(source.slice(offset))
-}
-
-function inlineMarkdown(source: string): string {
-  const token = /(`[^`\n]+`|\[[^\]\n]+\]\([^\s)]+\))/g
-  let result = ""
-  let offset = 0
-  for (const match of source.matchAll(token)) {
-    const index = match.index ?? 0
-    result += plainInline(source.slice(offset, index))
-    const value = match[0]
-    if (value.startsWith("`")) {
-      const content = value.slice(1, -1)
-      const reference = fileReference(content)
-      result += reference
-        ? fileButton(reference)
-        : `<code>${escapeHtml(content)}</code>`
-    }
-    else {
-      const parts = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(value)
-      const label = parts?.[1]
-      const target = parts?.[2]
-      const url = target ? safeHttpUrl(target) : undefined
-      const reference = target && !url ? fileReference(target) : undefined
-      result += label && url
-        ? `<a href="#" data-url="${escapeHtml(url)}" title="${escapeHtml(url)}">${plainInline(label)}</a>`
-        : label && reference ? fileButton(reference) : plainInline(value)
-    }
-    offset = index + value.length
-  }
-  return result + plainInline(source.slice(offset))
-}
-
 function fileTooltip(reference: string | NonNullable<ReturnType<typeof fileReference>>): string {
   const file = typeof reference === "string" ? reference : reference.file
   const suffix = typeof reference === "string" || !reference.line
@@ -278,95 +219,18 @@ function reviewBlock(content: string, kind: "command" | "output" | "error"): str
 }
 
 function markdown(source: string): string {
-  const lines = source.replace(/\r\n/g, "\n").split("\n")
-  let output = ""
-  const blockStart = (line: string) => !line.trim() || markdownFenceLanguage(line) !== undefined || /^#{1,6}\s+/.test(line) || /^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line) || /^>\s?/.test(line) || /^\s*(?:---+|\*\*\*+)\s*$/.test(line)
-  for (let index = 0; index < lines.length;) {
-    const line = lines[index]!
-    if (!line.trim()) {
-      index += 1
-      continue
-    }
-    const language = markdownFenceLanguage(line)
-    if (language !== undefined) {
-      const code: string[] = []
-      index += 1
-      while (index < lines.length && !markdownFenceEnd(lines[index]!)) code.push(lines[index++]!)
-      if (index < lines.length) index += 1
-      output += codeBlock(code.join("\n"), language)
-      continue
-    }
-    const tableHeader = markdownTableRow(line)
-    const tableAlignments = tableHeader && index + 1 < lines.length ? markdownTableDelimiter(lines[index + 1]!, tableHeader.length) : undefined
-    if (tableHeader && tableAlignments) {
-      index += 2
-      const rows: string[][] = []
-      while (index < lines.length && lines[index]!.trim()) {
-        const row = markdownTableRow(lines[index]!)
-        if (!row) break
-        rows.push(Array.from({ length: tableHeader.length }, (_, column) => row[column] ?? ""))
-        index += 1
-      }
-      const cell = (tag: "th" | "td", value: string, column: number) => {
-        const alignment = tableAlignments[column]
-        return `<${tag}${alignment ? ` class="align-${alignment}"` : ""}>${inlineMarkdown(value)}</${tag}>`
-      }
-      output += `<div class="markdown-table-wrap"><table><thead><tr>${tableHeader.map((value, column) => cell("th", value, column)).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((value, column) => cell("td", value, column)).join("")}</tr>`).join("")}</tbody></table></div>`
-      continue
-    }
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line)
-    if (heading) {
-      const level = heading[1]!.length
-      output += `<h${level}>${inlineMarkdown(heading[2]!)}</h${level}>`
-      index += 1
-      continue
-    }
-    if (/^\s*[-*+]\s+/.test(line)) {
-      const items: string[] = []
-      while (index < lines.length) {
-        const item = /^\s*[-*+]\s+(.+)$/.exec(lines[index]!)
-        if (!item) break
-        items.push(`<li>${inlineMarkdown(item[1]!)}</li>`)
-        index += 1
-      }
-      output += `<ul>${items.join("")}</ul>`
-      continue
-    }
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const items: string[] = []
-      let start = 1
-      while (index < lines.length) {
-        const item = orderedListItem(lines[index]!)
-        if (!item) break
-        if (!items.length) start = item.ordinal
-        items.push(`<li value="${item.ordinal}">${inlineMarkdown(item.content)}</li>`)
-        index += 1
-      }
-      output += `<ol${start === 1 ? "" : ` start="${start}"`}>${items.join("")}</ol>`
-      continue
-    }
-    if (/^>\s?/.test(line)) {
-      const quote: string[] = []
-      while (index < lines.length) {
-        const item = /^>\s?(.*)$/.exec(lines[index]!)
-        if (!item) break
-        quote.push(item[1]!)
-        index += 1
-      }
-      output += `<blockquote>${inlineMarkdown(quote.join("\n"))}</blockquote>`
-      continue
-    }
-    if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) {
-      output += "<hr>"
-      index += 1
-      continue
-    }
-    const paragraph = [line]
-    index += 1
-    while (index < lines.length && !blockStart(lines[index]!)) paragraph.push(lines[index++]!)
-    output += `<p>${inlineMarkdown(paragraph.join("\n"))}</p>`
-  }
-  return output
+  return renderMarkdown(source, {
+    fencedCode: codeBlock,
+    inlineCode: (content) => {
+      const reference = fileReference(content)
+      return reference ? fileButton(reference) : undefined
+    },
+    link: (url, title) => `<a href="#" data-url="${escapeHtml(url)}" title="${escapeHtml(title)}">`,
+    workspaceMention: (value) => {
+      const reference = workspaceMentionReference(value)
+      return reference ? fileButton(reference, `@${value}`) : undefined
+    },
+  })
 }
 
 function stringify(value: unknown): string {

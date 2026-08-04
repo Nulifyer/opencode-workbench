@@ -1,6 +1,6 @@
 {
   "name": "opencode-workbench",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "description": "Shared OpenCode runtime integration and multi-session VS Code client.",
   "license": "MIT",
@@ -16,9 +16,11 @@
   ],
   "dependencies": {
     "@opencode-ai/plugin": "1.18.11",
-    "jsonc-parser": "3.3.1"
+    "jsonc-parser": "3.3.1",
+    "markdown-it": "14.1.0"
   },
   "devDependencies": {
+    "@types/markdown-it": "13.0.9",
     "@types/node": "26.1.2",
     "@types/vscode": "1.106.0",
     "@vscode/vsce": "3.9.2",
