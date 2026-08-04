@@ -9,7 +9,7 @@ requiring a live model provider.
 | --- | --- | --- |
 | Static | Type-check shared code, scripts, and the extension. | `deno task check` |
 | Synthetic | Run deterministic unit, protocol, integration, packaging, and stress coverage. | `deno task test:synthetic` |
-| Synthetic integration | Exercise HTTP, SSE, process management, event ordering, reconciliation, and final patches. | `deno task test:integration:synthetic` |
+| Synthetic integration | Exercise plugin hooks and persistence, HTTP, SSE, process management, event ordering, reconciliation, and final patches. | `deno task test:integration:synthetic` |
 | Stress | Exercise FIFO ordering and backpressure with 20,000-event bursts. | `deno task test:stress` |
 | Repeated stress | Detect timing-sensitive failures by running each stress test five times. | `deno task test:stress:repeat` |
 | Real integration | Validate an installed OpenCode executable without sending a model request. | `deno task test:integration:real` |
@@ -32,6 +32,14 @@ Event tests should cover the complete path when practical:
 4. Reduce events into `SessionController` state.
 5. Assert final `messagePatches()` content, revision, ordering, and active state.
 
+Goal continuation tests must assert the complete admitted prompt payload and the
+persisted lifecycle transition. A send-call count or "message sent" placeholder
+is insufficient. Cover duplicate idle events, repeated idle-after-busy cycles,
+canonical-plus-deprecated idle pairs, idle-before-error settlement, edit and
+pause state, cancellation, terminal goals, limits, prompt-admission failure,
+V2-only projection, and timeline presentation. Event-pipeline stress must retain
+goal markers while interleaving them with the full delta burst.
+
 Tests must not rely on arbitrary sleeps. Use explicit connection signals,
 bounded polling for externally scheduled work, and deadlines that report the
 failed condition.
@@ -40,8 +48,9 @@ failed condition.
 
 The real suite starts `OPENCODE_INTEGRATION_EXECUTABLE` through
 `ManagedOpenCodeServer` in a temporary workspace. It verifies authentication,
-health, SSE, runtime service shapes, session lifecycle, fork, history, and
-deletion. It must not send prompts to a model provider.
+health, SSE, runtime service shapes, bundled-plugin command and tool discovery,
+provider-free synthetic continuation admission, session lifecycle, fork,
+history, and deletion. It must not send prompts to a model provider.
 
 Set `OPENCODE_INTEGRATION_VERSION` when the expected executable version differs
 from the minimum supported version. The suite must always stop the server,

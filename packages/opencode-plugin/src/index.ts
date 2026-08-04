@@ -1,5 +1,6 @@
 import type { Plugin, ToolContext } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
+import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { AtomicJsonStore } from "./atomic-store.ts"
 import { type BridgeOperation, proxyBridge } from "./bridge.ts"
@@ -9,7 +10,27 @@ import { PREFERENCE_CATEGORIES, emptyState, parseState, scopeFor, type PluginSta
 import { NodeAtomicAdapter, dataDirectory } from "./node-storage.ts"
 import { LIMITS } from "./security.ts"
 import { appendEvidence, decideCandidate, listCandidates, listEvidence, proposeCandidate } from "./skills.ts"
-import { configureNativeLsp } from "./config.ts"
+import { configureGoalCommand, configureNativeLsp } from "./config.ts"
+import { GOAL_COMMAND_TEMPLATE, GOAL_CONTINUATION_METADATA, GOAL_CONTINUATION_PROMPT, GOAL_SYSTEM_POLICY, goalCompactionContext } from "./goal-prompts.ts"
+import {
+  accountGoalTokens,
+  cancelGoalAutoContinueReservation,
+  clearGoal,
+  closeGoal,
+  createGoal,
+  emptyGoalState,
+  failGoalAutoContinue,
+  goalHistoryReport,
+  importLegacyGoalState,
+  parseGoalState,
+  recordGoalCheckpoint,
+  refreshGoal,
+  reserveGoalAutoContinue,
+  setGoalStatus,
+  snapshotGoal,
+  updateGoalObjective,
+  type GoalState,
+} from "./goals.ts"
 
 const s = tool.schema
 const scopeSchema = s.enum(["global", "project"])
@@ -30,6 +51,70 @@ function json(value: unknown): string {
   return JSON.stringify(value)
 }
 
+function legacyGoalStatePath(): string {
+  return process.env.OPENCODE_GOAL_STATE_PATH || join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode-goal-plugin", "goals.json")
+}
+
+async function migrateLegacyGoals(store: AtomicJsonStore<GoalState>, adapter: NodeAtomicAdapter, nativePath: string): Promise<void> {
+  if (await adapter.read(nativePath) !== undefined) return
+  const raw = await adapter.read(legacyGoalStatePath()).catch(() => undefined)
+  if (!raw) return
+  let imported: GoalState | undefined
+  try {
+    imported = importLegacyGoalState(JSON.parse(raw) as unknown)
+  } catch {
+    return
+  }
+  if (!imported || !Object.keys(imported.goals).length) return
+  await store.mutate((state) => Object.assign(state.goals, imported.goals))
+}
+
+function mergeSystemPolicy(output: { system: string[] }, policy: string): void {
+  if (output.system.some((block) => block.includes(policy))) return
+  if (output.system.length) output.system[0] = `${output.system[0]}\n\n${policy}`
+  else output.system.push(policy)
+}
+
+function messageSessionID(message: { info?: unknown }): string | undefined {
+  return message.info && typeof message.info === "object" && typeof (message.info as Record<string, unknown>).sessionID === "string"
+    ? (message.info as Record<string, unknown>).sessionID as string
+    : undefined
+}
+
+function eventSessionID(event: { properties: Record<string, unknown> }): string | undefined {
+  if (typeof event.properties.sessionID === "string") return event.properties.sessionID
+  const info = event.properties.info
+  return info && typeof info === "object" && typeof (info as Record<string, unknown>).id === "string"
+    ? (info as Record<string, unknown>).id as string
+    : undefined
+}
+
+function errorText(value: unknown): string {
+  if (value instanceof Error) return value.message
+  if (value && typeof value === "object" && "message" in value && typeof (value as Record<string, unknown>).message === "string") {
+    return (value as Record<string, unknown>).message as string
+  }
+  return String(value)
+}
+
+function messageTokens(messages: Array<{ info?: unknown; parts?: unknown[] }>): number {
+  let total = 0
+  for (const message of messages) {
+    let messageTotal = 0
+    for (const part of message.parts ?? []) {
+      if (!part || typeof part !== "object" || (part as Record<string, unknown>).type !== "step-finish") continue
+      const tokens = (part as Record<string, unknown>).tokens
+      if (!tokens || typeof tokens !== "object") continue
+      const value = tokens as Record<string, unknown>
+      const cache = value.cache && typeof value.cache === "object" ? value.cache as Record<string, unknown> : {}
+      messageTotal += [value.input, value.output, value.reasoning, cache.read, cache.write]
+        .reduce<number>((sum, item) => sum + (typeof item === "number" && Number.isFinite(item) ? Math.max(0, item) : 0), 0)
+    }
+    total += messageTotal
+  }
+  return Math.ceil(total)
+}
+
 function bridgeTool(
   registryPath: string,
   operation: BridgeOperation,
@@ -45,19 +130,249 @@ function bridgeTool(
   })
 }
 
-const PluginImplementation: Plugin = async ({ worktree }) => {
+const PluginImplementation: Plugin = async ({ client, directory, worktree }) => {
   const root = dataDirectory()
   const adapter = new NodeAtomicAdapter()
   const statePath = join(root, "plugin", "state.json")
   await adapter.prepare(statePath)
   const store = new AtomicJsonStore<PluginState>(statePath, adapter, emptyState, parseState)
+  const goalStatePath = join(root, "plugin", "goals.json")
+  await adapter.prepare(goalStatePath)
+  const goalStore = new AtomicJsonStore<GoalState>(goalStatePath, adapter, emptyGoalState, parseGoalState)
+  await migrateLegacyGoals(goalStore, adapter, goalStatePath)
   const registryPath = join(root, "bridges", "registry.json")
   await adapter.prepare(registryPath)
   const project = resolve(worktree)
+  const autoContinuation = new Map<string, "admitted" | "running" | "settling">()
+  const reservingContinuation = new Set<string>()
+  const continuationTasks = new Set<Promise<void>>()
+  const idleContinuations = new Map<string, {
+    timer: ReturnType<typeof setTimeout>
+    resolve(): void
+    started: boolean
+    cancelled: boolean
+    abort: AbortController
+  }>()
+  const continuationEventTails = new Map<string, Promise<void>>()
+  let disposed = false
+
+  const continueGoal = async (sessionID: string, pending: { cancelled: boolean; abort: AbortController }): Promise<void> => {
+    if (reservingContinuation.has(sessionID)) return
+    reservingContinuation.add(sessionID)
+    try {
+      const sessionStatuses = await client.session.status({ query: { directory }, signal: pending.abort.signal })
+      if (disposed || pending.cancelled) return
+      if ("error" in sessionStatuses && sessionStatuses.error) throw new Error(`Could not verify OpenCode session status: ${errorText(sessionStatuses.error)}`)
+      const currentStatus = sessionStatuses.data?.[sessionID]
+      if (currentStatus && currentStatus.type !== "idle") return
+      const goal = await goalStore.mutate((state) => reserveGoalAutoContinue(state, sessionID))
+      if (!goal) return
+      if (disposed || pending.cancelled) {
+        await goalStore.mutate((state) => cancelGoalAutoContinueReservation(state, sessionID, goal.autoTurns))
+        return
+      }
+      autoContinuation.set(sessionID, "admitted")
+      if (idleContinuations.get(sessionID) === pending) idleContinuations.delete(sessionID)
+      const result = await client.session.promptAsync({
+        path: { id: sessionID },
+        query: { directory },
+        body: { parts: [{ type: "text", text: GOAL_CONTINUATION_PROMPT, synthetic: true, metadata: GOAL_CONTINUATION_METADATA }] },
+      })
+      if (result.error) throw new Error(errorText(result.error))
+    } catch (error) {
+      if (disposed || pending.cancelled) return
+      autoContinuation.delete(sessionID)
+      await goalStore.mutate((state) => failGoalAutoContinue(state, sessionID, errorText(error))).catch(() => undefined)
+    } finally {
+      if (idleContinuations.get(sessionID) === pending) idleContinuations.delete(sessionID)
+      if (autoContinuation.get(sessionID) === "settling") autoContinuation.delete(sessionID)
+      reservingContinuation.delete(sessionID)
+    }
+  }
+
+  const cancelIdleContinuation = (sessionID: string): boolean => {
+    const pending = idleContinuations.get(sessionID)
+    if (!pending) return false
+    pending.cancelled = true
+    if (pending.started) {
+      pending.abort.abort()
+      return true
+    }
+    clearTimeout(pending.timer)
+    idleContinuations.delete(sessionID)
+    pending.resolve()
+    return true
+  }
+
+  const scheduleGoalContinuation = (sessionID: string): void => {
+    if (disposed || idleContinuations.has(sessionID)) return
+    const task = new Promise<void>((done) => {
+      const pending = {
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+        resolve: done,
+        started: false,
+        cancelled: false,
+        abort: new AbortController(),
+      }
+      pending.timer = setTimeout(() => {
+        pending.started = true
+        if (disposed) {
+          idleContinuations.delete(sessionID)
+          return done()
+        }
+        void continueGoal(sessionID, pending).finally(done)
+      }, 0)
+      idleContinuations.set(sessionID, pending)
+    })
+    continuationTasks.add(task)
+    void task.finally(() => continuationTasks.delete(task))
+  }
+
+  const serializeContinuationEvent = (sessionID: string, operation: () => Promise<void>): Promise<void> => {
+    const previous = continuationEventTails.get(sessionID) ?? Promise.resolve()
+    const current = previous.catch(() => undefined).then(operation)
+    continuationEventTails.set(sessionID, current)
+    return current.finally(() => {
+      if (continuationEventTails.get(sessionID) === current) continuationEventTails.delete(sessionID)
+    })
+  }
+
+  const handleContinuationEvent = async (sessionID: string, eventType: string, properties: Record<string, unknown>, statusType?: string): Promise<void> => {
+    if (eventType === "session.deleted") {
+      cancelIdleContinuation(sessionID)
+      autoContinuation.delete(sessionID)
+      reservingContinuation.delete(sessionID)
+      if ((await goalStore.read()).goals[sessionID]) await goalStore.mutate((state) => clearGoal(state, sessionID))
+      return
+    }
+    if (eventType === "session.error" || eventType === "session.next.step.failed") {
+      cancelIdleContinuation(sessionID)
+      if (autoContinuation.delete(sessionID)) {
+        const detail = properties.error && typeof properties.error === "object" ? errorText(properties.error) : "OpenCode session failed"
+        await goalStore.mutate((state) => failGoalAutoContinue(state, sessionID, detail))
+      }
+      return
+    }
+    if ((eventType === "session.status" && ["busy", "retry"].includes(statusType ?? "")) ||
+      ["session.next.prompt.admitted", "session.next.prompted", "session.next.step.started"].includes(eventType)) {
+      const cancelled = cancelIdleContinuation(sessionID)
+      if (cancelled && autoContinuation.get(sessionID) === "settling") autoContinuation.delete(sessionID)
+      else if (autoContinuation.has(sessionID)) autoContinuation.set(sessionID, "running")
+      return
+    }
+    if (eventType !== "session.idle" && !(eventType === "session.status" && statusType === "idle")) return
+    const phase = autoContinuation.get(sessionID)
+    if (phase === "running") autoContinuation.set(sessionID, "settling")
+    if (phase === "admitted" || phase === "settling") return
+    if ((await goalStore.read()).goals[sessionID]?.status === "active") scheduleGoalContinuation(sessionID)
+    else if (autoContinuation.get(sessionID) === "settling") autoContinuation.delete(sessionID)
+  }
 
   return {
-    config: async (config) => configureNativeLsp(config),
+    dispose: async () => {
+      disposed = true
+      for (const sessionID of [...idleContinuations.keys()]) cancelIdleContinuation(sessionID)
+      await Promise.allSettled([...continuationEventTails.values(), ...continuationTasks])
+    },
+    config: async (config) => {
+      configureNativeLsp(config)
+      configureGoalCommand(config, GOAL_COMMAND_TEMPLATE)
+    },
     tool: {
+      get_goal: tool({
+        description: "Get the current Workbench goal for this session, including status, usage, limits, and recent progress.",
+        args: {},
+        async execute(_args, context) {
+          return json({ goal: await goalStore.mutate((state) => refreshGoal(state, context.sessionID)) })
+        },
+      }),
+      get_goal_history: tool({
+        description: "Get the current Workbench goal lifecycle history and recent checkpoints for this session.",
+        args: {},
+        async execute(_args, context) {
+          const goal = await goalStore.mutate((state) => refreshGoal(state, context.sessionID))
+          return json({ goal, history_report: goalHistoryReport(goal) })
+        },
+      }),
+      create_goal: tool({
+        description: "Create a goal only when explicitly requested by the user or higher-priority instructions. Never infer a goal from an ordinary task. Plan-mode goals are created paused.",
+        args: {
+          objective: s.string().min(1).max(4_000),
+          token_budget: s.number().int().min(1).nullable().optional(),
+          max_auto_turns: s.number().int().min(1).nullable().optional(),
+          max_duration_seconds: s.number().int().min(1).nullable().optional(),
+        },
+        async execute(args, context) {
+          return json({ goal: await goalStore.mutate((state) => createGoal(state, context.sessionID, {
+            objective: args.objective,
+            tokenBudget: args.token_budget,
+            maxAutoTurns: args.max_auto_turns,
+            maxDurationSeconds: args.max_duration_seconds,
+            agent: context.agent,
+          })) })
+        },
+      }),
+      set_goal: tool({
+        description: "Set a model-formulated goal only when the user explicitly asks the model to formulate and set its own goal. Plan-mode goals are created paused.",
+        args: {
+          objective: s.string().min(1).max(4_000),
+          token_budget: s.number().int().min(1).nullable().optional(),
+          max_auto_turns: s.number().int().min(1).nullable().optional(),
+          max_duration_seconds: s.number().int().min(1).nullable().optional(),
+        },
+        async execute(args, context) {
+          return json({ goal: await goalStore.mutate((state) => createGoal(state, context.sessionID, {
+            objective: args.objective,
+            tokenBudget: args.token_budget,
+            maxAutoTurns: args.max_auto_turns,
+            maxDurationSeconds: args.max_duration_seconds,
+            agent: context.agent,
+          })) })
+        },
+      }),
+      update_goal_objective: tool({
+        description: "Edit or replace the current goal objective only when the user explicitly requests it. Omit status to preserve whether the goal is active or paused.",
+        args: {
+          objective: s.string().min(1).max(4_000),
+          status: s.enum(["active", "paused"]).optional(),
+        },
+        async execute(args, context) {
+          return json({ goal: await goalStore.mutate((state) => updateGoalObjective(state, context.sessionID, args.objective, args.status, context.agent)) })
+        },
+      }),
+      update_goal: tool({
+        description: "Close the goal only after auditing real evidence. Complete requires concrete evidence; unmet requires a concrete blocker.",
+        args: {
+          status: s.enum(["complete", "unmet"]),
+          evidence: s.string().min(1).max(4_000).optional(),
+          blocker: s.string().min(1).max(4_000).optional(),
+        },
+        async execute(args, context) {
+          const detail = args.status === "complete" ? args.evidence : args.blocker
+          return json({ goal: await goalStore.mutate((state) => closeGoal(state, context.sessionID, args.status, detail)) })
+        },
+      }),
+      update_goal_status: tool({
+        description: "Pause or resume the current goal only when the user explicitly asks. A goal cannot resume in Plan mode.",
+        args: { status: s.enum(["active", "paused"]) },
+        async execute(args, context) {
+          return json({ goal: await goalStore.mutate((state) => setGoalStatus(state, context.sessionID, args.status, context.agent)) })
+        },
+      }),
+      update_goal_checkpoint: tool({
+        description: "Record a concise, evidence-based progress checkpoint for the active goal before ending an incomplete continuation turn.",
+        args: { summary: s.string().min(1).max(4_000) },
+        async execute(args, context) {
+          return json({ goal: await goalStore.mutate((state) => recordGoalCheckpoint(state, context.sessionID, args.summary)) })
+        },
+      }),
+      clear_goal: tool({
+        description: "Clear the current goal only when the user explicitly asks to clear, stop, cancel, or reset it.",
+        args: {},
+        async execute(_args, context) {
+          return json({ cleared: await goalStore.mutate((state) => clearGoal(state, context.sessionID)) })
+        },
+      }),
       memory_list: tool({
         description: "List or search explicit preference records visible to this project. This never reads conversation, web, tool, or repository content.",
         args: {
@@ -224,11 +539,6 @@ const PluginImplementation: Plugin = async ({ worktree }) => {
         { reason: s.enum(["skill-activation", "configuration-change"]) },
       ),
     },
-    event: async ({ event }) => {
-      const evidence = evidenceFromEvent(event, { kind: "project", project }, Date.now(), crypto.randomUUID())
-      if (!evidence) return
-      await store.mutate((state) => appendEvidence(state, evidence)).catch(() => undefined)
-    },
     "chat.message": async (input, output) => {
       const preferenceData = renderPreferenceData(await store.read(), project)
       if (!preferenceData) return
@@ -240,6 +550,32 @@ const PluginImplementation: Plugin = async ({ worktree }) => {
         text: preferenceData,
         synthetic: true,
       })
+    },
+    "experimental.chat.system.transform": async (_input, output) => {
+      mergeSystemPolicy(output, GOAL_SYSTEM_POLICY)
+    },
+    "experimental.chat.messages.transform": async (input, output) => {
+      const sessionID = "sessionID" in input && typeof input.sessionID === "string" ? input.sessionID : output.messages.map(messageSessionID).find(Boolean)
+      if (!sessionID) return
+      if (!(await goalStore.read()).goals[sessionID]) return
+      const tokens = messageTokens(output.messages)
+      if (tokens > 0) await goalStore.mutate((state) => accountGoalTokens(state, sessionID, tokens))
+    },
+    "experimental.session.compacting": async (input, output) => {
+      const state = await goalStore.read()
+      const goal = state.goals[input.sessionID]
+      if (goal) output.context.push(goalCompactionContext(snapshotGoal(goal)))
+    },
+    event: async ({ event }) => {
+      const eventType = String(event.type)
+      const properties = event.properties as Record<string, unknown>
+      const sessionID = eventSessionID({ properties })
+      const statusType = properties.status && typeof properties.status === "object"
+        ? String((properties.status as Record<string, unknown>).type)
+        : undefined
+      if (sessionID) await serializeContinuationEvent(sessionID, () => handleContinuationEvent(sessionID, eventType, properties, statusType))
+      const evidence = evidenceFromEvent(event, { kind: "project", project }, Date.now(), crypto.randomUUID())
+      if (evidence) await store.mutate((state) => appendEvidence(state, evidence)).catch(() => undefined)
     },
   }
 }

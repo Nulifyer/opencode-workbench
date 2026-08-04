@@ -46,6 +46,19 @@ export function isCompactionMessage(message: MessageBundle): boolean {
   return message.info.role === "user" && message.parts.some((part) => part.type === "compaction")
 }
 
+export function isGoalContinuationMessage(message: MessageBundle): boolean {
+  if (message.info.role !== "user") return false
+  return message.parts.some((part) => {
+    if (part.type !== "text" || part.synthetic !== true || typeof part.text !== "string") return false
+    const metadata = part.metadata
+    const marker = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? (metadata as Record<string, unknown>)["opencode-workbench"]
+      : undefined
+    if (marker && typeof marker === "object" && !Array.isArray(marker) && (marker as Record<string, unknown>).kind === "goal-continuation") return true
+    return part.text.startsWith("Continue working autonomously toward the active goal.")
+  })
+}
+
 export function sessionGroup(session: ChatSnapshot["sessions"][number], now = Date.now()): SessionGroup {
   if ((session.attention ?? 0) > 0 || session.status.type === "error") return "Needs input"
   if (session.status.type === "busy" || session.status.type === "retry") return "Working"

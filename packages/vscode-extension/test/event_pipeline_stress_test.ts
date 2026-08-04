@@ -1,6 +1,7 @@
 import { createServer, type ServerResponse } from "node:http"
 import { OpenCodeClient } from "../src/opencode-client.ts"
 import { SessionController } from "../src/session-controller.ts"
+import { isGoalContinuationMessage } from "../src/webview/presentation.ts"
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -116,7 +117,22 @@ Deno.test("synthetic event pipeline preserves interleaved streams under backpres
       await writeEvent(stream, { type: "message.part.updated", properties: { part: { id: `${id}-text`, messageID: id, sessionID: session.id, type: "text", text: "" } } })
     }
     const expectedParts = { a: [] as string[], b: [] as string[] }
+    const goalContinuationCount = 1_000
     for (let index = 0; index < 20_000; index += 1) {
+      if (index % 20 === 0) {
+        const sequence = index / 20
+        const messageID = `goal-${sequence}`
+        await writeEvent(stream, { type: "message.updated", properties: { info: { id: messageID, sessionID: session.id, role: "user" } } })
+        await writeEvent(stream, { type: "message.part.updated", properties: { part: {
+          id: `${messageID}-text`,
+          messageID,
+          sessionID: session.id,
+          type: "text",
+          text: `Continue goal turn ${sequence}`,
+          synthetic: true,
+          metadata: { "opencode-workbench": { kind: "goal-continuation", version: 1 } },
+        } } })
+      }
       const suffix = index % 2 === 0 ? "a" : "b"
       const delta = `${suffix}${Math.floor(index / 2).toString(36).padStart(3, "0")}|`
       expectedParts[suffix].push(delta)
@@ -132,8 +148,13 @@ Deno.test("synthetic event pipeline preserves interleaved streams under backpres
       const messages = controller.snapshot.sessions[session.id]?.messages ?? []
       return messages.find((message) => message.info.id === "assistant-a")?.parts[0]?.text === expected.a &&
         messages.find((message) => message.info.id === "assistant-b")?.parts[0]?.text === expected.b &&
+        messages.filter((message) => message.info.id.startsWith("goal-")).length === goalContinuationCount &&
         controller.snapshot.sessions[session.id]?.status.type === "idle"
     })
+    const goalContinuations = controller.chatSnapshot().session?.messages.filter((message) => message.info.id.startsWith("goal-")) ?? []
+    if (goalContinuations.length !== goalContinuationCount || goalContinuations.some((message) => !isGoalContinuationMessage(message))) {
+      throw new Error(`Goal continuation markers were lost or corrupted under event-bus pressure: ${goalContinuations.length}/${goalContinuationCount}`)
+    }
     const patches = controller.messagePatches([
       { sessionID: session.id, messageID: "assistant-a" },
       { sessionID: session.id, messageID: "assistant-b" },

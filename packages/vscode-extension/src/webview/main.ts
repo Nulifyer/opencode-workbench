@@ -1,6 +1,6 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
 import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type WebviewToHostMessage } from "@opencode-workbench/shared"
-import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
+import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
 import { renderMarkdown } from "./markdown.js"
 
 interface WebviewState {
@@ -62,7 +62,7 @@ const commandSuggestions = element<HTMLElement>("command-suggestions")
 const fileSuggestionList = element<HTMLElement>("file-suggestions")
 const permissionDock = element<HTMLElement>("permission-dock")
 const questionDock = element<HTMLElement>("question-dock")
-const goalDock = element<HTMLButtonElement>("goal-dock")
+const goalDock = element<HTMLElement>("goal-dock")
 const todoDock = element<HTMLElement>("todo-dock")
 const workspaceStrip = element<HTMLElement>("workspace-strip")
 const historyOverlay = element<HTMLElement>("history-overlay")
@@ -580,6 +580,9 @@ function userHtml(message: MessageBundle): string {
   if (isCompactionMessage(message)) {
     return `<div class="compaction-divider" data-message-id="${escapeHtml(message.info.id)}" role="separator"><span>Session compacted</span></div>`
   }
+  if (isGoalContinuationMessage(message)) {
+    return `<div class="compaction-divider goal-continuation-divider" data-message-id="${escapeHtml(message.info.id)}" role="separator"><span>Goal continued automatically</span></div>`
+  }
   const textParts = message.parts.filter((part) => !part.synthetic && part.type === "text" && part.text)
   const text = textParts.map((part) => part.text).join("\n")
   const body = textParts.map((part) => `<div class="markdown">${markdown(part.text!)}</div>`).join("")
@@ -1049,7 +1052,9 @@ function renderSummaries(session: NonNullable<ChatSnapshot["session"]>): void {
   if (goal) {
     const state = goal.status ? `${goal.status.charAt(0).toUpperCase()}${goal.status.slice(1)}` : "Active"
     const elapsed = goal.timeUsedSeconds === undefined ? "" : formatDuration(goal.timeUsedSeconds * 1_000)
-    goalDock.innerHTML = `<span class="goal-icon" aria-hidden="true">◎</span><span class="goal-state">${escapeHtml(state)}</span><strong>${escapeHtml(goal.objective || "Goal active")}</strong>${elapsed ? `<small>${escapeHtml(elapsed)}</small>` : ""}<span class="goal-chevron" aria-hidden="true">›</span>`
+    const turns = goal.autoTurns === undefined ? "" : goal.maxAutoTurns === undefined ? `Auto ${goal.autoTurns}` : `Auto ${goal.autoTurns}/${goal.maxAutoTurns}`
+    const toggle = goal.status === "active" ? "pause" : goal.status === "paused" ? "resume" : undefined
+    goalDock.innerHTML = `<button type="button" class="goal-open" data-goal-action="edit" title="Edit goal"><span class="goal-icon" aria-hidden="true">◎</span><span class="goal-state">${escapeHtml(state)}</span><strong>${escapeHtml(goal.objective || "Goal active")}</strong>${elapsed ? `<small>${escapeHtml(elapsed)}</small>` : ""}${turns ? `<small>${escapeHtml(turns)}</small>` : ""}</button><div class="goal-actions">${toggle ? `<button type="button" class="goal-action" data-goal-action="${toggle}">${toggle === "pause" ? "Pause" : "Resume"}</button>` : ""}<button type="button" class="goal-action" data-goal-action="cancel">Cancel</button></div>`
   } else goalDock.innerHTML = ""
   const todos = session.todos ?? []
   const completed = todos.filter((todo) => todo.status === "completed").length
@@ -2378,9 +2383,12 @@ sessionContextMenu.addEventListener("keydown", (event) => {
   const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (Math.max(index, 0) + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length
   buttons[next]?.focus()
 })
-goalDock.addEventListener("click", () => {
+goalDock.addEventListener("click", (event) => {
   const sessionID = snapshot.session?.id
-  if (sessionID) post({ type: "openPlan", sessionID })
+  if (!sessionID) return
+  const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : undefined
+  const action = target?.dataset.goalAction
+  if (["edit", "pause", "resume", "cancel"].includes(action ?? "")) post({ type: "goalAction", sessionID, action: action as "edit" | "pause" | "resume" | "cancel" })
 })
 todoDock.addEventListener("click", (event) => {
   const header = event.target instanceof Element ? event.target.closest<HTMLButtonElement>(".todo-dock-header") : undefined

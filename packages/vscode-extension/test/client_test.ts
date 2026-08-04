@@ -1,4 +1,5 @@
 import { PERMISSION_AGGREGATE_CHARACTER_LIMIT, parseHostMessage } from "@opencode-workbench/shared"
+import { GOAL_CONTINUATION_PROMPT } from "../../opencode-plugin/src/goal-prompts.ts"
 import { OpenCodeClient, parseChanges, parseCommands, parsePermission, parsePermissions, parseQuestion, parseQuestions, parseTodos, validateServerUrl } from "../src/opencode-client.ts"
 
 function throws(operation: () => void, pattern: RegExp): void {
@@ -363,6 +364,39 @@ Deno.test("empty v2 user projections preserve legacy prompt content", async () =
     const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
     const messages = await client.messages("session")
     if (messages[0]?.parts[0]?.text !== "Keep the actual prompt") throw new Error("Empty v2 projection replaced the legacy prompt")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("v2-only goal projections recognize the persisted continuation text", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    if (url.pathname.startsWith("/api/session/")) return Promise.resolve(new Response(JSON.stringify({
+      data: [{
+        id: "msg_goal",
+        type: "user",
+        time: { created: 1 },
+        text: GOAL_CONTINUATION_PROMPT,
+      }, {
+        id: "msg_ordinary",
+        type: "user",
+        time: { created: 2 },
+        text: `${GOAL_CONTINUATION_PROMPT} User-authored suffix.`,
+      }],
+      cursor: {},
+    })))
+    return Promise.resolve(new Response("legacy unavailable", { status: 500 }))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const history = await client.messageHistory("session")
+    const part = history.messages[0]?.parts[0]
+    const ordinary = history.messages[1]?.parts[0]
+    if (part?.synthetic !== true || part.metadata !== undefined || ordinary?.synthetic !== undefined) {
+      throw new Error(`V2-only goal continuation lost its presentation marker: ${JSON.stringify(history)}`)
+    }
   } finally {
     globalThis.fetch = originalFetch
   }

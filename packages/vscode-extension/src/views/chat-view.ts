@@ -316,7 +316,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <section id="permission-dock" class="dock permission-dock" aria-label="Permission requests" aria-live="assertive" hidden></section>
           <section id="question-dock" class="dock question-dock" aria-label="Questions from OpenCode" aria-live="assertive" hidden></section>
           <div class="summary-docks">
-            <button id="goal-dock" class="dock summary-dock goal-dock" type="button" title="Open plan" hidden></button>
+            <section id="goal-dock" class="dock summary-dock goal-dock" hidden></section>
             <section id="todo-dock" class="dock todo-dock" aria-label="Session todos" hidden></section>
           </div>
           <section id="queue-dock" class="dock queue-dock" aria-label="Queued prompts" hidden></section>
@@ -509,6 +509,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "setPreference":
           this.requireSelected(message.sessionID)
           this.controller!.setPreference(message.agent, message.model, message.variant)
+          break
+        case "goalAction":
+          this.requireSelected(message.sessionID)
+          if (message.action === "edit") {
+            const current = this.controller!.chatSnapshot().session?.goal?.objective
+            const objective = await vscode.window.showInputBox({ title: "Edit goal", prompt: "Update the objective", value: current, validateInput: (value) => value.trim() ? undefined : "Enter a goal objective" })
+            if (objective !== undefined) await this.controller!.send(`/goal edit ${objective.trim()}`)
+          } else if (message.action === "cancel") {
+            const confirmed = await vscode.window.showWarningMessage("Cancel and clear this goal?", { modal: true }, "Cancel goal")
+            if (confirmed === "Cancel goal") await this.controller!.send("/goal cancel")
+          } else {
+            await this.controller!.send(`/goal ${message.action}`)
+          }
           break
         case "send":
           this.requireSelected(message.sessionID)

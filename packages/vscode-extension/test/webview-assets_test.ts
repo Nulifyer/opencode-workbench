@@ -52,6 +52,14 @@ Deno.test("non-final assistant text renders as distinct update activity", () => 
   }
 })
 
+Deno.test("synthetic goal continuations render as timeline markers instead of sent-message placeholders", () => {
+  const marker = webview.indexOf("if (isGoalContinuationMessage(message))")
+  const placeholder = webview.indexOf("Message sent")
+  if (marker < 0 || placeholder < 0 || marker > placeholder || !webview.includes("Goal continued automatically")) {
+    throw new Error("Goal continuation messages can still fall through to the empty user-message placeholder")
+  }
+})
+
 Deno.test("offline notice uses a theme-safe muted warning surface", () => {
   const rule = /\.notice\.offline\s*\{([^}]*)\}/.exec(css)?.[1] ?? ""
   if (!rule.includes("color: var(--vscode-foreground)") || !rule.includes("background: color-mix")) {

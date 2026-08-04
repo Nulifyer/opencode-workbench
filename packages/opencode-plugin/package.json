@@ -1,8 +1,8 @@
 {
   "name": "@opencode-workbench/opencode-plugin",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": false,
-  "description": "Shared preference, skill-candidate, and VS Code bridge tools for OpenCode.",
+  "description": "Goal, preference, skill-candidate, and VS Code bridge tools for OpenCode Workbench.",
   "license": "MIT",
   "repository": {
     "type": "git",

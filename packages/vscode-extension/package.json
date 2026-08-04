@@ -2,7 +2,7 @@
   "name": "opencode-workbench",
   "displayName": "OpenCode Workbench",
   "description": "Native VS Code sessions and chat powered by your OpenCode installation.",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "publisher": "nulifyer",
   "license": "MIT",
   "repository": {
@@ -161,7 +161,7 @@
     "build": "node ./esbuild.mjs",
     "check": "tsc --noEmit",
     "test": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 --ignore=test/opencode_integration_test.ts test",
-    "test:integration:synthetic": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 test/communication_test.ts test/managed-server_test.ts test/event_pipeline_stress_test.ts",
+    "test:integration:synthetic": "deno task --cwd=../.. test:integration:synthetic",
     "test:integration:real": "deno task --cwd=../.. build && deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 test/opencode_integration_test.ts",
     "test:stress": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 test/ordered-event-bus_test.ts test/latest-update-pump_test.ts test/event_pipeline_stress_test.ts"
   },

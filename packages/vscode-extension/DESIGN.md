@@ -28,6 +28,18 @@ file, and **OpenCode: Set External Server Password** stores an override in VS
 Code Secret Storage. Endpoint settings use machine scope, passwords cannot be
 stored in workspace settings, and non-loopback servers require HTTPS.
 
+The companion plugin owns per-session goal tools, persistent goal state, and
+idle continuation. When OpenCode emits `session.idle` for an active goal, the
+plugin coalesces it with the canonical `session.status: idle` event, waits one
+event-loop turn for a possible asynchronous failure event, atomically reserves
+the next auto-turn, and submits the full continuation prompt through OpenCode's
+asynchronous prompt API. Terminal, paused, cancelled, limited, and failed goals
+do not admit another turn. Continuation messages carry bounded synthetic
+metadata and render as timeline markers. The extension projects goal state and
+provides edit, pause, resume, and cancel controls without running a competing
+continuation loop. A missing native goal store can import compatible state once
+from the former third-party goal store.
+
 ## UI Boundaries
 
 The chat is the primary view in a Secondary Side Bar container. Its header has

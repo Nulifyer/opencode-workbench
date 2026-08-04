@@ -1,5 +1,6 @@
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { GOAL_CONTINUATION_METADATA, GOAL_CONTINUATION_PROMPT } from "../../opencode-plugin/src/goal-prompts.ts"
 import { ManagedOpenCodeServer } from "../src/managed-server.ts"
 import { OpenCodeClient } from "../src/opencode-client.ts"
 
@@ -72,15 +73,25 @@ Deno.test("installed OpenCode serves Workbench contracts without a model prompt"
       "enabled" in formatter && typeof formatter.enabled === "boolean") || typeof mcpStatus !== "object" || mcpStatus === null || Array.isArray(mcpStatus)) {
       throw new Error("OpenCode returned an incompatible formatter or MCP status contract")
     }
+    const commands = await client.commands()
+    if (!commands.some((command) => command.name === "goal")) throw new Error("Bundled plugin did not register the native /goal command")
+    const toolIDs = new Set(await client.toolIDs())
+    for (const tool of ["get_goal", "get_goal_history", "create_goal", "set_goal", "update_goal_objective", "update_goal", "update_goal_status", "update_goal_checkpoint", "clear_goal"]) {
+      if (!toolIDs.has(tool)) throw new Error(`Bundled plugin did not register native goal tool ${tool}`)
+    }
 
     const opened = deferred<void>()
     const createdEvent = deferred<string>()
+    const admittedPart = deferred<void>()
     const stream = client.events(
       streamAbort.signal,
       () => opened.resolve(undefined),
       (event) => {
         const info = event.properties.info
         if (event.type === "session.created" && typeof info === "object" && info && "id" in info && typeof info.id === "string") createdEvent.resolve(info.id)
+        const part = event.properties.part
+        if (event.type === "message.part.updated" && typeof part === "object" && part && "sessionID" in part && part.sessionID === createdID &&
+          "type" in part && part.type === "text" && "text" in part && part.text === GOAL_CONTINUATION_PROMPT) admittedPart.resolve(undefined)
       },
     ).catch((error) => {
       if (!streamAbort.signal.aborted) throw error
@@ -98,8 +109,23 @@ Deno.test("installed OpenCode serves Workbench contracts without a model prompt"
     if (!listed.some((session) => session.id === created.id) || !listed.some((session) => session.id === forked.id)) {
       throw new Error("OpenCode session listing omitted a created or forked session")
     }
+    const promptUrl = new URL(`/session/${encodeURIComponent(created.id)}/prompt_async`, connection.baseUrl)
+    promptUrl.searchParams.set("directory", workspace)
+    const promptResponse = await fetch(promptUrl, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${connection.username}:${connection.password}`).toString("base64")}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ noReply: true, parts: [{ type: "text", text: GOAL_CONTINUATION_PROMPT, synthetic: true, metadata: GOAL_CONTINUATION_METADATA }] }),
+    })
+    if (promptResponse.status !== 204) throw new Error(`OpenCode rejected the provider-free goal continuation payload: HTTP ${promptResponse.status}`)
+    await within(admittedPart.promise)
     const history = await client.messageHistory(created.id)
-    if (history.messages.length || history.legacyMessageIDs.length || history.v2MessageIDs.length) throw new Error("New OpenCode session unexpectedly contained messages")
+    const admitted = history.messages.find((message) => message.info.role === "user")?.parts.find((part) => part.type === "text")
+    if (admitted?.text !== GOAL_CONTINUATION_PROMPT || admitted.synthetic !== true || JSON.stringify(admitted.metadata) !== JSON.stringify(GOAL_CONTINUATION_METADATA)) {
+      throw new Error(`OpenCode did not persist the complete synthetic goal continuation payload: ${JSON.stringify(history.messages)}`)
+    }
     if (await client.deleteSession(forked.id) !== true || await client.deleteSession(created.id) !== true) throw new Error("OpenCode did not delete integration sessions")
     forkedID = undefined
     createdID = undefined

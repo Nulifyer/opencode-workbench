@@ -315,7 +315,10 @@ a { color: var(--vscode-textLink-foreground); }
 .summary-dock strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .summary-dock small { color: var(--vscode-descriptionForeground); }
 .dock-label { color: var(--vscode-textLink-foreground); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
-.goal-dock { grid-column: 1 / -1; grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; min-height: 34px; padding: 5px 9px; border-radius: 18px; }
+.goal-dock { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 34px; padding: 3px 5px 3px 9px; border-radius: 18px; }
+.goal-open { min-width: 0; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 2px 0; border: 0; color: inherit; background: transparent; text-align: left; }
+.goal-actions { display: flex; align-items: center; gap: 4px; }
+.goal-action { padding: 4px 8px; border-radius: 12px; font-size: 11px; white-space: nowrap; }
 .goal-dock .goal-icon { color: var(--vscode-textLink-foreground); font-size: 15px; }
 .goal-dock .goal-state { color: var(--vscode-descriptionForeground); font-weight: 600; }
 .goal-dock strong { font-weight: 500; }

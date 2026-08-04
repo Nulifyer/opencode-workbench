@@ -29,3 +29,12 @@ Deno.test("workspace search includes parent directories as mention targets", () 
   const ranked = rankFzf("vscode-extension", paths)
   if (ranked[0] !== "packages/vscode-extension") throw new Error(`Folder was not the best mention match: ${ranked.join(", ")}`)
 })
+
+Deno.test("workspace search does not invent prefix paths for root files", () => {
+  const paths = workspaceSearchPaths(["README.md", "src/main.ts"])
+  if (!paths.includes("README.md") || !paths.includes("src") || paths.some((value) =>
+    (value !== "README.md" && "README.md".startsWith(value)) || (value !== "src" && "src".startsWith(value))
+  )) {
+    throw new Error(`Workspace search invented a root-file prefix: ${paths.join(", ")}`)
+  }
+})

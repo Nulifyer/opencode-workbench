@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.4.4 - 2026-08-04
+
+### Added
+
+- Added plugin-owned idle continuation for active goals, with persistent turn
+  reservation, goal limits, terminal-state and admission-failure stops, and goal
+  bar controls for editing, pausing, resuming, and cancelling.
+- Added native persistent goal tools, `/goal` command registration, Plan-mode
+  safety, completion evidence, checkpoints, budgets, compaction context, and
+  one-time compatible state import to the bundled companion plugin.
+
+### Fixed
+
+- Rendered synthetic goal-continuation prompts as explicit timeline markers
+  instead of empty `Message sent` placeholders, including legacy transcript and
+  V2-only fallback paths.
+- Coalesced canonical `session.status: idle` and deprecated `session.idle`
+  events, and delayed continuation until a preceding asynchronous prompt can
+  report failure.
+- Prevented workspace mention search from inventing filename-prefix entries such
+  as `READ` and `README.` for a root-level `README.md` file.
+- Removed the runtime dependency on the third-party OpenCode goal plugin.
+
 ## 0.4.3 - 2026-08-04
 
 ### Changed

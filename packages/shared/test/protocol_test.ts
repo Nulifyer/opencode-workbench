@@ -28,6 +28,7 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "openFile", sessionID: "session-1", file: "src/main.ts", line: 42, column: 3 })?.type === "openFile", "located file request rejected")
   assert(parseWebviewMessage({ type: "openFile", sessionID: "session-1", file: "src/main.ts", line: 42, column: 3, endLine: 48, endColumn: 9 })?.type === "openFile", "file range request rejected")
   assert(parseWebviewMessage({ type: "setAutoApproval", sessionID: "session", enabled: true })?.type === "setAutoApproval", "valid auto approval rejected")
+  assert(parseWebviewMessage({ type: "goalAction", sessionID: "session", action: "pause" })?.type === "goalAction", "valid goal action rejected")
   assert(parseWebviewMessage({ type: "sessionAction", sessionID: "session", action: "fork", messageID: "message" })?.type === "sessionAction", "message fork rejected")
   assert(parseWebviewMessage({ type: "sessionAction", sessionID: "session", action: "retry" })?.type === "sessionAction", "retry action rejected")
   assert(parseWebviewMessage({ type: "sessionAction", sessionID: "session", action: "retry", messageID: "message" })?.type === "sessionAction", "message retry rejected")
@@ -77,6 +78,7 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "openFile", sessionID: "session-1", file: "src/main.ts", line: 48, endLine: 42 }) === undefined, "backward file range accepted")
   assert(parseWebviewMessage({ type: "setAutoApproval", sessionID: "session", enabled: true, extra: true }) === undefined, "extra auto approval fields accepted")
   assert(parseWebviewMessage({ type: "setAutoApproval", enabled: true }) === undefined, "sessionless auto approval accepted")
+  assert(parseWebviewMessage({ type: "goalAction", sessionID: "session", action: "delete" }) === undefined, "invalid goal action accepted")
   assert(parseWebviewMessage({ type: "copyText", text: "x".repeat(500_001) }) === undefined, "oversized block copy accepted")
   assert(parseWebviewMessage({ type: "unknown", command: "workbench.action.closeWindow" }) === undefined, "unknown message accepted")
 })
@@ -128,6 +130,22 @@ Deno.test("validates host snapshots", () => {
     },
   }
   assert(parseHostMessage(valid)?.type === "snapshot", "valid snapshot rejected")
+  const goalMarker: unknown = structuredClone(valid)
+  const markerSession = (goalMarker as { snapshot: { session: { messages: unknown[]; messageRevisions: Record<string, number> } } }).snapshot.session
+  markerSession.messages = [{
+    info: { id: "goal-message", sessionID: "s", role: "user" },
+    parts: [{
+      id: "goal-part",
+      sessionID: "s",
+      messageID: "goal-message",
+      type: "text",
+      text: "Continue working autonomously toward the active goal.",
+      synthetic: true,
+      metadata: { "opencode-workbench": { kind: "goal-continuation", version: 1 } },
+    }],
+  }]
+  markerSession.messageRevisions = { "goal-message": 1 }
+  assert(parseHostMessage(goalMarker)?.type === "snapshot", "goal continuation metadata was rejected from the host snapshot")
   const inconsistentConnection = structuredClone(valid)
   inconsistentConnection.snapshot.connectionState = "failed"
   assert(!parseHostMessage(inconsistentConnection), "contradictory connection state was accepted")

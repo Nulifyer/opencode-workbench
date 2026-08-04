@@ -52,10 +52,12 @@ export interface PreparedFzfIndex {
 export function workspaceSearchPaths(files: string[], limit = 20_000): string[] {
   const paths = new Set(files.slice(0, limit))
   for (const file of files) {
-    let parent = file.slice(0, file.lastIndexOf("/"))
+    const separator = file.lastIndexOf("/")
+    let parent = separator < 0 ? "" : file.slice(0, separator)
     while (parent && paths.size < limit) {
       paths.add(parent)
-      parent = parent.slice(0, parent.lastIndexOf("/"))
+      const parentSeparator = parent.lastIndexOf("/")
+      parent = parentSeparator < 0 ? "" : parent.slice(0, parentSeparator)
     }
     if (paths.size >= limit) break
   }

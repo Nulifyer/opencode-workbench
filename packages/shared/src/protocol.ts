@@ -53,6 +53,7 @@ export type WebviewToHostMessage =
   | { type: "openPatch"; sessionID: string; file: string }
   | { type: "sessionAction"; sessionID: string; action: "rename" | "delete" | "fork" | "undo" | "redo" | "retry" | "compact" | "share" | "unshare" | "export" | "copyLast" | "copyTranscript"; messageID?: string }
   | { type: "setAutoApproval"; sessionID: string; enabled: boolean }
+  | { type: "goalAction"; sessionID: string; action: "edit" | "pause" | "resume" | "cancel" }
   | { type: "openInEditor" }
   | { type: "openInSidebar" }
   | { type: "navigateBack" }
@@ -357,6 +358,11 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
       return exactKeys(value, ["type", "sessionID", "enabled"]) && validID(value.sessionID) && typeof value.enabled === "boolean"
         ? { type: "setAutoApproval", sessionID: value.sessionID, enabled: value.enabled }
         : undefined
+    case "goalAction":
+      return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) &&
+          ["edit", "pause", "resume", "cancel"].includes(String(value.action))
+        ? { type: "goalAction", sessionID: value.sessionID, action: value.action as "edit" | "pause" | "resume" | "cancel" }
+        : undefined
     case "selectSession":
       return typeof value.sessionID === "string" && value.sessionID.length > 0 && value.sessionID.length <= 1_024
         ? { type: "selectSession", sessionID: value.sessionID }
@@ -466,6 +472,7 @@ function validMessage(value: unknown): boolean {
     boundedOptionalString(part.mime, 100) &&
     boundedOptionalString(part.filename, 255) &&
     (part.synthetic === undefined || typeof part.synthetic === "boolean") &&
+    (part.metadata === undefined || validJson(part.metadata)) &&
     boundedOptionalString(part.tool, 1_024) &&
     (part.state === undefined || (record(part.state) &&
       boundedOptionalString(part.state.status, 100) &&
@@ -482,11 +489,12 @@ function validMessages(value: unknown[]): boolean {
   let parts = 0
   let characters = 0
   for (const message of value) {
-    const bundle = message as { parts: Array<{ text?: string; mime?: string; filename?: string; state?: { title?: string; output?: string; error?: string; input?: unknown; metadata?: unknown } }> }
+    const bundle = message as { parts: Array<{ text?: string; mime?: string; filename?: string; metadata?: unknown; state?: { title?: string; output?: string; error?: string; input?: unknown; metadata?: unknown } }> }
     parts += bundle.parts.length
     for (const part of bundle.parts) {
       characters += (part.text?.length ?? 0) + (part.state?.title?.length ?? 0) +
         (part.mime?.length ?? 0) + (part.filename?.length ?? 0) +
+        (part.metadata === undefined ? 0 : jsonCharacters(part.metadata)) +
         (part.state?.output?.length ?? 0) + (part.state?.error?.length ?? 0) +
         (part.state?.input === undefined ? 0 : jsonCharacters(part.state.input)) +
         (part.state?.metadata === undefined ? 0 : jsonCharacters(part.state.metadata))
@@ -767,8 +775,8 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
       (session.todos !== undefined && !validTodos(session.todos)) ||
       (session.changes !== undefined && !validChanges(session.changes)) ||
       (session.context !== undefined && !validContext(session.context)) ||
-      (session.goal !== undefined && !validGoal(session.goal))
-      || (session.delegations !== undefined && !validDelegations(session.delegations))
+      (session.goal !== undefined && !validGoal(session.goal)) ||
+      (session.delegations !== undefined && !validDelegations(session.delegations))
     ) return undefined
   }
   return value as HostToWebviewMessage

@@ -1,4 +1,4 @@
-import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
@@ -10,6 +10,27 @@ Deno.test("recognizes compaction-only user messages as timeline markers", () => 
     parts: [{ id: "part", messageID: "message", sessionID: "session", type: "compaction" }],
   })
   if (!compacted) throw new Error("Compaction marker was treated as an empty user prompt")
+})
+
+Deno.test("recognizes tagged and legacy goal continuations without hiding ordinary prompts", () => {
+  const message = (part: Record<string, unknown>, role: "user" | "assistant" = "user") => ({
+    info: { id: "message", sessionID: "session", role },
+    parts: [{ id: "part", messageID: "message", sessionID: "session", type: "text", ...part }],
+  })
+  if (!isGoalContinuationMessage(message({
+    text: "Continue toward the goal.",
+    synthetic: true,
+    metadata: { "opencode-workbench": { kind: "goal-continuation", version: 1 } },
+  }))) throw new Error("Tagged goal continuation was treated as an empty user prompt")
+  if (!isGoalContinuationMessage(message({
+    text: "Continue working autonomously toward the active goal. Call get_goal first.",
+    synthetic: true,
+  }))) throw new Error("Existing untagged goal continuation was not recognized")
+  if (isGoalContinuationMessage(message({ text: "Internal context", synthetic: true })) ||
+    isGoalContinuationMessage(message({ text: "Continue working autonomously toward the active goal.", synthetic: false })) ||
+    isGoalContinuationMessage(message({ text: "Continue working autonomously toward the active goal.", synthetic: true }, "assistant"))) {
+    throw new Error("An ordinary or non-user message was classified as a goal continuation")
+  }
 })
 
 Deno.test("groups sessions by actionable state before age", () => {

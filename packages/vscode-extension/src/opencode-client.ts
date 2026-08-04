@@ -39,6 +39,8 @@ export function validateServerUrl(value: string): void {
 
 type JsonRecord = Record<string, unknown>
 
+const GOAL_CONTINUATION_PROMPT = `Continue working autonomously toward the active goal. Call get_goal first and stop if its status is not active. Make concrete progress, use the available tools, and verify the result. Before ending this turn, update the goal with an evidence-based checkpoint; mark it complete only after auditing real evidence, or unmet only when a concrete blocker prevents completion. Do not ask for more user input unless permissions, destructive actions, remote writes, purchases, or material scope expansion require it.`
+
 const RESPONSE_BODY_LIMIT = 32 * 1024 * 1024
 const ERROR_BODY_LIMIT = 64 * 1024
 const REQUEST_TIMEOUT_MS = 30_000
@@ -243,6 +245,11 @@ function projectedToolOutput(state: JsonRecord): string | undefined {
   return text.length ? text.join("\n") : undefined
 }
 
+function goalContinuationMetadata(value: Record<string, unknown> | undefined): boolean {
+  const marker = value?.["opencode-workbench"]
+  return isRecord(marker) && marker.kind === "goal-continuation"
+}
+
 function projectedMessages(value: unknown, sessionID: string): MessageBundle[] | undefined {
   if (!isRecord(value) || !Array.isArray(value.data)) return undefined
   const messages: MessageBundle[] = []
@@ -253,12 +260,26 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
     const time = created === undefined && completed === undefined ? undefined : { created, completed }
     if (item.type === "user") {
       const parts: MessagePart[] = []
-      const text = typeof item.text === "string"
-        ? item.text
+      const textEntries = typeof item.text === "string"
+        ? [{ text: item.text, synthetic: item.synthetic, metadata: item.metadata }]
         : Array.isArray(item.content)
-        ? item.content.flatMap((entry) => isRecord(entry) && entry.type === "text" && typeof entry.text === "string" ? [entry.text] : []).join("\n")
-        : ""
-      if (text) parts.push({ id: `${item.id}-text`, sessionID, messageID: item.id, type: "text", text })
+        ? item.content.flatMap((entry) => isRecord(entry) && entry.type === "text" && typeof entry.text === "string"
+          ? [{ text: entry.text, synthetic: entry.synthetic ?? item.synthetic, metadata: entry.metadata ?? item.metadata }]
+          : [])
+        : []
+      for (const [index, entry] of textEntries.entries()) {
+        if (!entry.text) continue
+        const parsedMetadata = metadata(entry.metadata)?.value
+        parts.push({
+          id: index === 0 ? `${item.id}-text` : `${item.id}-text-${index}`,
+          sessionID,
+          messageID: item.id,
+          type: "text",
+          text: entry.text,
+          ...((entry.synthetic === true || goalContinuationMetadata(parsedMetadata)) ? { synthetic: true } : {}),
+          ...(parsedMetadata ? { metadata: parsedMetadata } : {}),
+        })
+      }
       if (Array.isArray(item.files)) for (const [index, file] of item.files.entries()) {
         if (!isRecord(file) || typeof file.uri !== "string" || typeof file.mime !== "string") continue
         const filename = typeof file.name === "string" && file.name ? file.name : `Attachment ${index + 1}`
@@ -748,6 +769,10 @@ export class OpenCodeClient {
     const current = v2.status === "fulfilled" ? v2.value : undefined
     const previous = legacy.status === "fulfilled" ? legacy.value : []
     if (!current && legacy.status === "rejected") throw v2.status === "rejected" ? v2.reason : legacy.reason
+    if (current && legacy.status === "rejected") for (const message of current) {
+      if (message.info.role !== "user") continue
+      for (const part of message.parts) if (part.type === "text" && part.text === GOAL_CONTINUATION_PROMPT) part.synthetic = true
+    }
     const merged = previous.slice()
     const positions = new Map(merged.map((message, index) => [message.info?.id, index]))
     for (const message of current ?? []) {
@@ -1154,6 +1179,14 @@ export class OpenCodeClient {
 
   async commands(): Promise<CommandOption[]> {
     return parseCommands(await this.request<unknown>("GET", "/command"))
+  }
+
+  async toolIDs(): Promise<string[]> {
+    const value = await this.request<unknown>("GET", "/experimental/tool/ids")
+    if (!Array.isArray(value) || value.length > 10_000 || value.some((id) => !boundedString(id, 1_024) || !id)) {
+      throw new Error("OpenCode returned malformed tool IDs")
+    }
+    return [...new Set(value)]
   }
 
   async events(signal: AbortSignal, onOpen: () => Promise<void> | void, onEvent: (event: OpenCodeEvent) => void): Promise<void> {

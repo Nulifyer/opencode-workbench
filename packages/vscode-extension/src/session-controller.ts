@@ -166,6 +166,10 @@ function snapshotPart(part: MessagePart): MessagePart | undefined {
   const text = boundedText(part.text, 500_000)
   if (text !== undefined) output.text = text
   if (typeof part.synthetic === "boolean") output.synthetic = part.synthetic
+  if (part.metadata !== undefined) {
+    const metadata = boundedJson(part.metadata)
+    if (metadata !== OMIT) output.metadata = metadata
+  }
   const tool = boundedText(part.tool, 1_024)
   if (tool !== undefined) output.tool = tool
   if (part.type === "file") {
@@ -200,6 +204,7 @@ function snapshotPart(part: MessagePart): MessagePart | undefined {
 
 function snapshotPartCharacters(part: MessagePart): number {
   return (part.text?.length ?? 0) + (typeof part.mime === "string" ? part.mime.length : 0) + (typeof part.filename === "string" ? part.filename.length : 0) +
+    (part.metadata === undefined ? 0 : JSON.stringify(part.metadata).length) +
     (part.state?.title?.length ?? 0) + (part.state?.output?.length ?? 0) +
     (part.state?.error?.length ?? 0) + (part.state?.input === undefined ? 0 : JSON.stringify(part.state.input).length) +
     (part.state?.metadata === undefined ? 0 : JSON.stringify(part.state.metadata).length)
@@ -396,6 +401,7 @@ const GOAL_TOOLS = new Set([
   "update_goal",
   "update_goal_status",
   "update_goal_objective",
+  "update_goal_checkpoint",
   "clear_goal",
 ])
 
@@ -1816,6 +1822,7 @@ export class SessionController {
     const agentVariant = configuredAgentModel === effectiveModel && selectedModel?.variants?.includes(configuredAgent?.variant ?? "") ? configuredAgent?.variant : undefined
     const fallbackVariant = agentVariant ?? (selectedModel?.variants?.includes(this.defaultVariant ?? "") ? this.defaultVariant : undefined)
     const effectiveVariant = current?.variant ?? (effectiveModel && this.modelVariants.has(effectiveModel) ? this.modelVariants.get(effectiveModel) : fallbackVariant)
+    const goal = current ? deriveGoal(current.messages) : undefined
     return {
       connected: this.state.connected,
       connectionState: this.state.connectionState,
@@ -1872,7 +1879,7 @@ export class SessionController {
         todos: current.todos,
         changes: current.changes,
         context: deriveContext(current.messages, this.models, selectedModel, current.info.cost),
-        goal: deriveGoal(current.messages),
+        goal,
         delegations,
       } : undefined,
     }
