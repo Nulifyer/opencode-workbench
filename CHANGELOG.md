@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 0.4.2 - 2026-08-03
+
+### Added
+
+- Added layered synthetic, stress, and installed-OpenCode integration suites
+  for event ordering, connection lifecycle, and prompt projection behavior.
+
+### Changed
+
+- Presented user-facing process updates as distinct activity blocks.
+- Kept the active work block expanded across assistant step transitions and
+  collapsed it when the full response completed.
+
+### Fixed
+
+- Distinguished initial loading and reconnecting from a confirmed connection
+  failure, preventing transient offline warnings during session hydration.
+- Preserved ordered SSE processing under burst load, isolated handler failures,
+  and discarded stale events when replacing a managed server connection.
+- Kept submitted prompt text visible across partial server projections and
+  ambiguous admission failures instead of showing a temporary placeholder.
+- Improved warning contrast and stabilized active-work timing between model
+  steps.
+
 ## 0.4.1 - 2026-08-03
 
 ### Added
