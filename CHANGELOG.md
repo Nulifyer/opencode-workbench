@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-08-03
+
+### Added
+
+- Added foreground detail popovers for formatter, MCP, and context status with
+  OpenCode-compatible service states, token usage, limits, and cost.
+
+### Fixed
+
+- Kept operational throbbers and Braille spinners active when reduced motion is
+  enabled while continuing to suppress decorative transitions.
+- Replaced the permission Allow menu text arrow with a centered chevron icon.
+- Kept runtime status popovers above the composer and aligned LSP, formatter,
+  and MCP health counts with their native OpenCode contracts.
+
 ## 0.4.0 - 2026-08-03
 
 ### Added
