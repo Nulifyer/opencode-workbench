@@ -122,7 +122,7 @@ setInterval(() => {}, 1000)
         message = error instanceof Error ? error.message : String(error)
       }
       const deadline = /timed out after (\d+)ms/.exec(message)?.[1]
-      if (!(deadline && Number(deadline) > 0 && Number(deadline) <= 25) && message !== "Managed OpenCode server did not become ready within 0.025 seconds") {
+      if (!(deadline && Number(deadline) > 0 && Number(deadline) <= 25) && message !== "Managed OpenCode startup deadline expired" && message !== "Managed OpenCode server did not become ready within 0.025 seconds") {
         throw new Error(`Configured startup deadline was not applied: ${message}`)
       }
     } finally {
