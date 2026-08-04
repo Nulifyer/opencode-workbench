@@ -302,6 +302,10 @@ function runtimeServices(value: unknown, objectEntries = false): RuntimeService[
   return services
 }
 
+function runtimeFormatters(value: unknown): RuntimeService[] {
+  return runtimeServices(value).filter((formatter) => typeof formatter.enabled === "boolean" && Boolean(formatter.extensions))
+}
+
 function normalizeRuntime(path: unknown, vcs: unknown, lsp: unknown, formatter: unknown, mcp: unknown): RuntimeStatus {
   const pathRecord = record(path) ? path : undefined
   const vcsRecord = record(vcs) ? vcs : undefined
@@ -317,7 +321,7 @@ function normalizeRuntime(path: unknown, vcs: unknown, lsp: unknown, formatter: 
       : undefined,
     vcs: vcsRecord ? { branch: boundedRuntimeString(vcsRecord.branch, 2_000) } : undefined,
     lsp: runtimeServices(lsp),
-    formatters: runtimeServices(formatter),
+    formatters: runtimeFormatters(formatter),
     mcp: runtimeServices(mcp, true),
     updatedAt: Date.now(),
   }

@@ -64,6 +64,29 @@ Deno.test("LSP events refresh runtime status", async () => {
   controller.dispose()
 })
 
+Deno.test("runtime normalization follows OpenCode formatter and MCP status contracts", async () => {
+  const fake = {
+    listSessions: async () => [],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    formatter: async () => [
+      { name: "prettier", extensions: [".js", ".ts"], enabled: true },
+      { name: "gofmt", extensions: [".go"], enabled: false },
+      { name: "invalid", extensions: [".txt"] },
+    ],
+    mcp: async () => ({ docs: { status: "needs_auth" }, fs: { status: "connected" }, broken: { status: "failed", error: "Connection closed" } }),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const runtime = controller.chatSnapshot().runtime
+  if (runtime?.formatters.length !== 2 || runtime.formatters[0]?.id !== "prettier" || runtime.formatters[0]?.enabled !== true ||
+    runtime.formatters[0]?.extensions?.join(",") !== ".js,.ts" || runtime.formatters[1]?.enabled !== false ||
+    runtime.mcp.map((service) => `${service.id}:${service.status}:${service.error ?? ""}`).join(",") !== "docs:needs_auth:,fs:connected:,broken:failed:Connection closed") {
+    throw new Error(`OpenCode formatter or MCP runtime status was normalized incorrectly: ${JSON.stringify(runtime)}`)
+  }
+  controller.dispose()
+})
+
 Deno.test("chat snapshot caps session summaries while retaining selection", async () => {
   const sessions = Array.from({ length: 5_001 }, (_, index) => session(`session-${index}`, 5_001 - index))
   const fake = {

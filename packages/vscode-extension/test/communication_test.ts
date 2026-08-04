@@ -182,6 +182,13 @@ Deno.test({
       client = new OpenCodeClient(connection)
       const health = await client.health()
       if (health.version !== "1.18.11") throw new Error(`Expected OpenCode 1.18.11, received ${health.version}`)
+      const formatterStatus = await client.formatter()
+      const mcpStatus = await client.mcp()
+      if (!Array.isArray(formatterStatus) || !formatterStatus.every((formatter) => typeof formatter === "object" && formatter !== null &&
+        "name" in formatter && typeof formatter.name === "string" && "extensions" in formatter && Array.isArray(formatter.extensions) &&
+        "enabled" in formatter && typeof formatter.enabled === "boolean") || typeof mcpStatus !== "object" || mcpStatus === null || Array.isArray(mcpStatus)) {
+        throw new Error("OpenCode returned an incompatible formatter or MCP status contract")
+      }
 
       const opened = deferred<void>()
       const createdEvent = deferred<string>()

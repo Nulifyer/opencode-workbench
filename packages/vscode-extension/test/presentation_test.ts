@@ -1,4 +1,4 @@
-import { applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, sessionGroup, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import { applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
@@ -39,6 +39,16 @@ Deno.test("summarizes reasoning and tool presentation", () => {
   assertEquals(delegationCompletionSummary([]), "Completed")
   assertEquals(toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "grep" }), "explore")
   assertEquals(toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "apply_patch" }), "edit")
+})
+
+Deno.test("presents OpenCode runtime service contracts accurately", () => {
+  assertEquals(runtimeServicePresentation({ id: "typescript", status: "connected", root: "/work" }, "lsp"), { status: "Connected", detail: "/work", healthy: true, tone: "status" })
+  assertEquals(runtimeServicePresentation({ id: "broken", status: "error", root: "/work" }, "lsp"), { status: "Error", detail: "/work", healthy: false, tone: "error" })
+  assertEquals(runtimeServicePresentation({ id: "prettier", name: "prettier", enabled: true, extensions: [".js", ".ts"] }, "formatter"), { status: "Available", detail: ".js .ts", healthy: true, tone: "status" })
+  assertEquals(runtimeServicePresentation({ id: "gofmt", enabled: false, extensions: [".go"] }, "formatter"), { status: "Executable not found", detail: ".go", healthy: false, tone: "error" })
+  assertEquals(runtimeServicePresentation({ id: "docs", status: "needs_auth" }, "mcp"), { status: "Authentication required", healthy: false, tone: "warning" })
+  assertEquals(runtimeServicePresentation({ id: "off", status: "disabled" }, "mcp"), { status: "Disabled", healthy: false, tone: "muted" })
+  assertEquals(runtimeServicePresentation({ id: "fs", status: "connected" }, "mcp"), { status: "Connected", healthy: true, tone: "status" })
 })
 
 Deno.test("composer submit ignores IME composition", () => {

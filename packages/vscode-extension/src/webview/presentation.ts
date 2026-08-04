@@ -1,6 +1,23 @@
-import type { ChatSnapshot, MessageBundle, MessagePart, PermissionRequest } from "@opencode-workbench/shared"
+import type { ChatSnapshot, MessageBundle, MessagePart, PermissionRequest, RuntimeService } from "@opencode-workbench/shared"
 
 export type SessionGroup = "Needs input" | "Working" | "Completed" | "Today" | "Yesterday" | "Previous 7 days" | "Older"
+
+export function runtimeServicePresentation(service: RuntimeService, kind: "lsp" | "formatter" | "mcp"): { status: string; detail?: string; healthy: boolean; tone: "status" | "warning" | "error" | "muted" } {
+  if (kind === "formatter") return {
+    status: service.enabled ? "Available" : "Executable not found",
+    detail: service.extensions?.join(" "),
+    healthy: service.enabled === true,
+    tone: service.enabled ? "status" : "error",
+  }
+  if (kind === "mcp") {
+    const status = ({ connected: "Connected", disabled: "Disabled", failed: "Failed", needs_auth: "Authentication required", needs_client_registration: "Client registration required" } as Record<string, string>)[service.status ?? ""] ?? service.status ?? "Unknown"
+    const tone = service.status === "connected" ? "status" : service.status === "disabled" ? "muted" : service.status === "failed" ? "error" : "warning"
+    return { status, detail: service.root, healthy: service.status === "connected", tone }
+  }
+  const status = service.error || (({ connected: "Connected", error: "Error" } as Record<string, string>)[service.status ?? ""] ?? service.status ?? "Available")
+  const healthy = service.status === "connected" && !service.error
+  return { status, detail: service.root, healthy, tone: healthy ? "status" : "error" }
+}
 
 export function isCompactionMessage(message: MessageBundle): boolean {
   return message.info.role === "user" && message.parts.some((part) => part.type === "compaction")

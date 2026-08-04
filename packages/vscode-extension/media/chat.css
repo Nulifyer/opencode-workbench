@@ -284,6 +284,7 @@ a { color: var(--vscode-textLink-foreground); }
 .permission-card .permission-allow-menu { margin: 0; }
 .permission-card .permission-allow-menu > summary { box-sizing: border-box; min-width: 25px; min-height: 25px; display: grid; place-items: center; padding: 0 5px; border-left: 1px solid color-mix(in srgb, var(--vscode-button-foreground) 35%, transparent); border-radius: 0 4px 4px 0; color: var(--vscode-button-foreground); background: var(--vscode-button-background); list-style: none; }
 .permission-card .permission-allow-menu > summary::-webkit-details-marker { display: none; }
+.permission-card .permission-allow-menu > summary svg { width: 14px; height: 14px; display: block; fill: currentColor; }
 .permission-card .permission-allow-menu > summary:hover { background: var(--vscode-button-hoverBackground); }
 .permission-allow-options { position: absolute; right: 0; bottom: calc(100% + 4px); z-index: 30; width: max-content; max-width: min(380px, calc(100vw - 32px)); display: grid; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); border-radius: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); }
 .permission-allow-options button { width: 100%; min-height: 26px; overflow: hidden; border: 0; color: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
@@ -468,21 +469,29 @@ a { color: var(--vscode-textLink-foreground); }
 .stopping-icon { animation: stopping-pulse 600ms ease-in-out infinite alternate; }
 @keyframes stopping-pulse { from { opacity: .35; } to { opacity: 1; } }
 .queue-action { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
-.workspace-strip { display: flex; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 2px 3px; color: var(--vscode-descriptionForeground); font-size: var(--vscode-font-size); opacity: .78; }
+.workspace-strip { display: flex; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 2px 3px; color: var(--vscode-descriptionForeground); font-size: var(--vscode-font-size); }
 .workspace-left { min-width: 0; display: flex; }
 .workspace-right { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 12px; }
+.workspace-left, .workspace-right > span, .workspace-detail > summary { opacity: .78; }
 .workspace-strip .branch { overflow: hidden; max-width: 150px; text-overflow: ellipsis; white-space: nowrap; }
-.workspace-lsp { position: relative; }
-.workspace-lsp > summary { cursor: pointer; list-style: none; }
-.workspace-lsp > summary::-webkit-details-marker { display: none; }
-.workspace-lsp > summary:hover, .workspace-lsp > summary:focus-visible { color: var(--vscode-foreground); }
-.workspace-lsp-popover { position: fixed; z-index: 30; right: 8px; bottom: 30px; width: min(330px, calc(100vw - 16px)); max-height: min(50vh, 360px); overflow-y: auto; padding: 9px; border: 1px solid var(--vscode-widget-border); border-radius: 7px; color: var(--vscode-foreground); background: var(--vscode-editorWidget-background); box-shadow: 0 8px 24px var(--vscode-widget-shadow); }
-.workspace-lsp-popover > strong { display: block; margin-bottom: 7px; }
-.workspace-lsp-popover p { margin: 0; color: var(--vscode-descriptionForeground); }
-.workspace-lsp-popover ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.workspace-lsp-popover li { display: grid; gap: 2px; }
-.workspace-lsp-popover small { color: var(--vscode-descriptionForeground); }
-.workspace-lsp-popover code { overflow-wrap: anywhere; font-size: 10px; }
+.workspace-detail { position: relative; }
+.workspace-detail > summary { cursor: pointer; list-style: none; }
+.workspace-detail > summary::-webkit-details-marker { display: none; }
+.workspace-detail > summary:hover, .workspace-detail > summary:focus-visible, .workspace-detail[open] > summary { color: var(--vscode-foreground); opacity: 1; }
+.workspace-detail-popover { position: fixed; z-index: 30; right: 8px; bottom: 30px; width: min(350px, calc(100vw - 16px)); max-height: min(55vh, 420px); overflow-y: auto; padding: 9px; border: 1px solid var(--vscode-widget-border); border-radius: 7px; color: var(--vscode-foreground); background: var(--vscode-editorWidget-background); box-shadow: 0 8px 24px var(--vscode-widget-shadow); }
+.workspace-detail-popover > strong { display: block; margin-bottom: 7px; }
+.workspace-detail-popover p { margin: 0; color: var(--vscode-descriptionForeground); }
+.workspace-service-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.workspace-service-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; }
+.workspace-service-list li > code, .workspace-service-list li > .service-error { grid-column: 1 / -1; }
+.workspace-detail-popover small { color: var(--vscode-descriptionForeground); }
+.workspace-detail-popover .service-warning { color: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-editorWarning-foreground)); }
+.workspace-detail-popover .service-muted { opacity: .72; }
+.workspace-detail-popover code { overflow-wrap: anywhere; font-size: 10px; }
+.workspace-context-list { display: grid; gap: 5px; margin: 0; }
+.workspace-context-list > div { display: grid; grid-template-columns: minmax(90px, 1fr) auto; gap: 10px; }
+.workspace-context-list dt { color: var(--vscode-descriptionForeground); }
+.workspace-context-list dd { margin: 0; font-family: var(--vscode-editor-font-family); font-size: 11px; text-align: right; }
 
 .overlay { position: absolute; z-index: 20; inset: 0; }
 .overlay-backdrop { position: absolute; inset: 0; width: 100%; border: 0; background: color-mix(in srgb, var(--vscode-editor-background) 68%, transparent); cursor: default; }
@@ -560,6 +569,8 @@ body[data-mode="sidebar"].rail-open .right-rail { position: absolute; z-index: 1
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; transition: none !important; }
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+  .turn.activity-expanding .assistant-process, .turn.activity-expanding .message.assistant.process-only { animation: none !important; }
 }
-body.vscode-reduce-motion *, body.vscode-reduce-motion *::before, body.vscode-reduce-motion *::after { animation: none !important; scroll-behavior: auto !important; transition: none !important; }
+body.vscode-reduce-motion *, body.vscode-reduce-motion *::before, body.vscode-reduce-motion *::after { scroll-behavior: auto !important; transition: none !important; }
+body.vscode-reduce-motion .turn.activity-expanding .assistant-process, body.vscode-reduce-motion .turn.activity-expanding .message.assistant.process-only { animation: none !important; }

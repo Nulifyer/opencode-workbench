@@ -1,6 +1,6 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
 import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type WebviewToHostMessage } from "@opencode-workbench/shared"
-import { applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, sessionGroup, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
+import { applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
 
 interface WebviewState {
   todoExpanded?: boolean
@@ -151,6 +151,7 @@ const FOLDER_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 3
 const COPY_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2h8v9h-2V9.8h.8V3.2H6.2V4H5V2Zm-2 3h8v9H3V5Zm1.2 1.2v6.6h5.6V6.2H4.2Z"/></svg>`
 const EDIT_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m11.7 1.8 2.5 2.5-8.1 8.1-3.3.8.8-3.3 8.1-8.1Zm0 1.7-7 7-.3 1.1 1.1-.3 7-7-.8-.8Z"/></svg>`
 const OPEN_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5h-1.3V4.2L7.4 9.5l-.9-.9 5.3-5.3H9V2ZM3.2 3.2h4.1v1.3H4.5v7h7V8.7h1.3v4.1H3.2V3.2Z"/></svg>`
+const CHEVRON_DOWN_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.2 5.2 4.8 4.7 4.8-4.7.9.9L8 11.8 2.3 6.1l.9-.9Z"/></svg>`
 const SESSION_ICONS = {
   question: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM8 13A5 5 0 1 1 8 3a5 5 0 0 1 0 10Zm-.7-3h1.4v1.4H7.3V10Zm.8-5.7c1.4 0 2.4.8 2.4 2 0 .9-.5 1.4-1.3 1.9-.6.3-.7.5-.7 1H7.2c0-1.1.3-1.5 1.2-2 .6-.4.8-.6.8-1 0-.5-.4-.8-1.1-.8-.6 0-1 .3-1.4.8l-1-.8c.6-.7 1.3-1.1 2.4-1.1Z"/></svg>`,
   permission: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.3 13 3v3.8c0 3.2-2 5.9-5 7.5-3-1.6-5-4.3-5-7.5V3l5-1.7Zm0 1.5L4.3 4v2.8c0 2.5 1.4 4.6 3.7 6 2.3-1.4 3.7-3.5 3.7-6V4L8 2.8Zm-.7 2h1.4v4H7.3v-4Zm0 5.1h1.4v1.4H7.3V9.9Z"/></svg>`,
@@ -1151,7 +1152,7 @@ function renderPermissions(session: NonNullable<ChatSnapshot["session"]>): void 
     const scopeActions = reusableScopes.map((candidate) => candidate === "*"
       ? `<button type="button" role="menuitem" data-permission="scope" data-permission-scope="*">Allow All Shell Commands in this Session</button>`
       : `<button type="button" role="menuitem" data-permission="scope" data-permission-scope="${escapeHtml(candidate)}">Allow <code>${escapeHtml(candidate.replace(/ \*$/, " …"))}</code> in this Session</button>`).join("")
-    const allowMenu = !incomplete && (exactAction || scopeActions) ? `<details class="permission-allow-menu"><summary aria-label="More allow options" title="More allow options">⌄</summary><div class="permission-allow-options" role="menu">${exactAction}${scopeActions}</div></details>` : ""
+    const allowMenu = !incomplete && (exactAction || scopeActions) ? `<details class="permission-allow-menu"><summary aria-label="More allow options" title="More allow options">${CHEVRON_DOWN_ICON}</summary><div class="permission-allow-options" role="menu">${exactAction}${scopeActions}</div></details>` : ""
     const incompleteDetails = incomplete ? `<details class="permission-raw"><summary>Available request data</summary><pre>${escapeHtml(incompletePermissionDetails(request))}</pre></details><p class="permission-warning">Some request metadata was truncated. Review the available data and reject this request.</p>` : ""
     return `<article class="permission-card${incomplete ? " permission-incomplete" : ""}" data-request-id="${escapeHtml(request.id)}" data-request-session="${escapeHtml(request.sessionID)}" data-request-protocol="${request.protocol}"><div class="permission-heading"><span class="permission-request-icon" aria-hidden="true">${escapeHtml(presentation.icon)}</span><span class="permission-heading-copy"><strong>${escapeHtml(presentation.title)}</strong><small>${escapeHtml(origin)}</small></span></div>${summary}${changes}${incompleteDetails}<details class="permission-feedback"><summary>Explain rejection <small>(optional)</small></summary><label class="custom-answer"><span>Feedback</span><input type="text" data-permission-feedback maxlength="20000" autocomplete="off"></label></details><div class="permission-actions"><button type="button" data-permission="reject">Reject</button><div class="permission-allow-group"><button type="button" data-permission="once" class="primary-action" title="Allow once"${disabled}>Allow</button>${allowMenu}</div></div></article>`
   }).join("")
@@ -1203,24 +1204,58 @@ function serviceLabel(service: RuntimeService): string {
   return `${service.name || service.id}: ${service.error || service.status || "available"}${service.root ? ` · ${service.root}` : ""}`
 }
 
+function serviceList(services: RuntimeService[], kind: "lsp" | "formatter" | "mcp"): string {
+  return `<ul class="workspace-service-list">${services.map((service) => {
+    const name = escapeHtml(service.name || service.id)
+    const presentation = runtimeServicePresentation(service, kind)
+    const detail = presentation.detail ? `<code>${escapeHtml(presentation.detail)}</code>` : ""
+    const error = service.error && service.error !== presentation.status ? `<small class="service-error">${escapeHtml(service.error)}</small>` : ""
+    return `<li><span>${name}</span><small class="service-${presentation.tone}">${escapeHtml(presentation.status)}</small>${error}${detail}</li>`
+  }).join("")}</ul>`
+}
+
+function workspaceDetail(kind: string, label: string, title: string, content: string, tooltip: string): string {
+  return `<details class="workspace-detail workspace-${kind}"><summary title="${escapeHtml(tooltip)}">${escapeHtml(label)}</summary><div class="workspace-detail-popover"><strong>${escapeHtml(title)}</strong>${content}</div></details>`
+}
+
+function contextDetails(context: NonNullable<NonNullable<ChatSnapshot["session"]>["context"]>): string {
+  const rows = [
+    ["Model", context.model ?? "Unknown"],
+    ["Total tokens", context.totalTokens.toLocaleString()],
+    ["Input", context.inputTokens.toLocaleString()],
+    ["Output", context.outputTokens.toLocaleString()],
+    ["Reasoning", context.reasoningTokens.toLocaleString()],
+    ["Cache read", context.cacheReadTokens.toLocaleString()],
+    ["Cache write", context.cacheWriteTokens.toLocaleString()],
+    ["Context limit", context.contextLimit?.toLocaleString() ?? "Unknown"],
+    ["Input limit", context.inputLimit?.toLocaleString() ?? "Unknown"],
+    ["Output limit", context.outputLimit?.toLocaleString() ?? "Unknown"],
+    ["Session cost", `$${context.cost.toFixed(4)}`],
+  ]
+  return `<dl class="workspace-context-list">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label!)}</dt><dd>${escapeHtml(value!)}</dd></div>`).join("")}</dl>`
+}
+
 function renderWorkspaceStrip(session?: NonNullable<ChatSnapshot["session"]>): void {
   const runtime = snapshot.runtime
-  const signature = JSON.stringify([runtime?.vcs, runtime?.lsp, runtime?.formatters, runtime?.mcp, session?.context?.usagePercent])
+  const signature = JSON.stringify([runtime?.vcs, runtime?.lsp, runtime?.formatters, runtime?.mcp, session?.context])
   if (signature === workspaceSignature) return
   workspaceSignature = signature
-  const lspHealthy = runtime?.lsp.filter((service) => !service.error).length ?? 0
-  const formatterHealthy = runtime?.formatters.filter((service) => service.enabled !== false && !service.error).length ?? 0
-  const mcpHealthy = runtime?.mcp.filter((service) => !service.error).length ?? 0
-  const context = session?.context?.usagePercent
+  const lspHealthy = runtime?.lsp.filter((service) => runtimeServicePresentation(service, "lsp").healthy).length ?? 0
+  const formatterHealthy = runtime?.formatters.filter((service) => runtimeServicePresentation(service, "formatter").healthy).length ?? 0
+  const mcpHealthy = runtime?.mcp.filter((service) => runtimeServicePresentation(service, "mcp").healthy).length ?? 0
+  const context = session?.context
   const left = runtime?.vcs?.branch ? `<span class="branch">${escapeHtml(runtime.vcs.branch)}</span>` : ""
   const lsp = runtime?.lsp ?? []
-  const lspTooltip = lsp.length ? lsp.map(serviceLabel).join("\n") : "No language servers reported"
-  const lspItems = lsp.length ? `<ul>${lsp.map((service) => `<li><span>${escapeHtml(service.name || service.id)}</span><small class="service-${service.error ? "error" : "status"}">${escapeHtml(service.error || service.status || "available")}</small>${service.root ? `<code>${escapeHtml(service.root)}</code>` : ""}</li>`).join("")}</ul>` : `<p>No language servers reported.</p>`
+  const formatters = runtime?.formatters ?? []
+  const mcp = runtime?.mcp ?? []
+  const lspTooltip = lsp.map(serviceLabel).join("\n")
+  const formatterTooltip = formatters.map((formatter) => `${formatter.name || formatter.id}: ${formatter.enabled ? "available" : "executable not found"}`).join("\n")
+  const mcpTooltip = mcp.map(serviceLabel).join("\n")
   const right = [
-    `<details class="workspace-lsp"><summary title="${escapeHtml(lspTooltip)}">LSP ${lspHealthy}/${lsp.length}</summary><div class="workspace-lsp-popover"><strong>Language servers</strong>${lspItems}</div></details>`,
-    `<span>Fmt ${formatterHealthy}/${runtime?.formatters.length ?? 0}</span>`,
-    `<span>MCP ${mcpHealthy}/${runtime?.mcp.length ?? 0}</span>`,
-    `<span>Context ${context === undefined ? "--" : `${Math.round(context)}%`}</span>`,
+    lsp.length ? workspaceDetail("lsp", `LSP ${lspHealthy}/${lsp.length}`, "Language servers", serviceList(lsp, "lsp"), lspTooltip) : `<span>LSP 0/0</span>`,
+    formatters.length ? workspaceDetail("formatter", `Fmt ${formatterHealthy}/${formatters.length}`, "Formatters", serviceList(formatters, "formatter"), formatterTooltip) : `<span>Fmt 0/0</span>`,
+    mcp.length ? workspaceDetail("mcp", `MCP ${mcpHealthy}/${mcp.length}`, "MCP servers", serviceList(mcp, "mcp"), mcpTooltip) : `<span>MCP 0/0</span>`,
+    context ? workspaceDetail("context", `Context ${context.usagePercent === undefined ? "--" : `${Math.round(context.usagePercent)}%`}`, "Context usage", contextDetails(context), context.model ?? "Context usage") : `<span>Context --</span>`,
   ].filter(Boolean).join("")
   workspaceStrip.innerHTML = `<span class="workspace-left">${left}</span><div class="workspace-right">${right}</div>`
 }
@@ -2501,6 +2536,13 @@ todoDock.addEventListener("click", (event) => {
   if (list) list.hidden = !todoExpanded
   vscode.setState({ ...(vscode.getState() ?? {}), todoExpanded })
 })
+workspaceStrip.addEventListener("toggle", (event) => {
+  const opened = event.target instanceof HTMLDetailsElement ? event.target : undefined
+  if (!opened?.open || !opened.classList.contains("workspace-detail")) return
+  for (const detail of workspaceStrip.querySelectorAll<HTMLDetailsElement>(".workspace-detail[open]")) {
+    if (detail !== opened) detail.open = false
+  }
+}, true)
 railToggle.addEventListener("click", () => {
   if (document.body.classList.contains("rail-open")) closeRail()
   else showRail()
@@ -2651,6 +2693,11 @@ document.addEventListener("keydown", (event) => {
     else if (permissionDock.querySelector<HTMLDetailsElement>(".permission-allow-menu[open]")) {
       permissionDock.querySelector<HTMLDetailsElement>(".permission-allow-menu[open]")!.open = false
     }
+    else if (workspaceStrip.querySelector<HTMLDetailsElement>(".workspace-detail[open]")) {
+      const detail = workspaceStrip.querySelector<HTMLDetailsElement>(".workspace-detail[open]")!
+      detail.open = false
+      detail.querySelector<HTMLElement>("summary")?.focus()
+    }
     else if (document.body.dataset.mode === "sidebar" && document.body.classList.contains("rail-open")) closeRail()
     else if (snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry") {
       event.preventDefault()
@@ -2670,6 +2717,9 @@ document.addEventListener("pointerdown", (event) => {
   if (!sessionContextMenu.hidden && event.target instanceof Node && !sessionContextMenu.contains(event.target)) closeSessionContextMenu()
   if (!sessionMenu.hidden && event.target instanceof Node && !sessionMenu.contains(event.target) && !sessionMenuToggle.contains(event.target)) closeSessionMenu()
   if (!modelPicker.hidden && event.target instanceof Node && !modelPicker.contains(event.target) && !modelToggle.contains(event.target)) closeModelPicker()
+  if (event.target instanceof Node && !workspaceStrip.contains(event.target)) {
+    for (const detail of workspaceStrip.querySelectorAll<HTMLDetailsElement>(".workspace-detail[open]")) detail.open = false
+  }
 })
 window.addEventListener("message", (event) => {
   const message = parseHostMessage(event.data)
