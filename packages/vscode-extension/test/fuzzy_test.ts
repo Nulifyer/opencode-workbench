@@ -1,4 +1,4 @@
-import { fzfScore, prepareFzf, rankFzf, rankPreparedFzf } from "../src/fuzzy.ts"
+import { fzfScore, prepareFzf, rankFzf, rankPreparedFzf, workspaceSearchPaths } from "../src/fuzzy.ts"
 
 Deno.test("fzf ranking is case-insensitive and rewards basename prefixes", () => {
   const ranked = rankFzf("read", ["src/thread.ts", "docs/reading-list.md", "README.md", "packages/reader.ts"])
@@ -16,4 +16,16 @@ Deno.test("prepared fzf indexes preserve deterministic bounded ranking", () => {
   const expected = rankFzf("mod", candidates, 3)
   if (JSON.stringify(rankPreparedFzf("mod", prepared, 3)) !== JSON.stringify(expected)) throw new Error("Prepared ranking changed results")
   if (rankPreparedFzf("mod", prepared, 0).length !== 0) throw new Error("Prepared ranking ignored zero limit")
+})
+
+Deno.test("workspace search includes parent directories as mention targets", () => {
+  const paths = workspaceSearchPaths([
+    "packages/vscode-extension/src/index.ts",
+    "packages/shared/src/index.ts",
+  ])
+  for (const expected of ["packages/vscode-extension", "packages/vscode-extension/src", "packages", "packages/shared"]) {
+    if (!paths.includes(expected)) throw new Error(`Missing workspace directory: ${expected}`)
+  }
+  const ranked = rankFzf("vscode-extension", paths)
+  if (ranked[0] !== "packages/vscode-extension") throw new Error(`Folder was not the best mention match: ${ranked.join(", ")}`)
 })

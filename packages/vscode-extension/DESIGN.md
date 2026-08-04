@@ -41,6 +41,13 @@ Markdown is rendered by an escaping-first renderer. Raw HTML is never passed thr
 
 OpenCode permission events are shown inline with their type, pattern, and metadata. Complete details are labeled exact; bounded metadata is marked incomplete and can only be rejected. Rejections can include native corrective feedback. The extension requires an explicit inline decision unless auto approval is enabled for that root session. New sessions start with auto approval disabled, and delegated subagents inherit their root session's mode.
 
+Clipboard images and PDFs use ordered prompt anchors while retaining visual
+attachment cards and private in-memory payloads. Large text pastes become
+collapsible text attachments with model-visible references. Pending payloads
+are synchronized between the sidebar and editor webviews but remain outside
+snapshots and persistent VS Code state. User-message snapshots continue to
+exclude attachment URLs and base64 data.
+
 ## Bridge
 
 The extension starts an HTTP server bound to `127.0.0.1` on an ephemeral port. Requests require a random 256-bit bearer token and an authenticated `POST /` protocol envelope. The registry is written atomically to `$XDG_DATA_HOME/opencode-workbench/bridges/registry.json`, or `~/.local/share/opencode-workbench/bridges/registry.json` when `XDG_DATA_HOME` is unset. The registry directory is mode `0700`, and the file is mode `0600`.

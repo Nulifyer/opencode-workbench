@@ -70,6 +70,7 @@ Deno.test("bridge selection requires exact affinity when a worktree has multiple
   await Deno.writeTextFile(registry, JSON.stringify({ version: 1, entries: [entry("a", 43123), entry("b", 43124)] }))
   try {
     equal((await selectBridge(registry, root, "vscode_get_selection", "a")).id, "a")
+    equal((await selectBridge(registry, "/", "vscode_get_selection", "a", root)).id, "a")
     await rejects(() => selectBridge(registry, root, "vscode_get_selection"), /Multiple VS Code bridges/)
   } finally {
     await Deno.remove(root, { recursive: true })

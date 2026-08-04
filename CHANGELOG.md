@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Added
+
+- Added ordered image and PDF prompt references, draft thumbnails and previews,
+  duplicate detection, model capability checks, and synchronized pending
+  attachments across chat surfaces.
+- Added collapsible large-paste context cards, per-message actions, a jump-to-latest
+  control, pending model-input details, and persistent actionable error notices.
+- Added a configurable managed-server startup timeout with a 120-second default.
+
+### Changed
+
+- Local installs now use a timestamped development prerelease of the next patch
+  instead of reusing the live Marketplace version.
+- Kept operational spinners active when reduced motion is enabled while still
+  suppressing nonessential transition and expansion effects.
+- Made the repository README the single source for GitHub and VSIX packaging.
+
+### Fixed
+
+- Preserved explicit ordered-list numbering when nested content splits Markdown
+  lists into separate rendered blocks.
+- Removed repeated attachment reference labels from sent-message cards and kept
+  compact image thumbnails for newly sent attachments.
+- Kept the composer anchored to the bottom while session messages are loading.
+
 ## 0.3.0 - 2026-08-03
 
 ### Added

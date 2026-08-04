@@ -10,6 +10,7 @@ import type {
   InlineAttachment,
   MessageBundle,
   ModelOption,
+  PastedTextBlock,
   PermissionRequest,
   ProviderOption,
   QueuedPrompt,
@@ -22,35 +23,42 @@ import type {
 import {
   PERMISSION_AGGREGATE_CHARACTER_LIMIT,
   PERMISSION_METADATA_CHARACTER_LIMIT,
+  PROMPT_ATTACHMENT_COUNT_LIMIT,
   PROMPT_ATTACHMENT_CHARACTER_LIMIT,
   PROMPT_QUEUE_CHARACTER_LIMIT,
   PROMPT_QUEUE_COUNT_LIMIT,
   PROMPT_TEXT_CHARACTER_LIMIT,
+  isOpenCodeMessageID,
   permissionRequestCharacters,
 } from "./opencode.ts"
 
 export type WebviewToHostMessage =
   | { type: "ready" }
   | { type: "setDraft"; sessionID: string; draft: string }
-  | { type: "send"; sessionID: string; text: string; agent?: string; model?: string; variant?: string; attachments?: InlineAttachment[]; contextIDs?: string[] }
+  | { type: "setComposerPayload"; sessionID: string; revision: number; mutationID: string; attachments: InlineAttachment[]; pastedText: PastedTextBlock[] }
+  | { type: "send"; sessionID: string; promptID?: string; composerRevision?: number; delivery?: "queue" | "steer" | "replace"; text: string; agent?: string; model?: string; variant?: string; attachments?: InlineAttachment[]; pastedText?: PastedTextBlock[]; contextIDs?: string[] }
   | { type: "abort"; sessionID: string }
   | { type: "createSession"; draft?: string; submit?: boolean }
   | { type: "selectSession"; sessionID: string }
   | { type: "setPreference"; sessionID: string; agent?: string; model?: string; variant?: string }
   | { type: "removeQueued"; sessionID: string; promptID: string }
+  | { type: "editQueued"; sessionID: string; promptID: string }
   | { type: "reorderQueue"; sessionID: string; promptIDs: string[] }
   | { type: "sendQueuedNow"; sessionID: string; promptID: string }
-  | { type: "respondPermission"; sessionID: string; requestID: string; protocol: "legacy" | "current" | "v2"; response: "once" | "always" | "reject"; feedback?: string }
+  | { type: "respondPermission"; sessionID: string; requestID: string; protocol: "legacy" | "current" | "v2"; response: "once" | "exact" | "scope" | "reject"; scope?: string; feedback?: string }
   | { type: "respondQuestion"; sessionID: string; requestID: string; answers: string[][] }
   | { type: "rejectQuestion"; sessionID: string; requestID: string }
   | { type: "openFile"; sessionID: string; file: string; line?: number; column?: number; endLine?: number; endColumn?: number }
   | { type: "openPatch"; sessionID: string; file: string }
-  | { type: "sessionAction"; sessionID: string; action: "rename" | "delete" | "fork" | "undo" | "redo" | "compact" | "share" | "unshare" | "export" | "copyLast" | "copyTranscript" }
+  | { type: "sessionAction"; sessionID: string; action: "rename" | "delete" | "fork" | "undo" | "redo" | "retry" | "compact" | "share" | "unshare" | "export" | "copyLast" | "copyTranscript"; messageID?: string }
   | { type: "setAutoApproval"; sessionID: string; enabled: boolean }
   | { type: "openInEditor" }
   | { type: "openInSidebar" }
   | { type: "navigateBack" }
   | { type: "refresh" }
+  | { type: "openLogs" }
+  | { type: "openFolder" }
+  | { type: "reloadWindow" }
   | { type: "openLink"; url: string }
   | { type: "copyText"; text: string }
   | { type: "pickFiles"; sessionID: string }
@@ -58,6 +66,7 @@ export type WebviewToHostMessage =
   | { type: "resolveDroppedUris"; sessionID: string; uris: string[] }
   | { type: "searchFiles"; sessionID: string; requestID: number; query: string }
   | { type: "removeContextAttachment"; sessionID: string; attachmentID: string }
+  | { type: "openContextAttachment"; sessionID: string; attachmentID: string }
   | { type: "attachWorkspacePath"; sessionID: string; path: string }
   | { type: "attachResource"; sessionID: string; uri: string }
   | { type: "openPlan"; sessionID: string }
@@ -65,6 +74,7 @@ export type WebviewToHostMessage =
 
 export interface ChatSnapshot {
   connected: boolean
+  connectionError?: string
   sessions: Array<{
     id: string
     title: string
@@ -132,6 +142,7 @@ export type HostToWebviewMessage =
   | { type: "fileSuggestions"; sessionID: string; requestID: number; files: string[] }
   | { type: "editorContextChanged"; context?: EditorContextSummary }
   | { type: "contextAttachmentsChanged"; sessionID: string; attachments: ContextAttachmentSummary[] }
+  | { type: "composerPayloadChanged"; sessionID: string; revision: number; attachments: InlineAttachment[]; pastedText: PastedTextBlock[]; conflict?: boolean; mutationID?: string }
   | { type: "draftChanged"; sessionID: string; draft: string; revision: number }
   | { type: "sessionRemoved"; sessionID: string }
 
@@ -161,19 +172,46 @@ function validID(value: unknown): value is string {
   return boundedString(value) && value.length > 0
 }
 
+function validPromptID(value: unknown): value is string {
+  return isOpenCodeMessageID(value)
+}
+
 const inlineMimes = new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp", "application/pdf"])
 
-function validInlineAttachments(value: unknown): value is InlineAttachment[] | undefined {
-  if (value === undefined) return true
+function validInlineAttachments(value: unknown, optional = true): value is InlineAttachment[] | undefined {
+  if (value === undefined) return optional
   if (!Array.isArray(value) || value.length > 10) return false
+  const ids = new Set<string>()
+  const labels = new Set<string>()
   let characters = 0
   return value.every((attachment) => {
-    if (!record(attachment) || !exactKeys(attachment, ["name", "mime", "data"]) || !boundedString(attachment.name, 255) || !attachment.name ||
+    if (!record(attachment) || !exactKeys(attachment, ["id", "label", "name", "mime", "data", "size", "width", "height"]) || !validID(attachment.id) || ids.has(attachment.id) ||
+      !boundedString(attachment.label, 100) || !/^\[(?:Image|PDF) \d+\]$/.test(attachment.label) || labels.has(attachment.label) || !boundedString(attachment.name, 255) || !attachment.name ||
       typeof attachment.mime !== "string" || !inlineMimes.has(attachment.mime) || typeof attachment.data !== "string" ||
       attachment.data.length > (attachment.mime === "application/pdf" ? 14_000_000 : 5_242_880) || attachment.data.length % 4 !== 0 ||
-      !/^[A-Za-z0-9+/]*={0,2}$/.test(attachment.data)) return false
-    characters += attachment.name.length + attachment.mime.length + attachment.data.length
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(attachment.data) || !Number.isSafeInteger(attachment.size) || Number(attachment.size) < 0 ||
+      Number(attachment.size) > (attachment.mime === "application/pdf" ? 10_000_000 : 3_900_000) ||
+      ![attachment.width, attachment.height].every((dimension) => dimension === undefined || (Number.isSafeInteger(dimension) && Number(dimension) > 0 && Number(dimension) <= 100_000))) return false
+    ids.add(attachment.id)
+    labels.add(attachment.label)
+    characters += attachment.id.length + attachment.label.length + attachment.name.length + attachment.mime.length + attachment.data.length
     return characters <= PROMPT_ATTACHMENT_CHARACTER_LIMIT
+  })
+}
+
+function validPastedText(value: unknown): value is PastedTextBlock[] {
+  if (!Array.isArray(value) || value.length > 20) return false
+  const ids = new Set<string>()
+  const labels = new Set<string>()
+  let characters = 0
+  return value.every((block) => {
+    if (!record(block) || !exactKeys(block, ["id", "label", "text", "lineCount"]) || !validID(block.id) || ids.has(block.id) ||
+      !boundedString(block.label, 100) || !/^\[Pasted text \d+ · ~\d+ lines\]$/.test(block.label) || labels.has(block.label) ||
+      !boundedString(block.text, PROMPT_TEXT_CHARACTER_LIMIT) || !Number.isSafeInteger(block.lineCount) || Number(block.lineCount) < 1 || Number(block.lineCount) > PROMPT_TEXT_CHARACTER_LIMIT) return false
+    ids.add(block.id)
+    labels.add(block.label)
+    characters += block.id.length + block.label.length + block.text.length
+    return characters <= PROMPT_TEXT_CHARACTER_LIMIT
   })
 }
 
@@ -199,16 +237,32 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
       return exactKeys(value, ["type"]) ? { type: "navigateBack" } : undefined
     case "refresh":
       return exactKeys(value, ["type"]) ? { type: "refresh" } : undefined
+    case "openLogs":
+      return exactKeys(value, ["type"]) ? { type: "openLogs" } : undefined
+    case "openFolder":
+      return exactKeys(value, ["type"]) ? { type: "openFolder" } : undefined
+    case "reloadWindow":
+      return exactKeys(value, ["type"]) ? { type: "reloadWindow" } : undefined
     case "setDraft":
       return boundedString(value.sessionID) && value.sessionID.length > 0 && typeof value.draft === "string" && value.draft.length <= PROMPT_TEXT_CHARACTER_LIMIT
         ? { type: "setDraft", sessionID: value.sessionID, draft: value.draft }
         : undefined
+    case "setComposerPayload":
+      return exactKeys(value, ["type", "sessionID", "revision", "mutationID", "attachments", "pastedText"]) && validID(value.sessionID) && Number.isSafeInteger(value.revision) && Number(value.revision) >= 0 &&
+          typeof value.mutationID === "string" && /^cmp_[a-f0-9]{32}$/.test(value.mutationID) && validInlineAttachments(value.attachments, false) && validPastedText(value.pastedText) &&
+          (Array.isArray(value.attachments) ? value.attachments.length : 0) + (Array.isArray(value.pastedText) ? value.pastedText.length : 0) <= PROMPT_ATTACHMENT_COUNT_LIMIT
+        ? value as unknown as WebviewToHostMessage
+        : undefined
     case "send":
-      return exactKeys(value, ["type", "sessionID", "text", "agent", "model", "variant", "attachments", "contextIDs"]) && boundedString(value.sessionID) && value.sessionID.length > 0 &&
-          typeof value.text === "string" && value.text.length <= PROMPT_TEXT_CHARACTER_LIMIT && (value.text.trim().length > 0 || (Array.isArray(value.attachments) && value.attachments.length > 0) || (Array.isArray(value.contextIDs) && value.contextIDs.length > 0)) &&
-          boundedOptionalString(value.agent) && boundedOptionalString(value.model) && boundedOptionalString(value.variant) && validInlineAttachments(value.attachments) &&
+      return exactKeys(value, ["type", "sessionID", "promptID", "composerRevision", "delivery", "text", "agent", "model", "variant", "attachments", "pastedText", "contextIDs"]) && boundedString(value.sessionID) && value.sessionID.length > 0 &&
+          (value.promptID === undefined || validPromptID(value.promptID)) &&
+          (value.composerRevision === undefined || (Number.isSafeInteger(value.composerRevision) && Number(value.composerRevision) >= 0)) &&
+          (value.delivery === undefined || value.delivery === "queue" || value.delivery === "steer" || value.delivery === "replace") &&
+          typeof value.text === "string" && value.text.length <= PROMPT_TEXT_CHARACTER_LIMIT && (value.text.trim().length > 0 || (Array.isArray(value.attachments) && value.attachments.length > 0) || (Array.isArray(value.pastedText) && value.pastedText.length > 0) || (Array.isArray(value.contextIDs) && value.contextIDs.length > 0)) &&
+          boundedOptionalString(value.agent) && boundedOptionalString(value.model) && boundedOptionalString(value.variant) && validInlineAttachments(value.attachments) && (value.pastedText === undefined || validPastedText(value.pastedText)) &&
+          (value.attachments?.length ?? 0) + (value.pastedText?.length ?? 0) <= PROMPT_ATTACHMENT_COUNT_LIMIT &&
           (value.contextIDs === undefined || (Array.isArray(value.contextIDs) && value.contextIDs.length <= 20 && value.contextIDs.every(validID) && new Set(value.contextIDs).size === value.contextIDs.length))
-        ? { type: "send", sessionID: value.sessionID, text: value.text, agent: value.agent, model: value.model, variant: value.variant, attachments: value.attachments, contextIDs: value.contextIDs as string[] | undefined }
+        ? { type: "send", sessionID: value.sessionID, promptID: value.promptID, composerRevision: value.composerRevision as number | undefined, delivery: value.delivery as "queue" | "steer" | "replace" | undefined, text: value.text, agent: value.agent, model: value.model, variant: value.variant, attachments: value.attachments, pastedText: value.pastedText as PastedTextBlock[] | undefined, contextIDs: value.contextIDs as string[] | undefined }
         : undefined
     case "pickFiles":
     case "attachCurrentEditor":
@@ -225,6 +279,10 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
     case "removeContextAttachment":
       return exactKeys(value, ["type", "sessionID", "attachmentID"]) && validID(value.sessionID) && validID(value.attachmentID)
         ? { type: "removeContextAttachment", sessionID: value.sessionID, attachmentID: value.attachmentID }
+        : undefined
+    case "openContextAttachment":
+      return exactKeys(value, ["type", "sessionID", "attachmentID"]) && validID(value.sessionID) && validID(value.attachmentID)
+        ? { type: "openContextAttachment", sessionID: value.sessionID, attachmentID: value.attachmentID }
         : undefined
     case "attachWorkspacePath":
       return exactKeys(value, ["type", "sessionID", "path"]) && validID(value.sessionID) && boundedString(value.path, 8_192) && value.path.length > 0
@@ -246,6 +304,7 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         ? { type: "setPreference", sessionID: value.sessionID, agent: value.agent, model: value.model, variant: value.variant }
         : undefined
     case "removeQueued":
+    case "editQueued":
     case "sendQueuedNow":
       return exactKeys(value, ["type", "sessionID", "promptID"]) && validID(value.sessionID) && validID(value.promptID)
         ? { type: value.type, sessionID: value.sessionID, promptID: value.promptID }
@@ -257,11 +316,11 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         ? { type: "reorderQueue", sessionID: value.sessionID, promptIDs: value.promptIDs }
         : undefined
     case "respondPermission":
-      return exactKeys(value, ["type", "sessionID", "requestID", "protocol", "response", "feedback"]) && validID(value.sessionID) && validID(value.requestID) &&
+      return exactKeys(value, ["type", "sessionID", "requestID", "protocol", "response", "scope", "feedback"]) && validID(value.sessionID) && validID(value.requestID) &&
           ["legacy", "current", "v2"].includes(String(value.protocol)) &&
-          (value.response === "once" || value.response === "always" || value.response === "reject") && boundedOptionalString(value.feedback, 20_000) &&
-          (value.feedback === undefined || value.response === "reject")
-        ? { type: "respondPermission", sessionID: value.sessionID, requestID: value.requestID, protocol: value.protocol as "legacy" | "current" | "v2", response: value.response, feedback: value.feedback }
+          (value.response === "once" || value.response === "exact" || value.response === "scope" || value.response === "reject") && boundedOptionalString(value.scope, 2_000) && boundedOptionalString(value.feedback, 20_000) &&
+          (value.response === "scope" ? typeof value.scope === "string" && value.scope.length > 0 : value.scope === undefined) && (value.feedback === undefined || value.response === "reject")
+        ? { type: "respondPermission", sessionID: value.sessionID, requestID: value.requestID, protocol: value.protocol as "legacy" | "current" | "v2", response: value.response, scope: value.scope, feedback: value.feedback }
         : undefined
     case "respondQuestion":
       return exactKeys(value, ["type", "sessionID", "requestID", "answers"]) && validID(value.sessionID) && validID(value.requestID) &&
@@ -287,9 +346,9 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         ? { type: "openPatch", sessionID: value.sessionID, file: value.file }
         : undefined
     case "sessionAction":
-      return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) &&
-          ["rename", "delete", "fork", "undo", "redo", "compact", "share", "unshare", "export", "copyLast", "copyTranscript"].includes(String(value.action))
-        ? { type: "sessionAction", sessionID: value.sessionID, action: value.action as Extract<WebviewToHostMessage, { type: "sessionAction" }>["action"] }
+      return exactKeys(value, ["type", "sessionID", "action", "messageID"]) && validID(value.sessionID) && boundedOptionalString(value.messageID) &&
+          (value.messageID === undefined || value.action === "fork" || value.action === "retry") && ["rename", "delete", "fork", "undo", "redo", "retry", "compact", "share", "unshare", "export", "copyLast", "copyTranscript"].includes(String(value.action))
+        ? { type: "sessionAction", sessionID: value.sessionID, action: value.action as Extract<WebviewToHostMessage, { type: "sessionAction" }>["action"], messageID: value.messageID }
         : undefined
     case "setAutoApproval":
       return exactKeys(value, ["type", "sessionID", "enabled"]) && validID(value.sessionID) && typeof value.enabled === "boolean"
@@ -634,6 +693,13 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
         boundedString(attachment.name, 255) && boundedOptionalString(attachment.detail, 255) && ["file", "folder", "selection", "buffer", "resource", "notebook"].includes(String(attachment.kind)))
     return valid ? value as unknown as HostToWebviewMessage : undefined
   }
+  if (value.type === "composerPayloadChanged") {
+    return exactKeys(value, ["type", "sessionID", "revision", "attachments", "pastedText", "conflict", "mutationID"]) && validID(value.sessionID) && Number.isSafeInteger(value.revision) && Number(value.revision) >= 0 &&
+        (value.conflict === undefined || typeof value.conflict === "boolean") && (value.mutationID === undefined || (typeof value.mutationID === "string" && /^cmp_[a-f0-9]{32}$/.test(value.mutationID))) &&
+        validInlineAttachments(value.attachments, false) && validPastedText(value.pastedText)
+      ? value as unknown as HostToWebviewMessage
+      : undefined
+  }
   if (value.type === "draftChanged") {
     return exactKeys(value, ["type", "sessionID", "draft", "revision"]) && validID(value.sessionID) && boundedString(value.draft, PROMPT_TEXT_CHARACTER_LIMIT) &&
         Number.isSafeInteger(value.revision) && Number(value.revision) >= 0
@@ -657,7 +723,7 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
   if (value.type !== "snapshot" || !record(value.snapshot)) return undefined
   const snapshot = value.snapshot
   if (
-    typeof snapshot.connected !== "boolean" ||
+    typeof snapshot.connected !== "boolean" || !boundedOptionalString(snapshot.connectionError, 20_000) ||
     !Array.isArray(snapshot.sessions) || !validSessionOptions(snapshot.sessions) ||
     !Array.isArray(snapshot.agents) || snapshot.agents.length > 500 || !validCatalog(snapshot.agents, validAgent) ||
     (snapshot.mentionAgents !== undefined && (!Array.isArray(snapshot.mentionAgents) || snapshot.mentionAgents.length > 500 || !validCatalog(snapshot.mentionAgents, validAgent))) ||

@@ -9,6 +9,7 @@ import { PREFERENCE_CATEGORIES, emptyState, parseState, scopeFor, type PluginSta
 import { NodeAtomicAdapter, dataDirectory } from "./node-storage.ts"
 import { LIMITS } from "./security.ts"
 import { appendEvidence, decideCandidate, listCandidates, listEvidence, proposeCandidate } from "./skills.ts"
+import { configureNativeLsp } from "./config.ts"
 
 const s = tool.schema
 const scopeSchema = s.enum(["global", "project"])
@@ -55,6 +56,7 @@ const PluginImplementation: Plugin = async ({ worktree }) => {
   const project = resolve(worktree)
 
   return {
+    config: async (config) => configureNativeLsp(config),
     tool: {
       memory_list: tool({
         description: "List or search explicit preference records visible to this project. This never reads conversation, web, tool, or repository content.",
@@ -242,4 +244,4 @@ const PluginImplementation: Plugin = async ({ worktree }) => {
   }
 }
 
-export default PluginImplementation
+export default { id: "opencode-workbench", server: PluginImplementation }

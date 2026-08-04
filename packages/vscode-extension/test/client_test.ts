@@ -23,6 +23,28 @@ Deno.test("server URL rejects credential leaks and remote cleartext", () => {
   throws(() => validateServerUrl("https://user:secret@example.test"), /must not contain credentials/)
 })
 
+Deno.test("event stream treats instance disposal as a clean end and bounds unfinished frames", async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    globalThis.fetch = () => Promise.resolve(new Response('data: {"id":"event-1","type":"server.instance.disposed","properties":{}}\n\n', { status: 200 }))
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const events: Array<{ id?: string; type: string }> = []
+    await client.events(new AbortController().signal, () => undefined, (event) => events.push(event))
+    if (events[0]?.id !== "event-1" || events[0]?.type !== "server.instance.disposed") throw new Error("Instance disposal did not preserve its ID or end the event stream cleanly")
+
+    globalThis.fetch = () => Promise.resolve(new Response(`data: ${"x".repeat(8 * 1024 * 1024 + 1)}`, { status: 200 }))
+    let bounded = false
+    try {
+      await client.events(new AbortController().signal, () => undefined, () => undefined)
+    } catch (error) {
+      bounded = error instanceof Error && error.message === "OpenCode event stream frame exceeds 8 MiB"
+    }
+    if (!bounded) throw new Error("Oversized unfinished SSE frame was not rejected")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 Deno.test("current permission events expose permission and patterns", () => {
   const permission = parsePermission({
     type: "permission.asked",
@@ -190,14 +212,14 @@ Deno.test("v2 prompt admission preserves IDs, delivery, preferences, and file pa
   }
   try {
     const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
-    await client.sendPrompt("session", "msg_request", "Review these", "queue", "build", "acme/model", "high", [
+    await client.sendPrompt("session", "msg_018bcfe568001234567890abcd", "Review these", "queue", "build", "acme/model", "high", [
       { type: "file", mime: "text/plain", url: "file:///work/src/main.ts?start=4&end=8", filename: "main.ts" },
       { type: "file", mime: "image/png", url: "data:image/png;base64,eA==", filename: "image.png" },
     ])
     const prompt = requests.find((request) => request.path.endsWith("/prompt"))?.body as { id?: string; delivery?: string; prompt?: { files?: Array<Record<string, unknown>> } }
     const model = requests.find((request) => request.path.endsWith("/model"))?.body as { model?: Record<string, unknown> }
     if (requests.map((request) => request.path).join(",") !== "/api/session/session/agent,/api/session/session/model,/api/session/session/prompt" ||
-      prompt.id !== "msg_request" || prompt.delivery !== "queue" || prompt.prompt?.files?.[0]?.uri !== "file:///work/src/main.ts?start=4&end=8" ||
+      prompt.id !== "msg_018bcfe568001234567890abcd" || prompt.delivery !== "queue" || prompt.prompt?.files?.[0]?.uri !== "file:///work/src/main.ts?start=4&end=8" ||
       prompt.prompt?.files?.[1]?.uri !== "data:image/png;base64,eA==" || model.model?.variant !== "high") {
       throw new Error("V2 prompt admission omitted durable or structured fields")
     }
@@ -216,11 +238,35 @@ Deno.test("legacy async prompts preserve custom provider model and variant", asy
   }
   try {
     const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
-    await client.sendAsync("session", "hello", "caveboss", "openai/gpt-5.6-sol", "high")
-    const body = request?.body as { agent?: string; model?: { providerID?: string; modelID?: string }; variant?: string }
+    await client.sendAsync("session", "hello", "caveboss", "openai/gpt-5.6-sol", "high", [], "msg_018bcfe568001234567890abcd")
+    const body = request?.body as { agent?: string; model?: { providerID?: string; modelID?: string }; variant?: string; messageID?: string }
     if (request?.path !== "/session/session/prompt_async" || body.agent !== "caveboss" || body.model?.providerID !== "openai" ||
-      body.model.modelID !== "gpt-5.6-sol" || body.variant !== "high") {
-      throw new Error("Legacy async prompt omitted custom provider selection")
+      body.model.modelID !== "gpt-5.6-sol" || body.variant !== "high" || body.messageID !== "msg_018bcfe568001234567890abcd") {
+      throw new Error("Legacy async prompt omitted its stable ID or custom provider selection")
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("session status and interruption cover both v2 and legacy runners", async () => {
+  const originalFetch = globalThis.fetch
+  const paths: string[] = []
+  globalThis.fetch = (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    paths.push(url.pathname)
+    if (url.pathname === "/session/status") return Promise.resolve(new Response(JSON.stringify({ legacy: { type: "retry", attempt: 2 } })))
+    if (url.pathname === "/api/session/active") return Promise.resolve(new Response(JSON.stringify({ data: { current: { type: "running" } } })))
+    if (url.pathname.endsWith("/interrupt")) return Promise.resolve(new Response(null, { status: 204 }))
+    if (url.pathname.endsWith("/abort")) return Promise.resolve(new Response("false"))
+    return Promise.resolve(new Response("{}"))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const statuses = await client.sessionStatuses()
+    if (statuses.legacy?.type !== "retry" || statuses.current?.type !== "busy") throw new Error("V2 and legacy statuses were not combined")
+    if (!await client.abort("current") || !paths.includes("/api/session/current/interrupt") || !paths.includes("/session/current/abort")) {
+      throw new Error("Stop did not cover both runner protocols")
     }
   } finally {
     globalThis.fetch = originalFetch
@@ -241,6 +287,7 @@ Deno.test("v2 projected messages expose durable prompts and assistant output", a
           agent: "build",
           model: { providerID: "acme", id: "model" },
           content: [
+            { id: "reasoning", type: "reasoning", text: "Detailed provider thinking" },
             { id: "text", type: "text", text: "hi" },
             { id: "tool", type: "tool", name: "bash", time: { created: 2, completed: 3 }, state: { status: "completed", input: { command: "pwd" }, content: [{ type: "text", text: "/work" }], structured: {} } },
           ],
@@ -248,10 +295,17 @@ Deno.test("v2 projected messages expose durable prompts and assistant output", a
           cost: 0.01,
           tokens: { input: 1, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
         },
+        { id: "msg_compaction", type: "compaction", time: { created: 4, completed: 5 }, summary: "internal summary" },
       ],
       cursor: {},
     })))
-    return Promise.resolve(new Response(JSON.stringify([{ info: { id: "msg_old", sessionID: "session", role: "user" }, parts: [] }])))
+    return Promise.resolve(new Response(JSON.stringify([
+      { info: { id: "msg_old", sessionID: "session", role: "user", time: { created: 0 } }, parts: [] },
+      { info: { id: "msg_assistant", sessionID: "session", role: "assistant", time: { created: 2 } }, parts: [
+        { id: "legacy-patch", sessionID: "session", messageID: "msg_assistant", type: "patch", text: "diff" },
+        { id: "tool", sessionID: "session", messageID: "msg_assistant", type: "tool", tool: "bash", state: { status: "completed", metadata: { delegation: "kept" } } },
+      ] },
+    ])))
   }
   try {
     const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
@@ -259,8 +313,79 @@ Deno.test("v2 projected messages expose durable prompts and assistant output", a
     const user = messages.find((message) => message.info.id === "msg_user")
     const assistant = messages.find((message) => message.info.id === "msg_assistant")
     if (!messages.some((message) => message.info.id === "msg_old") || user?.parts.map((part) => part.type).join(",") !== "text,file" ||
-      assistant?.parts[0]?.text !== "hi" || assistant.parts[1]?.state?.output !== "/work" || assistant.info.providerID !== "acme" || assistant.info.modelID !== "model") {
-      throw new Error("V2 projected messages were not converted or merged with legacy history")
+      assistant?.parts.find((part) => part.id === "reasoning")?.text !== "Detailed provider thinking" || assistant.parts.find((part) => part.id === "text")?.text !== "hi" ||
+      assistant.parts.find((part) => part.id === "tool")?.state?.output !== "/work" || !JSON.stringify(assistant.parts.find((part) => part.id === "tool")?.state?.metadata).includes("kept") ||
+      !assistant.parts.some((part) => part.id === "legacy-patch") || assistant.info.providerID !== "acme" || assistant.info.modelID !== "model" ||
+      messages.find((message) => message.info.id === "msg_compaction")?.parts[0]?.type !== "compaction") {
+      throw new Error(`V2 projected messages were not converted or merged with legacy history: ${JSON.stringify(messages)}`)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("empty v2 user projections preserve legacy prompt content", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    if (url.pathname.startsWith("/api/session/")) {
+      return Promise.resolve(new Response(JSON.stringify({ data: [{ id: "msg_user", type: "user", time: { created: 1 }, text: "" }], cursor: {} })))
+    }
+    return Promise.resolve(new Response(JSON.stringify([{
+      info: { id: "msg_user", sessionID: "session", role: "user" },
+      parts: [{ id: "legacy-text", sessionID: "session", messageID: "msg_user", type: "text", text: "Keep the actual prompt" }],
+    }])))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const messages = await client.messages("session")
+    if (messages[0]?.parts[0]?.text !== "Keep the actual prompt") throw new Error("Empty v2 projection replaced the legacy prompt")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("message reconciliation follows v2 and legacy pagination cursors", async () => {
+  const originalFetch = globalThis.fetch
+  const requests: string[] = []
+  globalThis.fetch = (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    requests.push(`${url.pathname}?${url.searchParams}`)
+    if (url.pathname.startsWith("/api/session/")) {
+      const older = url.searchParams.get("cursor") === "v2-older"
+      return Promise.resolve(new Response(JSON.stringify(older
+        ? { data: [{ id: "old", type: "user", time: { created: 1 }, text: "old" }], cursor: {} }
+        : { data: [{ id: "new", type: "user", time: { created: 2 }, text: "new" }], cursor: { next: "v2-older" } })))
+    }
+    const older = url.searchParams.get("before") === "legacy-older"
+    const data = older
+      ? [{ info: { id: "old", sessionID: "session", role: "user", time: { created: 1 } }, parts: [] }]
+      : [{ info: { id: "new", sessionID: "session", role: "user", time: { created: 2 } }, parts: [] }]
+    return Promise.resolve(new Response(JSON.stringify(data), older ? undefined : { headers: { "x-next-cursor": "legacy-older" } }))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const history = await client.messageHistory("session")
+    if (history.messages.map((message) => message.info.id).join(",") !== "old,new" || history.legacyMessageIDs.join(",") !== "old,new" || history.v2MessageIDs.join(",") !== "old,new" || !requests.some((request) => request.includes("cursor=v2-older")) ||
+      !requests.some((request) => request.includes("before=legacy-older"))) throw new Error("Transcript pagination did not retrieve and order older pages")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("prompt admission checks durable session history", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    const after = url.searchParams.get("after")
+    return Promise.resolve(new Response(JSON.stringify(after === "0"
+      ? { data: [{ type: "session.next.prompt.admitted", durable: { seq: 4 }, data: { messageID: "msg_target" } }], hasMore: false }
+      : { data: [], hasMore: false })))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    if (await client.hasPromptAdmission("session", "msg_target") !== true || await client.hasPromptAdmission("session", "msg_missing") !== false) {
+      throw new Error("Durable prompt admission was not detected")
     }
   } finally {
     globalThis.fetch = originalFetch

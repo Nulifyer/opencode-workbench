@@ -9,11 +9,12 @@
   },
   "tasks": {
     "build": "deno run -A scripts/build.ts",
-    "check": "deno check packages/shared/src/index.ts packages/opencode-plugin/src/index.ts scripts/build.ts scripts/package.ts scripts/install.ts scripts/release.ts && deno run -A ./node_modules/typescript/lib/tsc.js -p packages/vscode-extension/tsconfig.json",
+    "check": "deno check packages/shared/src/index.ts packages/opencode-plugin/src/index.ts scripts/build.ts scripts/package.ts scripts/install.ts scripts/local-version.ts scripts/release.ts && deno run -A ./node_modules/typescript/lib/tsc.js -p packages/vscode-extension/tsconfig.json",
     "test": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 packages/shared/test packages/opencode-plugin/tests packages/vscode-extension/test",
+    "test:opencode": "deno task build && deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 packages/vscode-extension/test/communication_test.ts",
     "package": "deno task build && deno run -A scripts/package.ts",
     "release": "deno task verify && deno run -A scripts/release.ts",
-    "install:local": "deno task package && deno run -A scripts/install.ts",
+    "install:local": "deno task build && deno run -A scripts/install.ts",
     "verify": "deno task check && deno task test && deno task package"
   }
 }

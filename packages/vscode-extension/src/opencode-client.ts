@@ -42,12 +42,21 @@ type JsonRecord = Record<string, unknown>
 const RESPONSE_BODY_LIMIT = 32 * 1024 * 1024
 const ERROR_BODY_LIMIT = 64 * 1024
 const REQUEST_TIMEOUT_MS = 30_000
+const LONG_REQUEST_TIMEOUT_MS = 10 * 60_000
+const SSE_FRAME_LIMIT = 8 * 1024 * 1024
+const TRANSCRIPT_MESSAGE_LIMIT = 10_000
 
 export interface PromptFilePart {
   type: "file"
   mime: string
   url: string
   filename: string
+}
+
+export interface SessionMessageHistory {
+  messages: MessageBundle[]
+  legacyMessageIDs: string[]
+  v2MessageIDs: string[]
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -180,11 +189,51 @@ function rejectOnlyPermission(request: PermissionRequest): PermissionRequest {
 
 function parseEvent(value: unknown): OpenCodeEvent | undefined {
   if (!isRecord(value) || typeof value.type !== "string" || !isRecord(value.properties)) return undefined
-  return { type: value.type, properties: value.properties }
+  return { id: typeof value.id === "string" ? value.id : undefined, type: value.type, properties: value.properties }
 }
 
 function timestamp(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function parseSessionInfo(value: unknown): SessionInfo | undefined {
+  if (!isRecord(value) || !boundedString(value.id, 1_024) || !value.id || !boundedString(value.title, 20_000) ||
+    !boundedString(value.directory, 8_192) || !isRecord(value.time)) return undefined
+  const created = timestamp(value.time.created)
+  const updated = timestamp(value.time.updated)
+  if (created === undefined || updated === undefined) return undefined
+  const model = isRecord(value.model) && boundedString(value.model.id, 1_024) && value.model.id && boundedString(value.model.providerID, 1_024) && value.model.providerID
+    ? { id: value.model.id, providerID: value.model.providerID, variant: boundedString(value.model.variant, 1_024) ? value.model.variant : undefined }
+    : undefined
+  return {
+    ...value,
+    id: value.id,
+    title: value.title,
+    directory: value.directory,
+    time: { created, updated },
+    parentID: boundedString(value.parentID, 1_024) ? value.parentID : undefined,
+    agent: boundedString(value.agent, 1_024) ? value.agent : undefined,
+    model,
+    cost: typeof value.cost === "number" && Number.isFinite(value.cost) ? value.cost : undefined,
+  }
+}
+
+function parseSessionStatus(value: unknown): SessionStatus | undefined {
+  if (!isRecord(value)) return undefined
+  if (value.type === "idle" || value.type === "busy") return { type: value.type }
+  if (value.type !== "retry") return undefined
+  return {
+    type: "retry",
+    attempt: typeof value.attempt === "number" && Number.isSafeInteger(value.attempt) && value.attempt >= 0 ? value.attempt : undefined,
+    message: boundedString(value.message, 20_000) ? value.message : undefined,
+    next: timestamp(value.next),
+  }
+}
+
+function requiredSessionInfo(value: unknown): SessionInfo {
+  const session = parseSessionInfo(value)
+  if (!session) throw new Error("OpenCode returned malformed session data")
+  return session
 }
 
 function projectedToolOutput(state: JsonRecord): string | undefined {
@@ -202,9 +251,14 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
     const created = timestamp(item.time.created)
     const completed = timestamp(item.time.completed)
     const time = created === undefined && completed === undefined ? undefined : { created, completed }
-    if (item.type === "user" && typeof item.text === "string") {
+    if (item.type === "user") {
       const parts: MessagePart[] = []
-      if (item.text) parts.push({ id: `${item.id}-text`, sessionID, messageID: item.id, type: "text", text: item.text })
+      const text = typeof item.text === "string"
+        ? item.text
+        : Array.isArray(item.content)
+        ? item.content.flatMap((entry) => isRecord(entry) && entry.type === "text" && typeof entry.text === "string" ? [entry.text] : []).join("\n")
+        : ""
+      if (text) parts.push({ id: `${item.id}-text`, sessionID, messageID: item.id, type: "text", text })
       if (Array.isArray(item.files)) for (const [index, file] of item.files.entries()) {
         if (!isRecord(file) || typeof file.uri !== "string" || typeof file.mime !== "string") continue
         const filename = typeof file.name === "string" && file.name ? file.name : `Attachment ${index + 1}`
@@ -276,8 +330,14 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
       })
       continue
     }
+    if (item.type === "compaction") {
+      messages.push({
+        info: { id: item.id, sessionID, role: "user", time },
+        parts: [{ id: `${item.id}-compaction`, sessionID, messageID: item.id, type: "compaction", synthetic: true }],
+      })
+      continue
+    }
     const text = typeof item.text === "string" ? item.text
-      : item.type === "compaction" && typeof item.summary === "string" ? item.summary
       : undefined
     if (text !== undefined) messages.push({
       info: { id: item.id, sessionID, role: "assistant", time },
@@ -285,6 +345,26 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
     })
   }
   return messages
+}
+
+function mergeMessageBundles(legacy: MessageBundle, current: MessageBundle): MessageBundle {
+  const parts = legacy.parts.slice()
+  const positions = new Map(parts.map((part, index) => [part.id, index]))
+  for (const part of current.parts) {
+    const position = positions.get(part.id)
+    if (position === undefined) {
+      positions.set(part.id, parts.length)
+      parts.push(part)
+      continue
+    }
+    const previous = parts[position]!
+    parts[position] = {
+      ...previous,
+      ...part,
+      ...(previous.state || part.state ? { state: { ...previous.state, ...part.state } } : {}),
+    }
+  }
+  return { info: { ...legacy.info, ...current.info }, parts }
 }
 
 function positiveTokenLimit(value: unknown): number | undefined {
@@ -553,7 +633,7 @@ export class OpenCodeClient {
     return headers
   }
 
-  private async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  private async requestResponse<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal, timeoutMilliseconds = REQUEST_TIMEOUT_MS): Promise<{ data: T; headers: Headers }> {
     const controller = new AbortController()
     const sources = [this.requests.signal, signal].filter((value): value is AbortSignal => Boolean(value))
     const abort = (source: AbortSignal) => controller.abort(source.reason)
@@ -561,7 +641,7 @@ export class OpenCodeClient {
       source.addEventListener("abort", () => abort(source), { once: true, signal: controller.signal })
       if (source.aborted) abort(source)
     }
-    const timeout = setTimeout(() => controller.abort(new Error(`OpenCode ${method} ${pathname} timed out`)), REQUEST_TIMEOUT_MS)
+    const timeout = setTimeout(() => controller.abort(new Error(`OpenCode ${method} ${pathname} timed out`)), timeoutMilliseconds)
     try {
       const response = await fetch(this.endpoint(pathname), {
         method,
@@ -573,10 +653,10 @@ export class OpenCodeClient {
         const detail = (await readLimitedText(response, ERROR_BODY_LIMIT)).slice(0, 1_000)
         throw new Error(`OpenCode ${method} ${pathname} failed (${response.status})${detail ? `: ${detail}` : ""}`)
       }
-      if (response.status === 204) return undefined as T
+      if (response.status === 204) return { data: undefined as T, headers: response.headers }
       const encoded = await readLimitedText(response, RESPONSE_BODY_LIMIT)
       try {
-        return JSON.parse(encoded) as T
+        return { data: JSON.parse(encoded) as T, headers: response.headers }
       } catch {
         throw new Error(`OpenCode ${method} ${pathname} returned invalid JSON`)
       }
@@ -586,59 +666,87 @@ export class OpenCodeClient {
     }
   }
 
-  listSessions(): Promise<SessionInfo[]> {
-    return this.request("GET", "/session")
+  private async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal, timeoutMilliseconds = REQUEST_TIMEOUT_MS): Promise<T> {
+    return (await this.requestResponse<T>(method, pathname, body, signal, timeoutMilliseconds)).data
   }
 
-  sessionStatuses(): Promise<Record<string, SessionStatus>> {
-    return this.request("GET", "/session/status")
+  async listSessions(): Promise<SessionInfo[]> {
+    const value = await this.request<unknown>("GET", "/session?limit=10000")
+    if (!Array.isArray(value)) throw new Error("OpenCode returned a malformed session list")
+    return value.map(parseSessionInfo).filter((session): session is SessionInfo => Boolean(session))
   }
 
-  createSession(title?: string): Promise<SessionInfo> {
-    return this.request("POST", "/session", title ? { title } : {})
+  async health(): Promise<{ healthy: true; version: string }> {
+    const value = await this.request<unknown>("GET", "/global/health")
+    if (!isRecord(value) || value.healthy !== true || typeof value.version !== "string") throw new Error("OpenCode returned malformed health data")
+    return { healthy: true, version: value.version }
+  }
+
+  async sessionStatuses(): Promise<Record<string, SessionStatus>> {
+    const [legacy, active] = await Promise.all([
+      this.request<unknown>("GET", "/session/status"),
+      this.request<unknown>("GET", "/api/session/active"),
+    ])
+    if (!isRecord(legacy) || !isRecord(active) || !isRecord(active.data)) throw new Error("OpenCode returned malformed session status data")
+    const statuses: Record<string, SessionStatus> = Object.create(null)
+    for (const [sessionID, value] of Object.entries(legacy)) {
+      const status = parseSessionStatus(value)
+      if (status) statuses[sessionID] = status
+    }
+    for (const [sessionID, value] of Object.entries(active.data)) {
+      if (isRecord(value) && value.type === "running") statuses[sessionID] = { type: "busy" }
+    }
+    return statuses
+  }
+
+  async createSession(title?: string): Promise<SessionInfo> {
+    return requiredSessionInfo(await this.request<unknown>("POST", "/session", title ? { title } : {}))
   }
 
   deleteSession(sessionID: string): Promise<boolean> {
     return this.request("DELETE", `/session/${encodeURIComponent(sessionID)}`)
   }
 
-  renameSession(sessionID: string, title: string): Promise<SessionInfo> {
-    return this.request("PATCH", `/session/${encodeURIComponent(sessionID)}`, { title })
+  async renameSession(sessionID: string, title: string): Promise<SessionInfo> {
+    return requiredSessionInfo(await this.request<unknown>("PATCH", `/session/${encodeURIComponent(sessionID)}`, { title }))
   }
 
-  forkSession(sessionID: string, messageID?: string): Promise<SessionInfo> {
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/fork`, messageID ? { messageID } : {})
+  async forkSession(sessionID: string, messageID?: string): Promise<SessionInfo> {
+    return requiredSessionInfo(await this.request<unknown>("POST", `/session/${encodeURIComponent(sessionID)}/fork`, messageID ? { messageID } : {}))
   }
 
-  revertSession(sessionID: string, messageID: string, partID?: string): Promise<SessionInfo> {
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/revert`, { messageID, ...(partID ? { partID } : {}) })
+  async revertSession(sessionID: string, messageID: string, partID?: string): Promise<SessionInfo> {
+    return requiredSessionInfo(await this.request<unknown>("POST", `/session/${encodeURIComponent(sessionID)}/revert`, { messageID, ...(partID ? { partID } : {}) }))
   }
 
-  unrevertSession(sessionID: string): Promise<SessionInfo> {
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/unrevert`)
+  async unrevertSession(sessionID: string): Promise<SessionInfo> {
+    return requiredSessionInfo(await this.request<unknown>("POST", `/session/${encodeURIComponent(sessionID)}/unrevert`))
   }
 
   summarizeSession(sessionID: string, providerID: string, modelID: string): Promise<boolean> {
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/summarize`, { providerID, modelID })
+    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/summarize`, { providerID, modelID }, undefined, LONG_REQUEST_TIMEOUT_MS)
   }
 
-  shareSession(sessionID: string): Promise<SessionInfo> {
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/share`)
+  async shareSession(sessionID: string): Promise<SessionInfo> {
+    return requiredSessionInfo(await this.request<unknown>("POST", `/session/${encodeURIComponent(sessionID)}/share`))
   }
 
-  unshareSession(sessionID: string): Promise<SessionInfo> {
-    return this.request("DELETE", `/session/${encodeURIComponent(sessionID)}/share`)
+  async unshareSession(sessionID: string): Promise<SessionInfo> {
+    return requiredSessionInfo(await this.request<unknown>("DELETE", `/session/${encodeURIComponent(sessionID)}/share`))
   }
 
   async messages(sessionID: string): Promise<MessageBundle[]> {
+    return (await this.messageHistory(sessionID)).messages
+  }
+
+  async messageHistory(sessionID: string): Promise<SessionMessageHistory> {
     const encoded = encodeURIComponent(sessionID)
     const [v2, legacy] = await Promise.allSettled([
-      this.request<unknown>("GET", this.locationPath(`/api/session/${encoded}/message`, { limit: "200", order: "desc" })),
-      this.request<unknown>("GET", `/session/${encoded}/message`),
+      this.v2Messages(encoded, sessionID),
+      this.legacyMessages(encoded),
     ])
-    const current = v2.status === "fulfilled" ? projectedMessages(v2.value, sessionID)?.reverse() : undefined
-    if (v2.status === "fulfilled" && !current) throw new Error("OpenCode returned malformed v2 session messages")
-    const previous = legacy.status === "fulfilled" && Array.isArray(legacy.value) ? legacy.value as MessageBundle[] : []
+    const current = v2.status === "fulfilled" ? v2.value : undefined
+    const previous = legacy.status === "fulfilled" ? legacy.value : []
     if (!current && legacy.status === "rejected") throw v2.status === "rejected" ? v2.reason : legacy.reason
     const merged = previous.slice()
     const positions = new Map(merged.map((message, index) => [message.info?.id, index]))
@@ -647,9 +755,70 @@ export class OpenCodeClient {
       if (position === undefined) {
         positions.set(message.info.id, merged.length)
         merged.push(message)
-      } else merged[position] = message
+      } else merged[position] = mergeMessageBundles(merged[position]!, message)
     }
-    return merged
+    return {
+      messages: merged.sort((left, right) => (left.info.time?.created ?? 0) - (right.info.time?.created ?? 0) || left.info.id.localeCompare(right.info.id)),
+      legacyMessageIDs: previous.map((message) => message.info.id),
+      v2MessageIDs: (current ?? []).map((message) => message.info.id),
+    }
+  }
+
+  async hasPromptAdmission(sessionID: string, promptID: string): Promise<boolean | undefined> {
+    let after = 0
+    for (let pages = 0; pages < 100; pages += 1) {
+      const value = await this.request<unknown>("GET", this.locationPath(`/api/session/${encodeURIComponent(sessionID)}/history`, { limit: "100", after: String(after) }))
+      if (!isRecord(value) || !Array.isArray(value.data) || typeof value.hasMore !== "boolean") throw new Error("OpenCode returned malformed session history")
+      for (const event of value.data) {
+        if (!isRecord(event)) continue
+        const data = isRecord(event.data) ? event.data : undefined
+        if (event.type === "session.next.prompt.admitted" && data?.messageID === promptID) return true
+      }
+      if (!value.hasMore) return false
+      const sequences = value.data.flatMap((event) => isRecord(event) && isRecord(event.durable) && Number.isSafeInteger(event.durable.seq) ? [event.durable.seq as number] : [])
+      const next = sequences.length ? Math.max(...sequences) : after
+      if (next <= after) return undefined
+      after = next
+    }
+    return undefined
+  }
+
+  private async v2Messages(encodedSessionID: string, sessionID: string): Promise<MessageBundle[]> {
+    let cursor: string | undefined
+    let messages: MessageBundle[] = []
+    const seen = new Set<string>()
+    while (messages.length < TRANSCRIPT_MESSAGE_LIMIT) {
+      const pathname = this.locationPath(`/api/session/${encodedSessionID}/message`, cursor ? { limit: "200", cursor } : { limit: "200", order: "desc" })
+      const value = await this.request<unknown>("GET", pathname)
+      const page = projectedMessages(value, sessionID)
+      if (!page) throw new Error("OpenCode returned malformed v2 session messages")
+      if (!page.length) break
+      messages = [...page.reverse(), ...messages].slice(-TRANSCRIPT_MESSAGE_LIMIT)
+      const next = isRecord(value) && isRecord(value.cursor) && typeof value.cursor.next === "string" ? value.cursor.next : undefined
+      if (!next || seen.has(next)) break
+      seen.add(next)
+      cursor = next
+    }
+    return messages
+  }
+
+  private async legacyMessages(encodedSessionID: string): Promise<MessageBundle[]> {
+    let cursor: string | undefined
+    let messages: MessageBundle[] = []
+    const seen = new Set<string>()
+    while (messages.length < TRANSCRIPT_MESSAGE_LIMIT) {
+      const query = new URLSearchParams({ limit: "200" })
+      if (cursor) query.set("before", cursor)
+      const response = await this.requestResponse<unknown>("GET", `/session/${encodedSessionID}/message?${query}`)
+      if (!Array.isArray(response.data)) throw new Error("OpenCode returned malformed legacy session messages")
+      const page = response.data as MessageBundle[]
+      messages = [...page, ...messages].slice(-TRANSCRIPT_MESSAGE_LIMIT)
+      const next = response.headers.get("x-next-cursor") ?? undefined
+      if (!next || !page.length || seen.has(next)) break
+      seen.add(next)
+      cursor = next
+    }
+    return messages
   }
 
   async todos(sessionID: string): Promise<TodoItem[]> {
@@ -738,19 +907,26 @@ export class OpenCodeClient {
     const path = action === "authenticate" ? `/mcp/${encoded}/auth/authenticate`
       : action === "removeAuth" ? `/mcp/${encoded}/auth`
       : `/mcp/${encoded}/${action}`
-    return this.request(action === "removeAuth" ? "DELETE" : "POST", path)
+    return this.request(action === "removeAuth" ? "DELETE" : "POST", path, undefined, undefined, action === "authenticate" ? LONG_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS)
   }
 
-  abort(sessionID: string): Promise<boolean> {
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/abort`)
+  async abort(sessionID: string): Promise<boolean> {
+    const encoded = encodeURIComponent(sessionID)
+    const [current, legacy] = await Promise.allSettled([
+      this.request<void>("POST", `/api/session/${encoded}/interrupt`),
+      this.request<boolean>("POST", `/session/${encoded}/abort`),
+    ])
+    if (current.status === "rejected" && legacy.status === "rejected") throw current.reason
+    return current.status === "fulfilled" || (legacy.status === "fulfilled" && legacy.value === true)
   }
 
   disposeInstance(): Promise<boolean> {
     return this.request("POST", "/instance/dispose")
   }
 
-  sendAsync(sessionID: string, text: string, agent?: string, model?: string, variant?: string, files: PromptFilePart[] = []): Promise<void> {
+  sendAsync(sessionID: string, text: string, agent?: string, model?: string, variant?: string, files: PromptFilePart[] = [], messageID?: string): Promise<void> {
     const body: JsonRecord = { parts: [...(text.trim() ? [{ type: "text", text }] : []), ...files] }
+    if (messageID) body.messageID = messageID
     if (agent) body.agent = agent
     if (model) {
       const slash = model.indexOf("/")
@@ -804,10 +980,10 @@ export class OpenCodeClient {
       body.model = model
     }
     if (variant) body.variant = variant
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/command`, body)
+    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/command`, body, undefined, LONG_REQUEST_TIMEOUT_MS)
   }
 
-  async respondPermission(request: PermissionRequest, response: "once" | "always" | "reject", feedback?: string): Promise<void> {
+  async respondPermission(request: PermissionRequest, response: "once" | "reject", feedback?: string): Promise<void> {
     const message = response === "reject" && feedback?.trim() ? feedback.trim() : undefined
     if (request.protocol === "v2") {
       await this.request("POST", `/api/session/${encodeURIComponent(request.sessionID)}/permission/${encodeURIComponent(request.id)}/reply`, { reply: response, ...(message ? { message } : {}) })
@@ -1000,22 +1176,26 @@ export class OpenCodeClient {
         if (done) throw new Error("OpenCode event stream closed")
         buffer += value
         buffer = buffer.replace(/\r\n/g, "\n")
-        if (buffer.length > 512 * 1024) throw new Error("OpenCode event stream frame exceeds 512 KiB")
         let boundary = buffer.indexOf("\n\n")
         while (boundary >= 0) {
           const frame = buffer.slice(0, boundary)
           buffer = buffer.slice(boundary + 2)
+          if (new TextEncoder().encode(frame).byteLength > SSE_FRAME_LIMIT) throw new Error("OpenCode event stream frame exceeds 8 MiB")
           const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n")
           if (data) {
             try {
               const event = parseEvent(JSON.parse(data))
-              if (event) onEvent(event)
+              if (event) {
+                onEvent(event)
+                if (event.type === "server.instance.disposed") return
+              }
             } catch (error) {
               console.warn("Ignored malformed OpenCode SSE event", errorMessage(error))
             }
           }
           boundary = buffer.indexOf("\n\n")
         }
+        if (new TextEncoder().encode(buffer).byteLength > SSE_FRAME_LIMIT) throw new Error("OpenCode event stream frame exceeds 8 MiB")
       }
     } finally {
       await reader.cancel().catch(() => undefined)

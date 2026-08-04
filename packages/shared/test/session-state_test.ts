@@ -71,6 +71,26 @@ Deno.test("streamed parts update only their owning session", () => {
   })
   assert(state.sessions.one.messages[0].parts[0].text === "hello", "part was not added")
   assert(state.sessions.two.messages.length === 0, "unrelated session changed")
+  state = sessionReducer(state, {
+    type: "event",
+    event: { type: "message.part.delta", properties: { sessionID: "one", messageID: "m1", partID: "p1", field: "text", delta: " world" } },
+  })
+  assert(state.sessions.one.messages[0].parts[0].text === "hello world", "part delta was not appended")
+})
+
+Deno.test("session events preserve error details and synchronize preferences", () => {
+  let state = sessionReducer(initialWorkbenchState, { type: "reconcile", sessions: [one] })
+  state = sessionReducer(state, { type: "event", event: { type: "session.error", properties: { sessionID: "one", error: { data: { message: "Provider unavailable" } } } } })
+  assert(state.sessions.one.status.type === "error" && state.sessions.one.status.message === "Provider unavailable", "session error detail was lost")
+  state = sessionReducer(state, { type: "event", event: { type: "session.updated", properties: { info: { ...one, agent: "build", model: { providerID: "acme", id: "model", variant: "high" } } } } })
+  assert(state.sessions.one.agent === "build" && state.sessions.one.model === "acme/model" && state.sessions.one.variant === "high", "session update left composer preferences stale")
+})
+
+Deno.test("queued prompts can be edited without changing their order", () => {
+  let state = sessionReducer(initialWorkbenchState, { type: "reconcile", sessions: [one] })
+  state = sessionReducer(state, { type: "queue", sessionID: "one", prompt: { id: "msg_one", text: "before", createdAt: 1 } })
+  state = sessionReducer(state, { type: "editQueued", sessionID: "one", promptID: "msg_one", text: "after" })
+  assert(state.sessions.one.queue.length === 1 && state.sessions.one.queue[0]?.text === "after", "queued prompt edit changed order or text was not updated")
 })
 
 Deno.test("prototype-like session IDs remain ordinary data", () => {

@@ -41,7 +41,6 @@
   "files": [
     "dist/**",
     "media/**",
-    "README.md",
     "DESIGN.md",
     "LICENSE"
   ],
@@ -60,6 +59,7 @@
   "main": "./dist/extension.cjs",
   "activationEvents": [
     "onView:opencodeWorkbench.chat",
+    "onWebviewPanel:opencodeWorkbench.chatEditor",
     "onCommand:opencodeWorkbench.openChat",
     "onCommand:opencodeWorkbench.openChatInEditor",
     "onCommand:opencodeWorkbench.newSession",
@@ -107,6 +107,14 @@
           "scope": "machine",
           "description": "Absolute path to the OpenCode executable in managed mode. An empty value searches VS Code's PATH."
         },
+        "opencodeWorkbench.managedServerStartupTimeout": {
+          "type": "integer",
+          "default": 120,
+          "minimum": 5,
+          "maximum": 600,
+          "scope": "machine",
+          "description": "Seconds to wait for the managed OpenCode server to start. Increase this on slower systems."
+        },
         "opencodeWorkbench.serverUrl": {
           "type": "string",
           "default": "http://127.0.0.1:4096",
@@ -131,8 +139,7 @@
       {
         "command": "opencodeWorkbench.newSession",
         "key": "ctrl+alt+n",
-        "mac": "ctrl+alt+n",
-        "when": "workspaceFolderCount != 0"
+        "mac": "ctrl+alt+n"
       }
     ],
     "viewsContainers": {

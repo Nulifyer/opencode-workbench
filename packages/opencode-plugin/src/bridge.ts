@@ -54,7 +54,7 @@ async function canonical(path: string): Promise<string> {
   return realpath(path).catch(() => resolve(path))
 }
 
-export async function selectBridge(registryPath: string, worktree: string, operation: BridgeOperation, affinity?: string): Promise<BridgeEntry> {
+export async function selectBridge(registryPath: string, worktree: string, operation: BridgeOperation, affinity?: string, directory?: string): Promise<BridgeEntry> {
   let contents: string
   try {
     contents = await readFile(registryPath, "utf8")
@@ -66,11 +66,13 @@ export async function selectBridge(registryPath: string, worktree: string, opera
   if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error("VS Code bridge registry exceeds the size limit")
   const registry = parseBridgeRegistry(JSON.parse(contents))
   const target = await canonical(worktree)
+  const directoryTarget = directory ? await canonical(directory) : undefined
   const now = Date.now()
   const candidates: BridgeEntry[] = []
   for (const entry of registry.entries) {
     if (!bridgeEntryIsFresh(entry, now, processIsAlive)) continue
-    if (!entry.operations.includes(operation) || await canonical(entry.worktree) !== target || (affinity && entry.id !== affinity)) continue
+    const registered = await canonical(entry.worktree)
+    if (!entry.operations.includes(operation) || (registered !== target && registered !== directoryTarget) || (affinity && entry.id !== affinity)) continue
     assertLoopbackEndpoint(entry.endpoint)
     candidates.push(entry)
   }
@@ -96,7 +98,7 @@ export async function proxyBridge(
   })
   const affinity = process.env.OPENCODE_WORKBENCH_BRIDGE_ID
   if (affinity !== undefined && (!affinity || affinity.length > 128)) throw new Error("Invalid VS Code bridge affinity")
-  const bridge = await selectBridge(registryPath, context.worktree, operation, affinity)
+  const bridge = await selectBridge(registryPath, context.worktree, operation, affinity, context.directory)
   const encoded = JSON.stringify({
     version: 1,
     bridgeID: bridge.id,

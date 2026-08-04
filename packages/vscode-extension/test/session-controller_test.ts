@@ -1,6 +1,7 @@
-import { parseHostMessage, type MessageBundle, type SessionInfo } from "@opencode-workbench/shared"
+import { isOpenCodeMessageID, parseHostMessage, reusablePermissionScopes, type MessageBundle, type SessionInfo } from "@opencode-workbench/shared"
 import type { OpenCodeClient } from "../src/opencode-client.ts"
-import { type ComposerPreferences, SessionController } from "../src/session-controller.ts"
+import { type ComposerPreferences, permissionPatternMatches, SessionController } from "../src/session-controller.ts"
+import { sessionTreeEntries } from "../src/views/session-tree-model.ts"
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -224,17 +225,17 @@ Deno.test("starter draft stays with its new session", async () => {
 })
 
 Deno.test("first prompt creates and submits a session", async () => {
-  const sent: string[] = []
+  const sent: Array<{ id: string; text: string }> = []
   const fake = {
     createSession: async () => session("new", 2),
     messages: async () => [],
-    sendPrompt: async (_sessionID: string, _id: string, text: string) => sent.push(text),
+    sendPrompt: async (_sessionID: string, id: string, text: string) => sent.push({ id, text }),
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
 
   const sessionID = await controller.createSessionWithPrompt("Review this workspace")
 
-  if (sessionID !== "new" || sent[0] !== "Review this workspace") throw new Error("First prompt was not submitted to its new session")
+  if (sessionID !== "new" || sent[0]?.text !== "Review this workspace" || !isOpenCodeMessageID(sent[0]?.id)) throw new Error("First prompt was not submitted with a compatible OpenCode message ID")
   controller.dispose()
 })
 
@@ -277,6 +278,24 @@ Deno.test("failed send preserves a newer draft", async () => {
   await pending.catch(() => undefined)
 
   if (controller.snapshot.sessions.one?.draft !== "new draft") throw new Error("Failed send overwrote a newer draft")
+  controller.dispose()
+})
+
+Deno.test("failed send restores the submitted draft when no newer edit exists", async () => {
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    sendPrompt: async () => {
+      throw new Error("send failed")
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  controller.setDraft("Keep this prompt")
+  await controller.send("Keep this prompt").catch(() => undefined)
+  if (controller.snapshot.sessions.one?.draft !== "Keep this prompt") throw new Error("Failed send cleared the submitted draft")
   controller.dispose()
 })
 
@@ -525,6 +544,321 @@ Deno.test("busy sessions durably admit prompts in queue order", async () => {
   controller.dispose()
 })
 
+Deno.test("busy send choices distinguish queue, steer, and stop-and-send", async () => {
+  const deliveries: string[] = []
+  let aborts = 0
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({ one: { type: "busy" as const } }),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    sendPrompt: async (_sessionID: string, _id: string, _text: string, delivery: string) => deliveries.push(delivery),
+    abort: async () => {
+      aborts += 1
+      return true
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.send("queued", undefined, undefined, undefined, [], [], undefined, "queue")
+  await controller.send("steer", undefined, undefined, undefined, [], [], undefined, "steer")
+  await controller.send("replace", undefined, undefined, undefined, [], [], undefined, "replace")
+  if (deliveries.join(",") !== "queue,steer,steer" || aborts !== 1) {
+    throw new Error(`Busy send choices collapsed together: ${deliveries.join(",")} with ${aborts} aborts`)
+  }
+  controller.dispose()
+})
+
+Deno.test("steer choice survives another prompt admission already in progress", async () => {
+  const first = deferred<void>()
+  const deliveries: string[] = []
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({ one: { type: "busy" as const } }),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    sendPrompt: async (_sessionID: string, _id: string, text: string, delivery: string) => {
+      deliveries.push(`${text}:${delivery}`)
+      if (text === "first") await first.promise
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const admitting = controller.send("first", undefined, undefined, undefined, [], [], undefined, "queue")
+  await controller.send("second", undefined, undefined, undefined, [], [], undefined, "steer")
+  first.resolve()
+  await admitting
+  await Promise.resolve()
+  await Promise.resolve()
+  if (deliveries.join(",") !== "first:queue,second:steer") throw new Error(`Steer choice was lost while queued: ${deliveries.join(",")}`)
+  controller.dispose()
+})
+
+Deno.test("sending a retained queued prompt now stops before legacy delivery", async () => {
+  const events: string[] = []
+  let deliveredID = ""
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({ one: { type: "busy" as const } }),
+    catalogs: async () => ({
+      agents: [],
+      providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }],
+      models: [{ id: "model", providerID: "openai", name: "Model" }],
+    }),
+    messages: async () => [],
+    abort: async () => {
+      events.push("abort")
+      return true
+    },
+    sendAsync: async (_sessionID: string, text: string, _agent?: string, _model?: string, _variant?: string, _files?: unknown[], messageID?: string) => {
+      deliveredID = messageID ?? ""
+      events.push(`send:${text}`)
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const promptID = "msg_018bcfe568001234567890abcd"
+  await controller.send("retained", undefined, "openai/model", undefined, [], [], promptID)
+  if (controller.snapshot.sessions.one?.queue[0]?.id !== promptID || events.length) throw new Error("Busy legacy prompt was not retained in the queue")
+  await controller.sendQueuedNow("one", promptID)
+  if (events.join(",") !== "abort,send:retained" || controller.snapshot.sessions.one?.queue.length || !isOpenCodeMessageID(deliveredID) || deliveredID === promptID) {
+    throw new Error("Queued send-now did not stop before sending or retained the prompt")
+  }
+  controller.dispose()
+})
+
+Deno.test("legacy history keeps standard providers on legacy transport", async () => {
+  const assistant: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "assistant", time: { created: 1 } }, parts: [] }
+  const calls: string[] = []
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], providers: [{ id: "acme", name: "Acme", source: "api" as const }], models: [{ id: "model", providerID: "acme", name: "Model" }] }),
+    messageHistory: async () => ({ messages: [assistant], legacyMessageIDs: [assistant.info.id], v2MessageIDs: [] }),
+    messages: async () => [assistant],
+    sendAsync: async () => calls.push("legacy"),
+    sendPrompt: async () => calls.push("v2"),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.send("continue", undefined, "acme/model")
+  if (calls.join(",") !== "legacy") throw new Error("Legacy session context switched to V2 transport")
+  controller.dispose()
+})
+
+Deno.test("unsafe legacy IDs recover through a remapped fork", async () => {
+  const unsafe: MessageBundle = { info: { id: "msg_ffffffffffffffffffffffffffffffff", sessionID: "one", role: "user", time: { created: 1 } }, parts: [{ id: "part", sessionID: "one", messageID: "msg_ffffffffffffffffffffffffffffffff", type: "text", text: "old" }] }
+  const recovered: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "fork", role: "user", time: { created: 1 } }, parts: [] }
+  let sentSession = ""
+  let recoveredMapping = ""
+  let deletes = 0
+  const source = { ...session("one", 1), title: "Dashboard" }
+  const fork = { ...session("fork", 2), title: "Dashboard (fork #1)" }
+  const fake = {
+    listSessions: async () => [source],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }], models: [{ id: "model", providerID: "openai", name: "Model" }] }),
+    messageHistory: async (sessionID: string) => sessionID === "one"
+      ? { messages: [unsafe], legacyMessageIDs: [unsafe.info.id], v2MessageIDs: [] }
+      : { messages: [recovered], legacyMessageIDs: [recovered.info.id], v2MessageIDs: [] },
+    messages: async () => [],
+    forkSession: async () => fork,
+    deleteSession: async () => { deletes += 1; return true },
+    sendAsync: async (sessionID: string) => { sentSession = sessionID },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, {
+    error: () => undefined,
+    sessionRecovered: (sourceID, recoveredID) => { recoveredMapping = `${sourceID}:${recoveredID}` },
+  })
+  await controller.reconcile()
+  await controller.send("continue", undefined, "openai/model")
+  const sessions = controller.chatSnapshot().sessions
+  if (sentSession !== "fork" || controller.snapshot.selectedID !== "fork" || recoveredMapping !== "one:fork" || deletes !== 0 ||
+    sessions.length !== 1 || sessions[0]?.id !== "fork" || sessions[0]?.title !== "Dashboard (fork #1)" ||
+    controller.chatSnapshot().session?.title !== sessions[0].title || controller.visibleSessionIDs().join(",") !== "fork") {
+    throw new Error("Unsafe legacy recovery did not preserve one non-destructive logical session")
+  }
+  controller.dispose()
+})
+
+Deno.test("concurrent unsafe-session sends create only one recovery fork", async () => {
+  const fork = deferred<SessionInfo>()
+  const unsafe: MessageBundle = { info: { id: "msg_ffffffffffffffffffffffffffffffff", sessionID: "one", role: "user", time: { created: 1 } }, parts: [] }
+  let forkCalls = 0
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }], models: [{ id: "model", providerID: "openai", name: "Model" }] }),
+    messageHistory: async () => ({ messages: [unsafe], legacyMessageIDs: [unsafe.info.id], v2MessageIDs: [] }),
+    messages: async () => [unsafe],
+    forkSession: () => { forkCalls += 1; return fork.promise },
+    sendAsync: async () => undefined,
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const first = controller.send("continue", undefined, "openai/model")
+  const rejected = await controller.send("again", undefined, "openai/model").then(() => false, (error) => /already being recovered/.test(String(error)))
+  fork.resolve(session("fork", 2))
+  await first
+  if (!rejected || forkCalls !== 1) throw new Error("Concurrent sends created duplicate recovery forks")
+  controller.dispose()
+})
+
+Deno.test("persisted recovery mapping reuses its existing fork", async () => {
+  const unsafe: MessageBundle = { info: { id: "msg_ffffffffffffffffffffffffffffffff", sessionID: "one", role: "user", time: { created: 1 } }, parts: [] }
+  const safe: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "fork", role: "assistant", time: { created: 2 } }, parts: [] }
+  let forks = 0
+  let sentSession = ""
+  const fake = {
+    listSessions: async () => [session("one", 2), session("fork", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }], models: [{ id: "model", providerID: "openai", name: "Model" }] }),
+    messageHistory: async (sessionID: string) => sessionID === "one"
+      ? { messages: [unsafe], legacyMessageIDs: [unsafe.info.id], v2MessageIDs: [] }
+      : { messages: [safe], legacyMessageIDs: [safe.info.id], v2MessageIDs: [] },
+    messages: async () => [],
+    forkSession: async () => { forks += 1; return session("unexpected", 3) },
+    sendAsync: async (sessionID: string) => { sentSession = sessionID },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined }, undefined, "one", { one: "fork" })
+  await controller.reconcile()
+  await controller.send("continue", undefined, "openai/model")
+  if (forks || sentSession !== "fork" || controller.snapshot.selectedID !== "fork") throw new Error("Persisted recovered session was not reused")
+  controller.dispose()
+})
+
+Deno.test("recovered sessions replace their source in session lists", async () => {
+  const source = { ...session("source", 1), title: "Dashboard" }
+  const recovered = { ...session("recovered", 2), title: "Dashboard (fork #1)" }
+  const fake = {
+    listSessions: async () => [recovered, source],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined }, undefined, "source", { source: "recovered" })
+  await controller.reconcile()
+  const sessions = controller.chatSnapshot().sessions
+  if (sessions.length !== 1 || sessions[0]?.id !== "recovered" || sessions[0]?.title !== "Dashboard (fork #1)" ||
+    controller.chatSnapshot().session?.title !== sessions[0].title || controller.snapshot.selectedID !== "recovered") {
+    throw new Error("Recovered session did not replace its source as one logical session")
+  }
+  controller.dispose()
+})
+
+Deno.test("persisted recovery mapping collapses clustered duplicate forks", async () => {
+  const source = { ...session("source", 1), title: "Dashboard" }
+  const older = { ...session("older", 2), title: "Dashboard (fork #1)" }
+  const newest = { ...session("newest", 3), title: "Dashboard (fork #1)" }
+  const later = { ...session("later", 4), title: "Dashboard (fork #1)", time: { created: 60_000, updated: 4 } }
+  const fake = {
+    listSessions: async () => [later, newest, older, source],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined }, undefined, "older", { source: "newest" })
+  await controller.reconcile()
+  const sessions = controller.chatSnapshot().sessions
+  const tree = sessionTreeEntries(controller)
+  if (sessions.length !== 2 || sessions[0]?.id !== "later" || sessions[1]?.id !== "newest" || sessions[1]?.title !== "Dashboard (fork #1)" || controller.snapshot.selectedID !== "newest" ||
+    controller.chatSnapshot().session?.title !== sessions[1].title || controller.visibleSessionIDs().join(",") !== "later,newest" ||
+    tree.map((entry) => `${entry.id}:${entry.title}`).join(",") !== "later:Dashboard (fork #1),newest:Dashboard (fork #1)") {
+    throw new Error("Persisted recovery duplicates were not presented as one logical session")
+  }
+  controller.dispose()
+})
+
+Deno.test("ordinary same-title forks remain distinct without recovery evidence", async () => {
+  const source = { ...session("source", 1), title: "Dashboard" }
+  const first = { ...session("first", 2), title: "Dashboard (fork #1)" }
+  const second = { ...session("second", 3), title: "Dashboard (fork #1)" }
+  const fake = {
+    listSessions: async () => [second, first, source],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  if (controller.chatSnapshot().sessions.length !== 3 || controller.visibleSessionIDs().length !== 3) {
+    throw new Error("Ordinary user-created forks were mistaken for recovery duplicates")
+  }
+  controller.dispose()
+})
+
+Deno.test("selected children do not reveal a hidden recovery source", async () => {
+  const source = { ...session("source", 1), title: "Dashboard" }
+  const recovered = { ...session("recovered", 2), title: "Dashboard (fork #1)" }
+  const child = { ...session("child", 3), title: "Subagent", parentID: "source" }
+  const fake = {
+    listSessions: async () => [child, recovered, source],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined }, undefined, "child", { source: "recovered" })
+  await controller.reconcile()
+  const sessions = controller.chatSnapshot().sessions
+  if (controller.snapshot.selectedID !== "child" || sessions.length !== 1 || sessions[0]?.id !== "recovered") {
+    throw new Error("Selecting a child exposed the hidden recovery source")
+  }
+  controller.dispose()
+})
+
+Deno.test("idle trailing user turns are marked interrupted", async () => {
+  const user: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "user", time: { created: 1 } }, parts: [] }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messageHistory: async () => ({ messages: [user], legacyMessageIDs: [user.info.id], v2MessageIDs: [] }),
+    messages: async () => [user],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const status = controller.snapshot.sessions.one?.status
+  if (status?.type !== "error" || !status.message?.includes("interrupted")) throw new Error("Interrupted session was presented as idle")
+  controller.dispose()
+})
+
+Deno.test("controller restores the persisted selected session", async () => {
+  let selected = ""
+  const fake = {
+    listSessions: async () => [session("one", 2), session("two", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined, selectionChanged: (sessionID) => { selected = sessionID ?? "" } }, undefined, "two")
+  await controller.reconcile()
+  if (controller.snapshot.selectedID !== "two" || selected !== "two") throw new Error("Persisted session selection was not restored")
+  controller.dispose()
+})
+
+Deno.test("transcript refresh preserves admitted prompt text until the server projects it", async () => {
+  const promptID = "msg_018bcfe568001234567890abcd"
+  let messageCalls = 0
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => {
+      messageCalls += 1
+      return messageCalls === 1 ? [] : [{ info: { id: promptID, sessionID: "one", role: "user" as const }, parts: [] }]
+    },
+    sendPrompt: async () => undefined,
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.send("Visible prompt", undefined, undefined, undefined, [], [], promptID)
+  const internal = controller as unknown as { loadTranscript(sessionID: string, markLoading: boolean): Promise<void> }
+  await internal.loadTranscript("one", false)
+  const user = controller.snapshot.sessions.one?.messages.find((entry) => entry.info.id === promptID)
+  if (user?.parts[0]?.text !== "Visible prompt") throw new Error("Incomplete transcript projection replaced the admitted prompt text")
+  controller.dispose()
+})
+
 Deno.test("reload pause rejects new prompts and resumes retained queues", async () => {
   const calls: string[] = []
   const fake = {
@@ -574,6 +908,186 @@ Deno.test("custom providers use compatible legacy prompt transport", async () =>
   controller.dispose()
 })
 
+Deno.test("retries the selected prompt with its attachments", async () => {
+  const calls: Array<{ reverted?: string; text?: string; files?: Array<{ url: string }> }> = []
+  const older: MessageBundle = {
+    info: { id: "older", sessionID: "one", role: "user" },
+    parts: [{ id: "older-text", sessionID: "one", messageID: "older", type: "text", text: "Older prompt" }],
+  }
+  const olderResponse: MessageBundle = { info: { id: "older-response", sessionID: "one", role: "assistant" }, parts: [] }
+  const user: MessageBundle = {
+    info: { id: "user", sessionID: "one", role: "user" },
+    parts: [
+      { id: "text", sessionID: "one", messageID: "user", type: "text", text: "Try again" },
+      { id: "file", sessionID: "one", messageID: "user", type: "file", mime: "image/png", filename: "image.png", url: "data:image/png;base64,eA==" },
+    ],
+  }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [older, olderResponse, user],
+    revertSession: async (_sessionID: string, messageID: string) => {
+      calls.push({ reverted: messageID })
+      return session("one", 2)
+    },
+    sendPrompt: async (_sessionID: string, _promptID: string, text: string, _delivery: string, _agent?: string, _model?: string, _variant?: string, files?: Array<{ url: string }>) => {
+      calls.push({ text, files })
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  controller.setSessionDraft("one", "Keep this draft")
+  await controller.retrySession("one", "older-response")
+  if (calls[0]?.reverted !== "older" || calls[1]?.text !== "Older prompt" || calls[1]?.files?.length) {
+    throw new Error("Retry did not revert and resubmit the selected prompt")
+  }
+  if (controller.chatSnapshot().session?.draft !== "Keep this draft") throw new Error("Retry cleared an unrelated draft")
+  controller.dispose()
+})
+
+Deno.test("failed retries restore the reverted turn and stay in their original session", async () => {
+  const reverted = deferred<void>()
+  const calls: string[] = []
+  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const fake = {
+    listSessions: async () => [session("one", 2), session("two", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async (sessionID: string) => sessionID === "one" ? [user] : [],
+    revertSession: async (sessionID: string) => {
+      calls.push(`revert:${sessionID}`)
+      await reverted.promise
+      return session(sessionID, 3)
+    },
+    sendPrompt: async (sessionID: string) => {
+      calls.push(`send:${sessionID}`)
+      throw new Error("send failed")
+    },
+    unrevertSession: async (sessionID: string) => {
+      calls.push(`redo:${sessionID}`)
+      return session(sessionID, 4)
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const retry = controller.retrySession("one").then(() => false, () => true)
+  await controller.select("two")
+  reverted.resolve(undefined)
+  if (!await retry || calls.join(",") !== "revert:one,send:one,redo:one" || controller.snapshot.sessions.one?.queue.length) {
+    throw new Error(`Retry selection race or rollback failed: ${calls.join(",")}`)
+  }
+  controller.dispose()
+})
+
+Deno.test("concurrent retries are rejected before a second revert", async () => {
+  const revert = deferred<SessionInfo>()
+  let revertCalls = 0
+  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [user],
+    revertSession: () => {
+      revertCalls += 1
+      return revert.promise
+    },
+    sendPrompt: async () => undefined,
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const first = controller.retrySession("one")
+  let rejected = false
+  try {
+    await controller.retrySession("one")
+  } catch {
+    rejected = true
+  }
+  revert.resolve(session("one", 2))
+  await first
+  if (!rejected || revertCalls !== 1) throw new Error("Concurrent retry performed a second revert")
+  controller.dispose()
+})
+
+Deno.test("retry rolls back when transcript reload fails after revert", async () => {
+  let messageCalls = 0
+  let restored = false
+  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => {
+      messageCalls += 1
+      if (messageCalls === 2) throw new Error("reload failed")
+      return [user]
+    },
+    revertSession: async () => session("one", 2),
+    unrevertSession: async () => {
+      restored = true
+      return session("one", 3)
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.retrySession("one").catch(() => undefined)
+  if (!restored) throw new Error("Retry did not restore a turn after post-revert reload failure")
+  controller.dispose()
+})
+
+Deno.test("retry keeps an ambiguously accepted prompt instead of unreverting", async () => {
+  let messageCalls = 0
+  let restored = false
+  let retriedID = ""
+  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => {
+      messageCalls += 1
+      return messageCalls >= 3 && retriedID
+        ? [user, { info: { id: retriedID, sessionID: "one", role: "user" as const }, parts: [] }]
+        : [user]
+    },
+    revertSession: async () => session("one", 2),
+    sendPrompt: async (_sessionID: string, promptID: string) => {
+      retriedID = promptID
+      throw new Error("response lost")
+    },
+    unrevertSession: async () => {
+      restored = true
+      return session("one", 3)
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.retrySession("one")
+  if (restored || controller.snapshot.sessions.one?.queue.length) throw new Error("Accepted retry was rolled back or remained queued")
+  controller.dispose()
+})
+
+Deno.test("forks from a selected transcript message", async () => {
+  let forkedFrom = ""
+  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [] }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async (sessionID: string) => sessionID === "one" ? [user] : [],
+    forkSession: async (_sessionID: string, messageID?: string) => {
+      forkedFrom = messageID ?? ""
+      return session("fork", 2)
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.forkSession("one", "user")
+  if (forkedFrom !== "user" || controller.chatSnapshot().session?.id !== "fork") throw new Error("Message-scoped fork was not selected")
+  controller.dispose()
+})
+
 Deno.test("v2 session events refresh projected output and terminal status", async () => {
   let messageCalls = 0
   const assistant: MessageBundle = {
@@ -602,6 +1116,75 @@ Deno.test("v2 session events refresh projected output and terminal status", asyn
   controller.dispose()
 })
 
+Deno.test("v2 live events stream text, reasoning, tool input, and preferences", async () => {
+  const errors: string[] = []
+  let messageCalls = 0
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [{ name: "build" }], models: [{ providerID: "acme", id: "model", name: "Model", variants: ["high"] }] }),
+    messages: async () => { messageCalls += 1; return [] },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: (message) => errors.push(message) })
+  await controller.reconcile()
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "session.next.step.started", properties: { sessionID: "one", assistantMessageID: "assistant", agent: "build", model: { providerID: "acme", id: "model" }, timestamp: 1 } })
+  internal.handleEvent({ type: "session.next.text.started", properties: { sessionID: "one", assistantMessageID: "assistant", textID: "text" } })
+  internal.handleEvent({ type: "session.next.text.delta", properties: { sessionID: "one", assistantMessageID: "assistant", textID: "text", delta: "Hello" } })
+  internal.handleEvent({ type: "session.next.reasoning.started", properties: { sessionID: "one", assistantMessageID: "assistant", reasoningID: "reasoning" } })
+  internal.handleEvent({ type: "session.next.reasoning.delta", properties: { sessionID: "one", assistantMessageID: "assistant", reasoningID: "reasoning", delta: "Think" } })
+  internal.handleEvent({ type: "session.next.tool.input.started", properties: { sessionID: "one", assistantMessageID: "assistant", callID: "tool", name: "bash" } })
+  internal.handleEvent({ type: "session.next.tool.input.delta", properties: { sessionID: "one", assistantMessageID: "assistant", callID: "tool", delta: "pwd" } })
+  internal.handleEvent({ type: "session.next.tool.input.ended", properties: { sessionID: "one", assistantMessageID: "assistant", callID: "tool", text: "pwd -P" } })
+  internal.handleEvent({ type: "session.next.agent.switched", properties: { sessionID: "one", agent: "build" } })
+  internal.handleEvent({ type: "session.next.model.switched", properties: { sessionID: "one", model: { providerID: "acme", id: "model", variant: "high" } } })
+  internal.handleEvent({ type: "future.event", properties: {} })
+  internal.handleEvent({ type: "future.event", properties: {} })
+  internal.handleEvent({ type: "project.updated", properties: { id: "project" } })
+  await new Promise((resolve) => setTimeout(resolve, 35))
+  const state = controller.snapshot.sessions.one
+  const parts = state?.messages[0]?.parts ?? []
+  if (parts.find((part) => part.id === "text")?.text !== "Hello" || parts.find((part) => part.id === "reasoning")?.text !== "Think" ||
+    parts.find((part) => part.id === "tool")?.state?.input !== "pwd -P" || state?.agent !== "build" || state.model !== "acme/model" || state.variant !== "high" ||
+    errors.filter((message) => message.includes("future.event")).length !== 1 || errors.some((message) => message.includes("project.updated")) || messageCalls !== 1) {
+    throw new Error("V2 live event projection or unknown-event diagnostics failed")
+  }
+  controller.dispose()
+})
+
+Deno.test("catalog and MCP invalidation events refresh data and expose browser fallback", async () => {
+  let catalogCalls = 0
+  const refreshed = deferred<void>()
+  const opened: string[] = []
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => {
+      catalogCalls += 1
+      return { agents: [], models: [{ providerID: "acme", id: `model-${catalogCalls}`, name: "Model" }] }
+    },
+    messages: async () => [],
+    path: async () => ({}),
+    vcs: async () => ({}),
+    lsp: async () => [],
+    formatter: async () => [],
+    mcp: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined, openExternal: (url) => { opened.push(url) } })
+  await controller.reconcile()
+  controller.subscribe(() => {
+    if (controller.chatSnapshot().models[0]?.id === "model-2") refreshed.resolve()
+  })
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "catalog.updated", properties: {} })
+  internal.handleEvent({ type: "mcp.browser.open.failed", properties: { mcpName: "docs", url: "https://example.test/auth" } })
+  await refreshed.promise
+  if (controller.chatSnapshot().models[0]?.id !== "model-2" || opened.join(",") !== "https://example.test/auth") {
+    throw new Error(`Catalog invalidation or MCP browser fallback was ignored: model=${controller.chatSnapshot().models[0]?.id}, opened=${opened.join(",")}`)
+  }
+  controller.dispose()
+})
+
 Deno.test("queued attachments retain private payloads only until durable admission", async () => {
   const sent = deferred<Array<{ url: string; filename: string }>>()
   const fake = {
@@ -621,6 +1204,40 @@ Deno.test("queued attachments retain private payloads only until durable admissi
   const files = await sent.promise
   if (files[0]?.url !== file.url) throw new Error("Queued attachment payload was not sent")
   if (controller.chatSnapshot().session?.queue?.length || JSON.stringify(controller.chatSnapshot()).includes("base64")) throw new Error("Admitted attachment payload remained in client state")
+  controller.dispose()
+})
+
+Deno.test("editing a waiting queued prompt preserves its attachments", async () => {
+  const firstStarted = deferred<void>()
+  const releaseFirst = deferred<void>()
+  const secondSent = deferred<{ text: string; files: Array<{ url: string }> }>()
+  let calls = 0
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({ one: { type: "busy" as const } }),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    sendPrompt: async (_sessionID: string, _id: string, text: string, _delivery: string, _agent?: string, _model?: string, _variant?: string, files?: Array<{ url: string }>) => {
+      calls += 1
+      if (calls === 1) {
+        firstStarted.resolve()
+        await releaseFirst.promise
+      } else secondSent.resolve({ text, files: files ?? [] })
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const first = controller.send("first")
+  await firstStarted.promise
+  const file = { type: "file" as const, mime: "image/png", url: "data:image/png;base64,eA==", filename: "image.png" }
+  await controller.send("before", undefined, undefined, undefined, [file])
+  const queued = controller.chatSnapshot().session?.queue?.find((prompt) => prompt.text === "before")
+  if (!queued) throw new Error("Second prompt was not queued")
+  controller.editQueued("one", queued.id, "after")
+  releaseFirst.resolve()
+  await first
+  const sent = await secondSent.promise
+  if (sent.text !== "after" || sent.files[0]?.url !== file.url) throw new Error("Queued prompt edit lost text or attachment data")
   controller.dispose()
 })
 
@@ -671,6 +1288,98 @@ Deno.test("auto approval responds once and removes only accepted permissions", a
   await Promise.resolve()
   await Promise.resolve()
   if (controller.chatSnapshot().session?.permissions?.length !== 0) throw new Error("Accepted permission remained pending")
+  controller.dispose()
+})
+
+Deno.test("permission command scopes are exact or conservative prefixes", async () => {
+  if (!permissionPatternMatches("deno test", "deno test") || !permissionPatternMatches("anything", "*") || permissionPatternMatches("DENO TEST", "deno test") ||
+    !permissionPatternMatches("deno test packages/shared", "deno test *") || permissionPatternMatches("deno task test", "deno test *") ||
+    permissionPatternMatches("deno test && rm -rf .", "deno test *") || permissionPatternMatches("deno task install:local", "deno task install:*")) {
+    throw new Error("Permission command scope matching was unsafe or incorrect")
+  }
+  const replies: string[] = []
+  let attention = 0
+  const fake = {
+    events: (signal: AbortSignal) => new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })),
+    respondPermission: async (_request: unknown, reply: string) => {
+      replies.push(reply)
+      return true
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined, attention: () => attention += 1 })
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
+  internal.handleEvent({ type: "permission.asked", properties: { id: "first", sessionID: "one", permission: "bash", patterns: ["deno test"], always: ["deno test *"] } })
+  await controller.respondPermission("first", "exact", "one", "current")
+  controller.reconnect()
+  internal.handleEvent({ type: "permission.asked", properties: { id: "repeat", sessionID: "one", permission: "bash", patterns: ["deno test"], always: ["deno test *"] } })
+  await Promise.resolve()
+  await Promise.resolve()
+  if (replies.join(",") !== "once,once" || attention !== 1 || controller.chatSnapshot().session?.permissions?.length) {
+    throw new Error("Remembered exact scope did not cover the identical repeated command")
+  }
+  internal.handleEvent({ type: "permission.asked", properties: { id: "other", sessionID: "one", permission: "bash", patterns: ["deno test packages/shared"], always: ["deno test *"] } })
+  if (replies.join(",") !== "once,once" || Number(attention) !== 2 || controller.chatSnapshot().session?.permissions?.[0]?.id !== "other") {
+    throw new Error("Exact grant leaked to a broader command covered by OpenCode's suggested wildcard")
+  }
+  controller.dispose()
+})
+
+Deno.test("selected command scopes allow matching commands only within the conversation", async () => {
+  const command = "deno test --sloppy-imports --allow-env packages/vscode-extension/test/session-controller_test.ts"
+  const request = { id: "first", sessionID: "one", title: "Shell", type: "bash", pattern: [command], always: ["deno test *"], protocol: "current" as const }
+  const scopes = reusablePermissionScopes(request)
+  if (scopes.join(",") !== "deno test *,deno *,*") throw new Error(`Unexpected reusable command scopes: ${scopes.join(",")}`)
+  const complexScopes = reusablePermissionScopes({ ...request, pattern: ["PY=\"$(command -v python)\" && \"$PY\" - <<'PY'"] })
+  if (complexScopes.join(",") !== "*") throw new Error("Complex shell command did not retain the explicit all-shell session option")
+  const replies: string[] = []
+  const fake = {
+    respondPermission: async (_request: unknown, reply: string) => {
+      replies.push(reply)
+      return true
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
+  internal.handleEvent({ type: "permission.asked", properties: { id: request.id, sessionID: request.sessionID, permission: request.type, patterns: request.pattern, always: request.always } })
+  await controller.respondPermission("first", "scope", "one", "current", undefined, "deno test *")
+  internal.handleEvent({ type: "permission.asked", properties: { id: "covered", sessionID: "one", permission: "bash", patterns: ["deno test packages/shared"], always: ["deno test *"] } })
+  await Promise.resolve()
+  await Promise.resolve()
+  internal.handleEvent({ type: "permission.asked", properties: { id: "other", sessionID: "one", permission: "bash", patterns: ["deno task test"], always: ["deno task *"] } })
+  if (replies.join(",") !== "once,once" || controller.snapshot.sessions.one?.permissions.map((permission) => permission.id).join(",") !== "other") {
+    throw new Error("Selected command scope covered an unrelated command or missed a matching command")
+  }
+  await controller.respondPermission("other", "scope", "one", "current", undefined, "git *").catch(() => undefined)
+  if (replies.join(",") !== "once,once") throw new Error("Controller accepted a scope that was not offered for the request")
+  controller.dispose()
+})
+
+Deno.test("permission reconciliation applies remembered exact grants", async () => {
+  const replies: string[] = []
+  const repeat = { id: "repeat", sessionID: "one", title: "Shell", type: "bash", pattern: ["deno test"], always: ["deno test *"], protocol: "current" as const }
+  const fake = {
+    respondPermission: async (_request: unknown, reply: string) => {
+      replies.push(reply)
+      return true
+    },
+    pendingPermissionsDetailed: async () => ({ requests: [repeat], succeeded: ["current" as const] }),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+    reconcilePermissions(): Promise<void>
+  }
+  internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
+  internal.handleEvent({ type: "permission.asked", properties: { id: "first", sessionID: "one", permission: "bash", patterns: ["deno test"], always: ["deno test *"] } })
+  await controller.respondPermission("first", "exact", "one", "current")
+  await internal.reconcilePermissions()
+  await Promise.resolve()
+  await Promise.resolve()
+  if (replies.join(",") !== "once,once" || controller.snapshot.sessions.one?.permissions.length) {
+    throw new Error("Reconciled exact permission was not automatically allowed once")
+  }
   controller.dispose()
 })
 
@@ -794,6 +1503,88 @@ Deno.test("reconnect discards stale permission reconciliation", async () => {
   if (controller.chatSnapshot().session?.permissions?.[0]?.id !== "live") {
     throw new Error("Pre-reconnect permission response replaced current state")
   }
+  controller.dispose()
+})
+
+Deno.test("event reconnect reports connected only after reconciliation succeeds", async () => {
+  const sessions = deferred<ReturnType<typeof session>[]>()
+  const opened = deferred<void>()
+  const connected = deferred<void>()
+  const fake = {
+    events: async (signal: AbortSignal, onOpen: () => Promise<void> | void) => {
+      opened.resolve(undefined)
+      await onOpen()
+      await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))
+    },
+    listSessions: () => sessions.promise,
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  controller.subscribe((update) => {
+    if (update.type === "connected" && update.connected) connected.resolve(undefined)
+  })
+  controller.start()
+  await opened.promise
+  await Promise.resolve()
+  if (controller.snapshot.connected) throw new Error("Connection became visible before reconciliation completed")
+  sessions.resolve([])
+  await connected.promise
+  if (!controller.snapshot.connected) throw new Error("Connection did not become visible after reconciliation")
+  controller.dispose()
+})
+
+Deno.test("stale event-loop startup cannot reconnect an aborted stream", async () => {
+  const sessions = deferred<SessionInfo[]>()
+  const opened = deferred<void>()
+  let eventCalls = 0
+  const fake = {
+    events: async (signal: AbortSignal, onOpen: () => Promise<void> | void) => {
+      eventCalls += 1
+      if (eventCalls === 1) {
+        opened.resolve(undefined)
+        await onOpen()
+      }
+      if (signal.aborted) return
+      await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))
+    },
+    listSessions: () => sessions.promise,
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  controller.start()
+  await opened.promise
+  controller.reconnect()
+  sessions.resolve([])
+  await Promise.resolve()
+  await Promise.resolve()
+  if (controller.snapshot.connected) throw new Error("Aborted event-loop startup restored a stale connection")
+  controller.dispose()
+})
+
+Deno.test("retry rejects active sessions before reverting", async () => {
+  let reverted = false
+  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({ one: { type: "busy" as const } }),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [user],
+    revertSession: async () => {
+      reverted = true
+      return session("one", 2)
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  let rejected = false
+  try {
+    await controller.retrySession("one")
+  } catch {
+    rejected = true
+  }
+  if (!rejected || reverted) throw new Error("Active retry was not rejected before revert")
   controller.dispose()
 })
 
@@ -960,6 +1751,27 @@ Deno.test("accepted stop requests immediately transition selected session to idl
 
   await controller.abortSelected()
   if (aborted !== "one" || controller.chatSnapshot().session?.status.type !== "idle") throw new Error("Stop acknowledgement did not update local status")
+  controller.dispose()
+})
+
+Deno.test("workspace refresh refuses to dispose an active session", async () => {
+  let disposals = 0
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({ one: { type: "busy" as const } }),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    disposeInstance: async () => { disposals += 1; return true },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  let rejected = false
+  try {
+    await controller.refresh()
+  } catch (error) {
+    rejected = error instanceof Error && error.message.includes("Stop all active")
+  }
+  if (!rejected || disposals !== 0) throw new Error("Active workspace refresh reached destructive instance disposal")
   controller.dispose()
 })
 

@@ -46,6 +46,7 @@ export type SessionAction =
   | { type: "preference"; sessionID: string; agent?: string; model?: string; variant?: string }
   | { type: "queue"; sessionID: string; prompt: QueuedPrompt }
   | { type: "removeQueued"; sessionID: string; promptID: string }
+  | { type: "editQueued"; sessionID: string; promptID: string; text: string }
   | { type: "reorderQueue"; sessionID: string; promptIDs: string[] }
   | { type: "permissions"; sessionID: string; permissions: PermissionRequest[] }
   | { type: "todos"; sessionID: string; todos: TodoItem[] }
@@ -69,6 +70,38 @@ function hasSession(sessions: Record<string, SessionViewState>, sessionID: strin
 
 function copySessions(sessions: Record<string, SessionViewState>): Record<string, SessionViewState> {
   return Object.assign(Object.create(null) as Record<string, SessionViewState>, sessions)
+}
+
+function appendPartDelta(messages: MessageBundle[], messageID: string, partID: string, field: string, delta: string): MessageBundle[] {
+  if (!delta || delta.length > 512 * 1024) return messages
+  const messageIndex = messages.findIndex((message) => message.info.id === messageID)
+  if (messageIndex < 0) return messages
+  const partIndex = messages[messageIndex]!.parts.findIndex((part) => part.id === partID)
+  if (partIndex < 0) return messages
+  const current = messages[messageIndex]!
+  const part = current.parts[partIndex]!
+  let updated: MessagePart | undefined
+  if (field === "text" && typeof part.text === "string" && part.text.length + delta.length <= 4_000_000) updated = { ...part, text: part.text + delta }
+  if (field === "input" && part.type === "tool" && part.state && typeof part.state.input === "string" && part.state.input.length + delta.length <= 4_000_000) {
+    updated = { ...part, state: { ...part.state, input: part.state.input + delta } }
+  }
+  if (!updated) return messages
+  const parts = current.parts.slice()
+  parts[partIndex] = updated
+  const next = messages.slice()
+  next[messageIndex] = { ...current, parts }
+  return next
+}
+
+function sessionErrorMessage(value: unknown): string {
+  if (!value || typeof value !== "object") return "Session failed"
+  const error = value as Record<string, unknown>
+  if (typeof error.message === "string" && error.message) return error.message.slice(0, 20_000)
+  const data = error.data
+  if (data && typeof data === "object" && typeof (data as Record<string, unknown>).message === "string") {
+    return ((data as Record<string, unknown>).message as string).slice(0, 20_000) || "Session failed"
+  }
+  return "Session failed"
 }
 
 function newSession(info: SessionInfo, status: SessionStatus = { type: "idle" }): SessionViewState {
@@ -205,6 +238,17 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
     sessions[action.sessionID] = { ...current, queue }
     return { ...state, sessions }
   }
+  if (action.type === "editQueued") {
+    if (!hasSession(state.sessions, action.sessionID)) return state
+    const current = state.sessions[action.sessionID]!
+    const index = current.queue.findIndex((prompt) => prompt.id === action.promptID)
+    if (index < 0 || current.queue[index]!.text === action.text) return state
+    const queue = current.queue.slice()
+    queue[index] = { ...queue[index]!, text: action.text }
+    const sessions = copySessions(state.sessions)
+    sessions[action.sessionID] = { ...current, queue }
+    return { ...state, sessions }
+  }
   if (action.type === "reorderQueue") {
     if (!hasSession(state.sessions, action.sessionID)) return state
     const current = state.sessions[action.sessionID]!
@@ -256,7 +300,13 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
     if (!info?.id) return state
     const existing = hasSession(state.sessions, info.id) ? state.sessions[info.id] : undefined
     const sessions = copySessions(state.sessions)
-    sessions[info.id] = existing ? { ...existing, info } : newSession(info)
+    sessions[info.id] = existing ? {
+      ...existing,
+      info,
+      agent: info.agent ?? existing.agent,
+      model: info.model ? `${info.model.providerID}/${info.model.id}` : existing.model,
+      variant: info.model?.variant ?? existing.variant,
+    } : newSession(info)
     const order = [info.id, ...state.order.filter((id) => id !== info.id)]
     return { ...state, sessions, order, selectedID: state.selectedID ?? info.id }
   }
@@ -292,7 +342,7 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
       unread: becameIdle && state.selectedID !== sessionID ? session.unread + 1 : session.unread,
     }
   } else if (event.type === "session.error") {
-    updated = { ...session, status: { type: "error", message: "Session failed" } }
+    updated = { ...session, status: { type: "error", message: sessionErrorMessage(event.properties.error) } }
   } else if (event.type === "todo.updated") {
     const todos = event.properties.todos
     if (Array.isArray(todos)) updated = { ...session, todos: todos as TodoItem[] }
@@ -304,6 +354,10 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
   } else if (event.type === "message.part.updated") {
     const part = event.properties.part as MessagePart | undefined
     if (part?.id) updated = { ...session, messages: upsertPart(session.messages, part) }
+  } else if (event.type === "message.part.delta" && typeof event.properties.messageID === "string" && typeof event.properties.partID === "string" &&
+    typeof event.properties.field === "string" && typeof event.properties.delta === "string") {
+    const messages = appendPartDelta(session.messages, event.properties.messageID, event.properties.partID, event.properties.field, event.properties.delta)
+    if (messages !== session.messages) updated = { ...session, messages }
   } else if (
     event.type === "message.part.removed" &&
     typeof event.properties.messageID === "string" &&

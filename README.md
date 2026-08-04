@@ -16,6 +16,9 @@ and transcripts. Workbench provides the editor experience around that runtime.
 - Agent and model selection for each session, using OpenCode's resolved provider
   catalog, model capabilities, variants, and token limits.
 - Streaming responses, reasoning sections, tool activity, and abort controls.
+- Anchored image and PDF attachments, collapsible large-paste context, previews,
+  and synchronized pending composer payloads across chat surfaces.
+- Per-message copy, edit, retry, undo, and message-scoped fork actions.
 - Inline permission requests with exact scope details and explicit decisions.
 - Editor context tools for selections, unsaved buffers, notebooks, diagnostics,
   files, debugging, terminals, tasks, MCP resources, and approved URLs.
@@ -111,6 +114,7 @@ Launch in Terminal** or the `opencode` command.
 | --- | --- | --- |
 | `opencodeWorkbench.serverMode` | `managed` | Starts a private server or connects to an external server. |
 | `opencodeWorkbench.executablePath` | Empty | Optional absolute OpenCode executable path for managed mode. |
+| `opencodeWorkbench.managedServerStartupTimeout` | `120` | Seconds to wait for managed-server version checks and startup. Increase this on systems slowed by antivirus scanning. |
 | `opencodeWorkbench.serverUrl` | `http://127.0.0.1:4096` | External server URL. |
 | `opencodeWorkbench.serverUsername` | Empty | External HTTP Basic username override. |
 | `opencodeWorkbench.serverEnvironmentFile` | `~/.config/opencode-workbench/server.env` | Optional external credentials file on Unix systems. |
@@ -147,11 +151,24 @@ deno task test
 deno task package
 ```
 
+Run the live OpenCode compatibility test against an installed `1.18.11`
+executable. The test starts an authenticated server in a temporary workspace
+and exercises health, SSE, session, fork, history, and deletion contracts
+without sending a model prompt.
+
+```sh
+OPENCODE_INTEGRATION_EXECUTABLE=/absolute/path/to/opencode deno task test:opencode
+```
+
 Install a local build:
 
 ```sh
 deno task install:local
 ```
+
+Local installs use a timestamped prerelease of the next patch, such as
+`0.3.1-dev.20260803.t040506`, so VS Code clearly distinguishes them from the
+current and next stable Marketplace versions.
 
 Generated artifacts are written to `dist/`.
 

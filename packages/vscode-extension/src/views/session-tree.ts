@@ -1,5 +1,6 @@
 import * as vscode from "vscode"
 import type { SessionController } from "../session-controller.js"
+import { sessionTreeEntries } from "./session-tree-model.js"
 
 export class SessionItem extends vscode.TreeItem {
   readonly contextValue = "opencodeWorkbench.session"
@@ -27,12 +28,9 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<SessionItem>
   }
 
   getChildren(): SessionItem[] {
-    if (!this.controller) return []
-    const state = this.controller.snapshot
-    return state.order.flatMap((id) => {
-      const session = state.sessions[id]
-      return session ? [new SessionItem(id, session.info.title || "Untitled session", session.status.type, session.unread)] : []
-    })
+    const controller = this.controller
+    if (!controller) return []
+    return sessionTreeEntries(controller).map((session) => new SessionItem(session.id, session.title, session.status, session.unread))
   }
 
   refresh(): void {

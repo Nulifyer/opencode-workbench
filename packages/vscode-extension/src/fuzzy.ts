@@ -49,6 +49,19 @@ export interface PreparedFzfIndex {
   maxLength: number
 }
 
+export function workspaceSearchPaths(files: string[], limit = 20_000): string[] {
+  const paths = new Set(files.slice(0, limit))
+  for (const file of files) {
+    let parent = file.slice(0, file.lastIndexOf("/"))
+    while (parent && paths.size < limit) {
+      paths.add(parent)
+      parent = parent.slice(0, parent.lastIndexOf("/"))
+    }
+    if (paths.size >= limit) break
+  }
+  return [...paths]
+}
+
 export function prepareFzf(candidates: string[]): PreparedFzfIndex {
   let maxLength = 0
   const prepared = candidates.map((value) => {

@@ -1,9 +1,8 @@
-import { parseHostMessage } from "@opencode-workbench/shared"
-import type { ChatSnapshot, ContextAttachmentSummary, EditorContextSummary, InlineAttachment, MessageBundle, MessagePart, PermissionRequest, RuntimeService, WebviewToHostMessage } from "@opencode-workbench/shared"
-import { applyPatchFiles, applyPatchSection, currentTodoContent, diffLineKind, fileReference, formatDuration, markdownFenceEnd, markdownFenceLanguage, patchActivityLabel, questionAnswerValues, reasoningDetail, reasoningSummary, sessionGroup, shouldSubmitComposerKey, toolKind, turnContent } from "./presentation.js"
+import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
+import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type WebviewToHostMessage } from "@opencode-workbench/shared"
+import { applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, sessionGroup, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
 
 interface WebviewState {
-  activeRailTab?: string
   todoExpanded?: boolean
 }
 
@@ -12,10 +11,22 @@ declare function acquireVsCodeApi(): { postMessage(message: WebviewToHostMessage
 const vscode = acquireVsCodeApi()
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const messages = element<HTMLElement>("messages")
+const jumpLatest = element<HTMLButtonElement>("jump-latest")
+const jumpLatestCount = element<HTMLElement>("jump-latest-count")
+const sessionLoading = element<HTMLElement>("session-loading")
+const notice = element<HTMLElement>("notice")
+const noticeTitle = element<HTMLElement>("notice-title")
+const noticeMessage = element<HTMLElement>("notice-message")
+const noticeRetry = element<HTMLButtonElement>("notice-retry")
+const noticeLogs = element<HTMLButtonElement>("notice-logs")
+const noticeCopy = element<HTMLButtonElement>("notice-copy")
+const noticeDismiss = element<HTMLButtonElement>("notice-dismiss")
 const empty = element<HTMLElement>("empty")
 const draft = element<HTMLTextAreaElement>("draft")
 const announcer = element<HTMLElement>("announcer")
 const send = element<HTMLButtonElement>("send")
+const sendGroup = element<HTMLElement>("send-group")
+const sendOptions = element<HTMLDetailsElement>("send-options")
 const createHeader = element<HTMLButtonElement>("create-header")
 const createEmpty = element<HTMLButtonElement>("create-empty")
 const surfaceToggle = element<HTMLButtonElement>("surface-toggle")
@@ -38,6 +49,10 @@ const reasoningOptions = element<HTMLElement>("reasoning-options")
 const modelMeta = element<HTMLElement>("model-meta")
 const composer = element<HTMLElement>("composer")
 const attachmentDock = element<HTMLElement>("attachment-dock")
+const attachmentPreview = element<HTMLElement>("attachment-preview")
+const attachmentPreviewTitle = element<HTMLElement>("attachment-preview-title")
+const attachmentPreviewImage = element<HTMLImageElement>("attachment-preview-image")
+const attachmentPreviewMeta = element<HTMLElement>("attachment-preview-meta")
 const attachFiles = element<HTMLButtonElement>("attach-files")
 const approvalToggle = element<HTMLButtonElement>("approval-toggle")
 const approvalMode = element<HTMLElement>("approval-mode")
@@ -62,12 +77,8 @@ const railSessions = element<HTMLElement>("rail-sessions")
 const railSessionCount = element<HTMLElement>("rail-session-count")
 const railSessionSearch = element<HTMLInputElement>("rail-session-search")
 const railSessionList = element<HTMLElement>("rail-session-list")
-const railChanges = element<HTMLElement>("rail-changes")
-const railDetails = element<HTMLElement>("rail-details")
 let snapshot: ChatSnapshot = { connected: false, sessions: [], agents: [], models: [] }
 const storedState = vscode.getState()
-const storedRailTab = storedState?.activeRailTab
-let activeRailTab = storedRailTab && ["sessions", "changes", "details"].includes(storedRailTab) ? storedRailTab : "sessions"
 let todoExpanded = storedState?.todoExpanded ?? true
 let overlayReturnFocus: HTMLElement | undefined
 let railReturnFocus: HTMLElement | undefined
@@ -82,8 +93,6 @@ let sessionListSignature = ""
 let catalogSignature = ""
 let modelPickerSignature = ""
 let summarySignature = ""
-let detailsSignature = ""
-let changesSignature = ""
 let workspaceSignature = ""
 let commandSignature = ""
 let sessionRenderLimit = 200
@@ -100,13 +109,29 @@ let editorContext: EditorContextSummary | undefined
 let pendingSessionID: string | undefined
 let stoppingSessionID: string | undefined
 let creatingSession = false
+let unseenMessages = 0
+let attachmentPreviewReturnFocus: HTMLElement | undefined
+let reasoningExpanded = false
+let offlineNoticeVisible = false
+let offlineNoticeTimer: number | undefined
+let noticeKind: "error" | "offline" | undefined
+let noticeDetail = ""
 const localDrafts = new Map<string, string>()
 const draftRevisions = new Map<string, number>()
 const submittedDrafts = new Map<string, string>()
 const attachments = new Map<string, InlineAttachment[]>()
+const attachmentThumbnails = new Map<string, string>()
+const composerPayloadRevisions = new Map<string, number>()
+type ComposerPayloadState = { attachments: InlineAttachment[]; pastedText: PastedTextBlock[] }
+type PendingComposerPayload = ComposerPayloadState & { revision: number; mutationID: string; base: ComposerPayloadState }
+const acknowledgedComposerPayloads = new Map<string, ComposerPayloadState>()
+const pendingComposerPayloads = new Map<string, PendingComposerPayload>()
+type SentAttachmentPreview = { label: string; name: string; mime: string; thumbnail?: string }
+const sentAttachmentPreviews = new Map<string, { sessionID: string; attachments: SentAttachmentPreview[] }>()
+const pastedText = new Map<string, PastedTextBlock[]>()
 const contextAttachments = new Map<string, ContextAttachmentSummary[]>()
-const submittedAttachments = new Set<string>()
 const stashedDrafts = new Map<string, string>()
+const INLINE_ATTACHMENT_COUNT_LIMIT = 10
 const renderedTurns = new Map<string, HTMLElement>()
 const renderedMessages = new Map<string, { node: HTMLElement; signature: string }>()
 const turnClassifications = new Map<string, { signature: string; hasActivity: boolean; finalTextPartKeys: string[] }>()
@@ -148,6 +173,24 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character)
 }
 
+function showNotice(kind: "error" | "offline", title: string, message: string, retryLabel?: string): void {
+  noticeKind = kind
+  noticeDetail = message
+  notice.classList.toggle("offline", kind === "offline")
+  noticeTitle.textContent = title
+  noticeMessage.textContent = message
+  noticeRetry.textContent = retryLabel ?? ""
+  noticeRetry.hidden = !retryLabel
+  notice.hidden = false
+}
+
+function clearNotice(kind?: "error" | "offline"): void {
+  if (kind && noticeKind !== kind) return
+  noticeKind = undefined
+  noticeDetail = ""
+  notice.hidden = true
+}
+
 function safeHttpUrl(value: string): string | undefined {
   try {
     const url = new URL(value)
@@ -157,11 +200,25 @@ function safeHttpUrl(value: string): string | undefined {
   }
 }
 
-function plainInline(source: string): string {
+function styledPlainInline(source: string): string {
   return escapeHtml(source)
+    .replace(/(\[(?:Image|PDF) \d+\]|\[Pasted text \d+ · ~\d+ lines\])/g, '<span class="inline-attachment-reference">$1</span>')
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
     .replace(/\n/g, "<br>")
+}
+
+function plainInline(source: string): string {
+  let result = ""
+  let offset = 0
+  for (const match of source.matchAll(/@<([^>\r\n]+)>/g)) {
+    const index = match.index ?? 0
+    result += styledPlainInline(source.slice(offset, index))
+    const reference = workspaceMentionReference(match[1]!)
+    result += reference ? fileButton(reference, `@${match[1]!}`) : styledPlainInline(match[0])
+    offset = index + match[0].length
+  }
+  return result + styledPlainInline(source.slice(offset))
 }
 
 function inlineMarkdown(source: string): string {
@@ -208,8 +265,8 @@ function fileName(file: string): string {
   return file.replace(/[\\/]$/, "").split(/[\\/]/).at(-1) || file
 }
 
-function fileButton(reference: NonNullable<ReturnType<typeof fileReference>>): string {
-  return `<button type="button" class="inline-file" title="${escapeHtml(fileTooltip(reference))}" data-file="${escapeHtml(reference.file)}"${reference.line ? ` data-line="${reference.line}"` : ""}${reference.column ? ` data-column="${reference.column}"` : ""}${reference.endLine ? ` data-end-line="${reference.endLine}"` : ""}${reference.endColumn ? ` data-end-column="${reference.endColumn}"` : ""}>${FILE_ICON}<span>${escapeHtml(fileName(reference.file))}</span></button>`
+function fileButton(reference: NonNullable<ReturnType<typeof fileReference>>, label = fileName(reference.file)): string {
+  return `<button type="button" class="inline-file" title="${escapeHtml(fileTooltip(reference))}" data-file="${escapeHtml(reference.file)}"${reference.line ? ` data-line="${reference.line}"` : ""}${reference.column ? ` data-column="${reference.column}"` : ""}${reference.endLine ? ` data-end-line="${reference.endLine}"` : ""}${reference.endColumn ? ` data-end-column="${reference.endColumn}"` : ""}>${FILE_ICON}<span>${escapeHtml(label)}</span></button>`
 }
 
 function codeBlock(content: string, language = "", extraClass = ""): string {
@@ -240,6 +297,24 @@ function markdown(source: string): string {
       output += codeBlock(code.join("\n"), language)
       continue
     }
+    const tableHeader = markdownTableRow(line)
+    const tableAlignments = tableHeader && index + 1 < lines.length ? markdownTableDelimiter(lines[index + 1]!, tableHeader.length) : undefined
+    if (tableHeader && tableAlignments) {
+      index += 2
+      const rows: string[][] = []
+      while (index < lines.length && lines[index]!.trim()) {
+        const row = markdownTableRow(lines[index]!)
+        if (!row) break
+        rows.push(Array.from({ length: tableHeader.length }, (_, column) => row[column] ?? ""))
+        index += 1
+      }
+      const cell = (tag: "th" | "td", value: string, column: number) => {
+        const alignment = tableAlignments[column]
+        return `<${tag}${alignment ? ` class="align-${alignment}"` : ""}>${inlineMarkdown(value)}</${tag}>`
+      }
+      output += `<div class="markdown-table-wrap"><table><thead><tr>${tableHeader.map((value, column) => cell("th", value, column)).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((value, column) => cell("td", value, column)).join("")}</tr>`).join("")}</tbody></table></div>`
+      continue
+    }
     const heading = /^(#{1,6})\s+(.+)$/.exec(line)
     if (heading) {
       const level = heading[1]!.length
@@ -260,13 +335,15 @@ function markdown(source: string): string {
     }
     if (/^\s*\d+\.\s+/.test(line)) {
       const items: string[] = []
+      let start = 1
       while (index < lines.length) {
-        const item = /^\s*\d+\.\s+(.+)$/.exec(lines[index]!)
+        const item = orderedListItem(lines[index]!)
         if (!item) break
-        items.push(`<li>${inlineMarkdown(item[1]!)}</li>`)
+        if (!items.length) start = item.ordinal
+        items.push(`<li value="${item.ordinal}">${inlineMarkdown(item.content)}</li>`)
         index += 1
       }
-      output += `<ol>${items.join("")}</ol>`
+      output += `<ol${start === 1 ? "" : ` start="${start}"`}>${items.join("")}</ol>`
       continue
     }
     if (/^>\s?/.test(line)) {
@@ -452,25 +529,32 @@ function activityMetaHtml(part: MessagePart, state: string): string {
   return ""
 }
 
-function delegationActions(delegation: Delegation): Array<{ label: string; detail: string; state: string }> {
-  const actions: Array<{ label: string; detail: string; state: string }> = []
+interface DelegationAction {
+  label: string
+  detail: string
+  state: string
+  kind: "reasoning" | "tool" | "output"
+}
+
+function delegationActions(delegation: Delegation): DelegationAction[] {
+  const actions: DelegationAction[] = []
   for (const message of delegation.messages) {
     if (message.info.role !== "assistant") continue
     for (const part of message.parts) {
       if (part.synthetic || part.type === "step-start" || part.type === "step-finish") continue
       if (part.type === "reasoning" && part.text?.trim()) {
-        actions.push({ label: `Thought: ${reasoningSummary(part.text) || "Reasoning"}`, detail: `<div class="markdown">${markdown(part.text)}</div>`, state: "completed" })
+        actions.push({ label: `Thought: ${reasoningSummary(part.text) || "Reasoning"}`, detail: `<div class="markdown">${markdown(part.text)}</div>`, state: "completed", kind: "reasoning" })
       } else if (part.type === "tool") {
-        actions.push({ label: toolLabel(part), detail: detailBody(part), state: String(part.state?.status || "pending").toLowerCase() })
+        actions.push({ label: toolLabel(part), detail: detailBody(part), state: String(part.state?.status || "pending").toLowerCase(), kind: "tool" })
       } else if (part.type === "text" && part.text?.trim()) {
-        actions.push({ label: "Assistant output", detail: `<div class="markdown">${markdown(part.text)}</div>`, state: "completed" })
+        actions.push({ label: "Assistant output", detail: `<div class="markdown">${markdown(part.text)}</div>`, state: "completed", kind: "output" })
       }
     }
   }
   return actions.slice(-300)
 }
 
-function delegationActionHtml(action: { label: string; detail: string; state: string }, key: string): string {
+function delegationActionHtml(action: DelegationAction, key: string): string {
   const failed = ["error", "failed", "rejected"].includes(action.state)
   const state = failed ? "error" : ["running", "pending"].includes(action.state) ? action.state : "completed"
   const summary = `<span class="activity-dot" aria-hidden="true"></span><span>${escapeHtml(action.label)}</span>`
@@ -493,9 +577,12 @@ function delegationHtml(part: MessagePart, key: string, delegation: Delegation):
   const actions = delegationActions(delegation)
   const recent = actions.slice(-4)
   const latest = actions.at(-1)
+  const current = actions.slice().reverse().find((action) => ["running", "pending"].includes(action.state)) ?? latest
   const request = delegationRequestHtml(part, key)
+  const active = state === "running"
+  const progress = active ? current?.label ?? "Starting subagent…" : delegationCompletionSummary(actions, state === "error")
   return `<details class="activity delegation tool-${state}" data-detail-key="${escapeHtml(key)}">
-    <summary><span class="activity-dot" aria-hidden="true"></span><span class="activity-title">${escapeHtml(delegation.title)}</span>${latest ? `<span class="activity-preview">${escapeHtml(latest.label)}</span>` : ""}${activityMetaHtml(part, state)}</summary>
+    <summary><span class="activity-dot" aria-hidden="true"></span><span class="delegation-summary"><span class="activity-title">${escapeHtml(delegation.title)}</span><span class="delegation-progress"><span>${escapeHtml(progress)}</span>${activityMetaHtml(part, state)}</span></span></summary>
     <div class="delegation-body">
       ${recent.length ? `<div class="delegation-recent"><div class="picker-heading">Recent activity</div>${recent.map((action, index) => delegationActionHtml(action, `${key}:recent:${actions.length - recent.length + index}`)).join("")}</div>` : `<p class="placeholder">Waiting for delegated activity.</p>`}
       ${actions.length > recent.length ? `<details class="delegation-history" data-detail-key="${escapeHtml(`${key}:history`)}"><summary>All activity (${actions.length})</summary><div>${actions.map((action, index) => delegationActionHtml(action, `${key}:history:${index}`)).join("")}</div></details>` : ""}
@@ -566,15 +653,19 @@ function assistantHtml(message: MessageBundle, live: boolean, finalTextParts: Re
       }
       const latestSummary = reasoningSummary(grouped.at(-1)!.text!)
       const label = grouped.length > 1 ? `Thoughts (${grouped.length})` : live ? "Thinking" : "Thought"
+      const source = part.text.trim()
+      const detail = reasoningDetail(source)
       const content = grouped.length > 1
         ? `<div class="reasoning-list">${grouped.map((item) => {
-            const detail = reasoningDetail(item.text!)
-            return `<section><strong>${escapeHtml(reasoningSummary(item.text!) || "Thought")}</strong>${detail ? `<div class="markdown">${markdown(detail)}</div>` : ""}</section>`
+            const text = item.text!.trim()
+            const itemDetail = reasoningDetail(text)
+            return `<section><strong>${escapeHtml(reasoningSummary(text) || "Thought")}</strong>${itemDetail ? `<div class="markdown">${markdown(itemDetail)}</div>` : ""}</section>`
           }).join("")}</div>`
-        : reasoningDetail(part.text)
-      processBody += grouped.length === 1 && !content
+        : detail
+      const detailed = grouped.length > 1 || Boolean(detail)
+      processBody += !detailed
         ? `<div class="reasoning reasoning-static"><span>${label}:</span>${latestSummary ? `<span class="reasoning-summary">${escapeHtml(latestSummary)}</span>` : ""}</div>`
-        : `<details class="reasoning${grouped.length > 1 ? " reasoning-group" : ""}" data-detail-key="${escapeHtml(`${message.info.id}:${part.id}`)}"><summary><span>${label}:</span>${latestSummary ? `<span class="reasoning-summary">${escapeHtml(latestSummary)}</span>` : ""}</summary>${grouped.length > 1 ? content : `<div class="markdown">${markdown(content as string)}</div>`}</details>`
+        : `<details class="reasoning${grouped.length > 1 ? " reasoning-group" : ""}" data-detail-key="${escapeHtml(`${message.info.id}:${part.id}`)}"${reasoningExpanded ? " open" : ""}><summary><span>${label}:</span>${latestSummary ? `<span class="reasoning-summary">${escapeHtml(latestSummary)}</span>` : ""}</summary>${grouped.length > 1 ? content : `<div class="markdown">${markdown(content as string)}</div>`}</details>`
     } else if (part.type === "tool") {
       const kind = toolKind(part)
       if (kind === "edit" || kind === "patch") {
@@ -606,14 +697,39 @@ function assistantHtml(message: MessageBundle, live: boolean, finalTextParts: Re
   if (!processBody && !responseBody && live) processBody = `<span class="pending">Thinking</span>`
   const timestamp = message.info.time?.created ? new Date(message.info.time.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
   const processOnly = processBody && !responseBody && !error ? " process-only" : ""
-  return `<article class="message assistant${processOnly}" data-message-id="${escapeHtml(message.info.id)}">${timestamp ? `<time class="message-time">${escapeHtml(timestamp)}</time>` : ""}<div class="content">${processBody ? `<div class="assistant-process">${processBody}</div>` : ""}${responseBody ? `<div class="assistant-response">${responseBody}</div>` : ""}${error}</div></article>`
+  const actions = !live && (responseBody || error) ? messageActions("assistant") : ""
+  return `<article class="message assistant${processOnly}" data-message-id="${escapeHtml(message.info.id)}">${timestamp ? `<time class="message-time">${escapeHtml(timestamp)}</time>` : ""}<div class="content">${processBody ? `<div class="assistant-process">${processBody}</div>` : ""}${responseBody ? `<div class="assistant-response">${responseBody}</div>` : ""}${error}</div>${actions}</article>`
+}
+
+function messageActions(role: "user" | "assistant"): string {
+  const action = (name: string, label: string, icon: string) => `<button type="button" data-message-action="${name}" title="${label}" aria-label="${label}">${icon}</button>`
+  const retry = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.3 4V1.8h1.3v4.4H9.2V4.9h2.1A4.7 4.7 0 1 0 12.5 9h1.4A6.1 6.1 0 1 1 12.3 4Z"/></svg>`
+  const fork = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 1.8a2.2 2.2 0 1 1-1.3 4v2.1c0 .8.6 1.4 1.4 1.4h4.2V5.8a2.2 2.2 0 1 1 1.4 0v4.9H5.1a2.8 2.8 0 0 1-2.8-2.8V5.8A2.2 2.2 0 0 1 5 1.8Zm0 1.4a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Zm5 0a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6ZM10 10.2a2.2 2.2 0 1 1-.7 4.3 2.2 2.2 0 0 1 .7-4.3Zm0 1.4a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Z"/></svg>`
+  return `<div class="message-actions" aria-label="Message actions">${action("copy", role === "user" ? "Copy message" : "Copy response", COPY_ICON)}${role === "user" ? action("edit", "Edit message", EDIT_ICON) : action("retry", "Retry response", retry)}${action("fork", "Fork from this message", fork)}</div>`
+}
+
+function attachmentPreviewsFor(message: MessageBundle): SentAttachmentPreview[] {
+  const existing = sentAttachmentPreviews.get(message.info.id)
+  return existing?.attachments ?? []
 }
 
 function userHtml(message: MessageBundle): string {
-  const body = message.parts.filter((part) => !part.synthetic && part.type === "text" && part.text).map((part) => `<div class="markdown">${markdown(part.text!)}</div>`).join("")
-  const files = message.parts.filter((part) => part.type === "file" && typeof part.filename === "string").map((part) => `<span class="attachment-chip transcript-attachment" title="${escapeHtml(typeof part.mime === "string" ? part.mime : "Attachment")}"><span>${escapeHtml(part.filename as string)}</span></span>`).join("")
+  if (isCompactionMessage(message)) {
+    return `<div class="compaction-divider" data-message-id="${escapeHtml(message.info.id)}" role="separator"><span>Session compacted</span></div>`
+  }
+  const textParts = message.parts.filter((part) => !part.synthetic && part.type === "text" && part.text)
+  const text = textParts.map((part) => part.text).join("\n")
+  const body = textParts.map((part) => `<div class="markdown">${markdown(part.text!)}</div>`).join("")
+  const previews = attachmentPreviewsFor(message)
+  const files = message.parts.filter((part) => part.type === "file" && typeof part.filename === "string").map((part) => {
+    const filename = part.filename as string
+    const display = attachmentDisplay(filename)
+    const preview = display.label ? previews.find((item) => item.label === display.label) : undefined
+    const thumbnail = preview?.thumbnail ? `<button type="button" class="transcript-attachment-thumbnail" data-transcript-preview="${escapeHtml(display.label!)}" aria-label="Preview ${escapeHtml(display.name)}"><img src="${preview.thumbnail}" alt=""></button>` : FILE_ICON
+    return `<span class="attachment-chip transcript-attachment" title="${escapeHtml(typeof part.mime === "string" ? part.mime : "Attachment")}">${thumbnail}<span>${escapeHtml(display.name)}</span></span>`
+  }).join("")
   const timestamp = message.info.time?.created ? new Date(message.info.time.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
-  return `<article class="message user" data-message-id="${escapeHtml(message.info.id)}"><div class="message-heading">You${timestamp ? `<time class="message-time">${escapeHtml(timestamp)}</time>` : ""}</div><div class="content">${body}${files ? `<div class="transcript-attachments">${files}</div>` : ""}${!body && !files ? "<span class=\"pending\">Message sent</span>" : ""}</div></article>`
+  return `<article class="message user" data-message-id="${escapeHtml(message.info.id)}"><div class="message-heading">You${timestamp ? `<time class="message-time">${escapeHtml(timestamp)}</time>` : ""}</div><div class="content">${body}${files ? `<div class="transcript-attachments">${files}</div>` : ""}${!body && !files ? "<span class=\"pending\">Message sent</span>" : ""}</div>${messageActions("user")}</article>`
 }
 
 function htmlNode(html: string): HTMLElement {
@@ -646,6 +762,19 @@ function clearTranscript(): void {
   renderedMessages.clear()
   turnClassifications.clear()
   renderedTranscriptSessionID = undefined
+  unseenMessages = 0
+  updateJumpLatest()
+}
+
+function transcriptNearBottom(): boolean {
+  return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80
+}
+
+function updateJumpLatest(): void {
+  const show = !messages.hidden && !transcriptNearBottom()
+  jumpLatest.hidden = !show
+  jumpLatestCount.textContent = show && unseenMessages ? String(unseenMessages) : ""
+  jumpLatest.setAttribute("aria-label", unseenMessages ? `Jump to latest message, ${unseenMessages} new` : "Jump to latest message")
 }
 
 function renderTranscript(session: NonNullable<ChatSnapshot["session"]>, active: boolean): void {
@@ -653,7 +782,7 @@ function renderTranscript(session: NonNullable<ChatSnapshot["session"]>, active:
     clearTranscript()
     renderedTranscriptSessionID = session.id
   }
-  const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80
+  const nearBottom = transcriptNearBottom()
   const expectedMessages = new Set<string>()
   const expectedTurns = new Set<string>()
   const changeRevision = JSON.stringify(session.changes ?? [])
@@ -802,7 +931,11 @@ function renderTranscript(session: NonNullable<ChatSnapshot["session"]>, active:
     renderedTurns.delete(key)
     turnClassifications.delete(key)
   }
-  if (nearBottom) messages.scrollTop = messages.scrollHeight
+  if (nearBottom) {
+    messages.scrollTop = messages.scrollHeight
+    unseenMessages = 0
+  }
+  updateJumpLatest()
 }
 
 function fillSelect(select: HTMLSelectElement, defaultLabel: string, options: Array<{ value: string; label: string }>, selected?: string): void {
@@ -977,20 +1110,21 @@ function renderQueue(session: NonNullable<ChatSnapshot["session"]>): void {
   const queue = session.queue ?? []
   const running = queue.find((prompt) => prompt.id === session.inFlightPromptID)
   const pending = queue.filter((prompt) => prompt.id !== session.inFlightPromptID)
-  const signature = JSON.stringify([session.id, queue, session.inFlightPromptID])
+  const signature = JSON.stringify([session.id, queue, session.inFlightPromptID, session.status.type])
   if (signature === queueSignature) return
   queueSignature = signature
   queueDock.hidden = queue.length === 0
   const preview = (prompt: typeof queue[number]) => escapeHtml(prompt.text.replace(/\s+/g, " ").trim() || prompt.attachments?.map((attachment) => attachment.name).join(", ") || "Attachment")
-  queueDock.innerHTML = queue.length ? `${running ? `<div class="dock-heading"><strong>Running</strong></div><ol><li class="queue-running"><span class="queue-preview">${preview(running)}</span><small>Command is executing</small></li></ol>` : ""}${pending.length ? `<div class="dock-heading"><strong>Queue</strong><span>${pending.length}</span></div><ol>${pending.map((prompt, index) => `<li><span class="queue-preview">${preview(prompt)}</span><span class="queue-actions"><button type="button" data-queue-action="now" data-prompt-id="${escapeHtml(prompt.id)}" ${running ? "disabled" : ""}>Send next</button><button type="button" data-queue-action="up" data-prompt-id="${escapeHtml(prompt.id)}" ${index === 0 ? "disabled" : ""}>Up</button><button type="button" data-queue-action="down" data-prompt-id="${escapeHtml(prompt.id)}" ${index === pending.length - 1 ? "disabled" : ""}>Down</button><button type="button" data-queue-action="remove" data-prompt-id="${escapeHtml(prompt.id)}">Remove</button></span></li>`).join("")}</ol>` : ""}` : ""
+  const active = session.status.type === "busy" || session.status.type === "retry"
+  queueDock.innerHTML = queue.length ? `${running ? `<div class="dock-heading"><strong>Running</strong></div><ol><li class="queue-running"><span class="queue-preview">${preview(running)}</span><small>Command is executing</small></li></ol>` : ""}${pending.length ? `<div class="dock-heading"><strong>Queue</strong><span>${pending.length}</span></div><ol>${pending.map((prompt, index) => `<li><span class="queue-preview">${preview(prompt)}</span><span class="queue-actions"><button type="button" data-queue-action="now" data-prompt-id="${escapeHtml(prompt.id)}" title="${active ? "Cancel the current response and send this message" : "Send this message now"}" ${running ? "disabled" : ""}>${active ? "Stop and send" : "Send now"}</button><button type="button" data-queue-action="edit" data-prompt-id="${escapeHtml(prompt.id)}">Edit</button><button type="button" data-queue-action="up" data-prompt-id="${escapeHtml(prompt.id)}" ${index === 0 ? "disabled" : ""}>Up</button><button type="button" data-queue-action="down" data-prompt-id="${escapeHtml(prompt.id)}" ${index === pending.length - 1 ? "disabled" : ""}>Down</button><button type="button" data-queue-action="remove" data-prompt-id="${escapeHtml(prompt.id)}">Remove from queue</button></span></li>`).join("")}</ol>` : ""}` : ""
 }
 
-function permissionDetails(request: PermissionRequest): string {
+function incompletePermissionDetails(request: PermissionRequest): string {
   return [
+    `Title: ${request.title}`,
     `Type: ${request.type ?? "unspecified"}`,
     `Pattern:\n${stringify(request.pattern ?? "unspecified")}`,
     `Metadata:\n${stringify(request.metadata ?? {})}`,
-    request.always?.length ? `Always-allow scope:\n${stringify(request.always)}` : undefined,
   ].filter(Boolean).join("\n\n")
 }
 
@@ -1005,8 +1139,21 @@ function renderPermissions(session: NonNullable<ChatSnapshot["session"]>): void 
     const disabled = incomplete ? ` disabled title="Unavailable because the request details were truncated"` : ""
     const delegated = request.sessionID !== session.id
     const delegation = delegated ? session.delegations?.find((item) => item.sessionID === request.sessionID) : undefined
-    const origin = delegated ? `<small>Requested by subagent${delegation ? `: ${escapeHtml(delegation.title)}` : ""}</small>` : ""
-    return `<article class="permission-card${incomplete ? " permission-incomplete" : ""}" data-request-id="${escapeHtml(request.id)}" data-request-session="${escapeHtml(request.sessionID)}" data-request-protocol="${request.protocol}"><div class="permission-heading"><strong>${delegated ? "Subagent permission required" : "Permission required"}</strong><span>${escapeHtml(request.title)}</span>${origin}</div><details><summary>${incomplete ? "Incomplete request details" : "Exact request details"}</summary><pre>${escapeHtml(permissionDetails(request))}</pre></details>${incomplete ? `<p class="permission-warning">Some request metadata was truncated. Review the available details and reject this request.</p>` : ""}<label class="custom-answer"><span>Optional rejection feedback</span><input type="text" data-permission-feedback maxlength="20000" autocomplete="off"></label><div class="permission-actions"><button type="button" data-permission="reject">Reject</button><button type="button" data-permission="once" class="primary-action"${disabled}>Allow once</button>${request.always?.length ? `<button type="button" data-permission="always" class="warning-action"${disabled}>Allow always</button>` : ""}</div></article>`
+    const origin = delegated ? `Requested by subagent${delegation ? `: ${delegation.title}` : ""}` : "Permission required"
+    const presentation = permissionPresentation(request)
+    const exactPatterns = typeof request.pattern === "string" ? [request.pattern] : request.pattern ?? []
+    const reusableScopes = reusablePermissionScopes(request)
+    const canReuseExact = exactPatterns.length > 0 && request.type !== "vscode.reload_opencode"
+    const summaryText = presentation.lines.join("\n")
+    const summary = summaryText ? `<pre class="permission-summary-lines" title="${escapeHtml(summaryText)}">${escapeHtml(summaryText)}</pre>` : ""
+    const changes = presentation.diff ? `<details class="permission-changes"><summary>Review proposed changes</summary>${codeBlock(presentation.diff, "diff", "permission-diff")}</details>` : ""
+    const exactAction = canReuseExact ? `<button type="button" role="menuitem" data-permission="exact">Allow Exact ${request.type === "bash" || request.type === "shell" ? "Command Line" : "Scope"} in this Session</button>` : ""
+    const scopeActions = reusableScopes.map((candidate) => candidate === "*"
+      ? `<button type="button" role="menuitem" data-permission="scope" data-permission-scope="*">Allow All Shell Commands in this Session</button>`
+      : `<button type="button" role="menuitem" data-permission="scope" data-permission-scope="${escapeHtml(candidate)}">Allow <code>${escapeHtml(candidate.replace(/ \*$/, " …"))}</code> in this Session</button>`).join("")
+    const allowMenu = !incomplete && (exactAction || scopeActions) ? `<details class="permission-allow-menu"><summary aria-label="More allow options" title="More allow options">⌄</summary><div class="permission-allow-options" role="menu">${exactAction}${scopeActions}</div></details>` : ""
+    const incompleteDetails = incomplete ? `<details class="permission-raw"><summary>Available request data</summary><pre>${escapeHtml(incompletePermissionDetails(request))}</pre></details><p class="permission-warning">Some request metadata was truncated. Review the available data and reject this request.</p>` : ""
+    return `<article class="permission-card${incomplete ? " permission-incomplete" : ""}" data-request-id="${escapeHtml(request.id)}" data-request-session="${escapeHtml(request.sessionID)}" data-request-protocol="${request.protocol}"><div class="permission-heading"><span class="permission-request-icon" aria-hidden="true">${escapeHtml(presentation.icon)}</span><span class="permission-heading-copy"><strong>${escapeHtml(presentation.title)}</strong><small>${escapeHtml(origin)}</small></span></div>${summary}${changes}${incompleteDetails}<details class="permission-feedback"><summary>Explain rejection <small>(optional)</small></summary><label class="custom-answer"><span>Feedback</span><input type="text" data-permission-feedback maxlength="20000" autocomplete="off"></label></details><div class="permission-actions"><button type="button" data-permission="reject">Reject</button><div class="permission-allow-group"><button type="button" data-permission="once" class="primary-action" title="Allow once"${disabled}>Allow</button>${allowMenu}</div></div></article>`
   }).join("")
 }
 
@@ -1025,18 +1172,6 @@ function renderQuestions(session: NonNullable<ChatSnapshot["session"]>): void {
     <div class="permission-actions"><button type="button" data-question-action="reject">Reject</button><button type="submit" class="primary-action">Submit answer</button></div>
   </form>`
   }).join("")
-}
-
-function renderChanges(session?: NonNullable<ChatSnapshot["session"]>): void {
-  const changes = session?.changes ?? []
-  const signature = JSON.stringify([session?.id, changes])
-  if (signature === changesSignature) return
-  changesSignature = signature
-  const additions = changes.reduce((total, change) => total + change.additions, 0)
-  const deletions = changes.reduce((total, change) => total + change.deletions, 0)
-  railChanges.innerHTML = changes.length ? `<div class="rail-heading"><strong>Changed files</strong><span class="change-stats">+${additions} −${deletions}</span></div><div class="change-list">${changes.map((change) => {
-    return `<article class="change-row" data-change-file="${escapeHtml(change.file)}"><div class="change-summary"><button type="button" class="change-file" data-change-action="file" title="${escapeHtml(fileTooltip(change.file))}">${escapeHtml(fileName(change.file))}</button><span><b>+${change.additions}</b> <i>−${change.deletions}</i></span></div>${change.patch ? `<details><summary>Review patch</summary>${diffBlock(change.file, change.patch, change.additions, change.deletions)}<button type="button" class="text-action" data-change-action="patch">Open patch in editor</button></details>` : `<small>No patch available.</small>`}</article>`
-  }).join("")}</div>` : `<p class="placeholder">No session changes reported.</p>`
 }
 
 function renderSummaries(session: NonNullable<ChatSnapshot["session"]>): void {
@@ -1064,48 +1199,8 @@ function renderSummaries(session: NonNullable<ChatSnapshot["session"]>): void {
   }).join("")}</ol>` : ""
 }
 
-function servicesHtml(title: string, services: RuntimeService[]): string {
-  const empty = title === "LSP"
-    ? "No active LSP clients. OpenCode starts them as supported files are read."
-    : title === "Formatters" ? "No enabled formatters detected." : "No MCP servers configured."
-  return `<section class="detail-section"><h3>${escapeHtml(title)} <span>${services.length}</span></h3>${services.length ? `<ul class="service-list">${services.map((service) => {
-    const status = (service.status ?? "").toLowerCase()
-    const actions = title === "MCP" ? `<span class="permission-actions">${status === "connected" ? `<button type="button" data-mcp-action="disconnect" data-mcp-name="${escapeHtml(service.id)}">Disconnect</button>` : `<button type="button" data-mcp-action="connect" data-mcp-name="${escapeHtml(service.id)}">Connect</button>`}${status.includes("auth") ? `<button type="button" data-mcp-action="authenticate" data-mcp-name="${escapeHtml(service.id)}">Authenticate</button>` : ""}</span>` : ""
-    return `<li><span>${escapeHtml(service.name || service.id)}</span><small class="service-${service.error ? "error" : "status"}">${escapeHtml(service.error || service.status || "available")}</small>${service.root ? `<code>${escapeHtml(service.root)}</code>` : ""}${actions}</li>`
-  }).join("")}</ul>` : `<p class="placeholder">${escapeHtml(empty)}</p>`}</section>`
-}
-
-function renderDetails(session?: NonNullable<ChatSnapshot["session"]>): void {
-  const signature = JSON.stringify([session?.id, session?.context, session?.goal, session?.todos, snapshot.runtime])
-  if (signature === detailsSignature) return
-  detailsSignature = signature
-  if (!session) {
-    railDetails.innerHTML = `<p class="placeholder">Select a session to see details.</p>`
-    return
-  }
-  const context = session.context
-  const goal = session.goal
-  const todos = session.todos ?? []
-  const runtime = snapshot.runtime
-  const sessionOption = snapshot.sessions.find((value) => value.id === session.id)
-  const goalRows = goal ? [
-    goal.tokenBudget === undefined ? undefined : ["Tokens", `${goal.tokensUsed ?? 0} / ${goal.tokenBudget}`],
-    goal.remainingTokens === undefined ? undefined : ["Remaining", goal.remainingTokens.toLocaleString()],
-    goal.timeUsedSeconds === undefined ? undefined : ["Elapsed", formatDuration(goal.timeUsedSeconds * 1_000)],
-    goal.maxDurationSeconds === undefined ? undefined : ["Duration limit", formatDuration(goal.maxDurationSeconds * 1_000)],
-    goal.autoTurns === undefined ? undefined : ["Auto turns", `${goal.autoTurns}${goal.maxAutoTurns === undefined ? "" : ` / ${goal.maxAutoTurns}`}`],
-    goal.checkpoint ? ["Checkpoint", goal.checkpoint] : undefined,
-    goal.lastStatus ? ["Last status", goal.lastStatus] : undefined,
-    goal.stopReason ? ["Stop reason", goal.stopReason] : undefined,
-    goal.completionEvidence ? ["Evidence", goal.completionEvidence] : undefined,
-    goal.blocker ? ["Blocker", goal.blocker] : undefined,
-  ].filter((row): row is [string, string] => Boolean(row)).map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join("") : ""
-  railDetails.innerHTML = `
-    <section class="detail-section"><h3>Goal</h3>${goal ? `<dl><dt>Status</dt><dd>${escapeHtml(goal.status || "Unavailable")}</dd><dt>Objective</dt><dd>${escapeHtml(goal.objective || "Unavailable")}</dd>${goalRows}</dl><div class="permission-actions"><button type="button" data-open-plan>Open editable plan</button>${goal.checkpoint ? `<button type="button" data-copy-checkpoint="${escapeHtml(goal.checkpoint)}">Copy checkpoint</button>` : ""}</div>` : `<p class="placeholder">No goal is active.</p>`}</section>
-    <section class="detail-section"><h3>Todo <span>${todos.filter((todo) => todo.status === "completed").length}/${todos.length}</span></h3>${todos.length ? `<ol class="todo-list">${todos.map((todo) => `<li class="todo-${escapeHtml(todo.status)}"><span>${escapeHtml(todo.content)}</span><small>${escapeHtml(todo.status)}${todo.priority ? ` · ${escapeHtml(todo.priority)}` : ""}</small></li>`).join("")}</ol>` : `<p class="placeholder">No todos reported.</p>`}</section>
-    <section class="detail-section"><h3>Context</h3>${context ? `<dl>${context.model ? `<dt>Response model</dt><dd>${escapeHtml(context.model)}</dd>` : ""}<dt>Input used</dt><dd>${context.inputTokens.toLocaleString()}</dd><dt>Output used</dt><dd>${context.outputTokens.toLocaleString()}</dd><dt>Reasoning</dt><dd>${context.reasoningTokens.toLocaleString()}</dd><dt>Cache read</dt><dd>${context.cacheReadTokens.toLocaleString()}</dd><dt>Cache write</dt><dd>${context.cacheWriteTokens.toLocaleString()}</dd><dt>Total</dt><dd>${context.totalTokens.toLocaleString()}${context.contextLimit ? ` / ${context.contextLimit.toLocaleString()}` : ""}</dd>${context.inputLimit ? `<dt>Advertised input limit</dt><dd>${context.inputLimit.toLocaleString()}</dd>` : ""}${context.outputLimit ? `<dt>Advertised output limit</dt><dd>${context.outputLimit.toLocaleString()}</dd>` : ""}<dt>Usage</dt><dd>${context.usagePercent === undefined ? "Unavailable" : `${context.usagePercent.toFixed(1)}%`}</dd><dt>Cost</dt><dd>$${context.cost.toFixed(4)}</dd></dl>` : `<p class="placeholder">Token usage is not available yet.</p>`}</section>
-    <section class="detail-section"><h3>Workspace</h3><dl><dt>Directory</dt><dd class="path-value">${escapeHtml(runtime?.path?.directory || sessionOption?.directory || "Unavailable")}</dd><dt>Worktree</dt><dd class="path-value">${escapeHtml(runtime?.path?.worktree || "Unavailable")}</dd></dl></section>
-    ${servicesHtml("LSP", runtime?.lsp ?? [])}${servicesHtml("Formatters", runtime?.formatters ?? [])}${servicesHtml("MCP", runtime?.mcp ?? [])}`
+function serviceLabel(service: RuntimeService): string {
+  return `${service.name || service.id}: ${service.error || service.status || "available"}${service.root ? ` · ${service.root}` : ""}`
 }
 
 function renderWorkspaceStrip(session?: NonNullable<ChatSnapshot["session"]>): void {
@@ -1118,13 +1213,16 @@ function renderWorkspaceStrip(session?: NonNullable<ChatSnapshot["session"]>): v
   const mcpHealthy = runtime?.mcp.filter((service) => !service.error).length ?? 0
   const context = session?.context?.usagePercent
   const left = runtime?.vcs?.branch ? `<span class="branch">${escapeHtml(runtime.vcs.branch)}</span>` : ""
+  const lsp = runtime?.lsp ?? []
+  const lspTooltip = lsp.length ? lsp.map(serviceLabel).join("\n") : "No language servers reported"
+  const lspItems = lsp.length ? `<ul>${lsp.map((service) => `<li><span>${escapeHtml(service.name || service.id)}</span><small class="service-${service.error ? "error" : "status"}">${escapeHtml(service.error || service.status || "available")}</small>${service.root ? `<code>${escapeHtml(service.root)}</code>` : ""}</li>`).join("")}</ul>` : `<p>No language servers reported.</p>`
   const right = [
-    `<span>LSP ${lspHealthy}/${runtime?.lsp.length ?? 0}</span>`,
+    `<details class="workspace-lsp"><summary title="${escapeHtml(lspTooltip)}">LSP ${lspHealthy}/${lsp.length}</summary><div class="workspace-lsp-popover"><strong>Language servers</strong>${lspItems}</div></details>`,
     `<span>Fmt ${formatterHealthy}/${runtime?.formatters.length ?? 0}</span>`,
     `<span>MCP ${mcpHealthy}/${runtime?.mcp.length ?? 0}</span>`,
     `<span>Context ${context === undefined ? "--" : `${Math.round(context)}%`}</span>`,
   ].filter(Boolean).join("")
-  workspaceStrip.innerHTML = `<span class="workspace-left">${left}</span><span class="workspace-right">${right}</span>`
+  workspaceStrip.innerHTML = `<span class="workspace-left">${left}</span><div class="workspace-right">${right}</div>`
 }
 
 function resizeDraft(): void {
@@ -1136,23 +1234,136 @@ function sessionAttachments(sessionID = snapshot.session?.id): InlineAttachment[
   return sessionID ? attachments.get(sessionID) ?? [] : []
 }
 
+function sessionPastedText(sessionID = snapshot.session?.id): PastedTextBlock[] {
+  return sessionID ? pastedText.get(sessionID) ?? [] : []
+}
+
 function sessionContextAttachments(sessionID = snapshot.session?.id): ContextAttachmentSummary[] {
   return sessionID ? contextAttachments.get(sessionID) ?? [] : []
+}
+
+function normalizeComposerLabels(payload: ComposerPayloadState): ComposerPayloadState {
+  let image = 1
+  let pdf = 1
+  const normalizedAttachments = payload.attachments.map((attachment) => ({
+    ...attachment,
+    label: attachment.mime === "application/pdf" ? attachmentReference("PDF", pdf++) : attachmentReference("Image", image++),
+  }))
+  const normalizedPastes = payload.pastedText.map((block, index) => ({ ...block, label: pastedTextReference(index + 1, block.lineCount) }))
+  return { attachments: normalizedAttachments, pastedText: normalizedPastes }
+}
+
+function composerPayloadCanSync(payload: ComposerPayloadState): boolean {
+  const attachmentCharacters = payload.attachments.reduce((total, attachment) =>
+    total + attachment.id.length + attachment.label.length + attachment.name.length + attachment.mime.length + attachment.data.length, 0)
+  const pastedCharacters = payload.pastedText.reduce((total, block) => total + block.id.length + block.label.length + block.text.length, 0)
+  return payload.attachments.length <= INLINE_ATTACHMENT_COUNT_LIMIT && payload.attachments.length + payload.pastedText.length <= PROMPT_ATTACHMENT_COUNT_LIMIT &&
+    attachmentCharacters <= 20_000_000 && pastedCharacters <= PROMPT_TEXT_CHARACTER_LIMIT
+}
+
+function reconcileComposerReferences(sessionID: string, previousLabels: string[], payload: ComposerPayloadState): void {
+  if (sessionID !== snapshot.session?.id) return
+  let value = draft.value
+  for (const label of new Set(previousLabels)) value = value.replaceAll(label, "")
+  value = value.replace(/[ \t]{2,}/g, " ").trim()
+  const labels = [...payload.attachments.map((attachment) => attachment.label), ...payload.pastedText.map((block) => block.label)]
+  draft.value = [value, labels.join(" ")].filter(Boolean).join(" ")
+  postDraftNow(sessionID, draft.value)
+  resizeDraft()
 }
 
 function renderAttachments(): void {
   const sessionID = snapshot.session?.id
   const inline = sessionAttachments(sessionID)
+  const pasted = sessionPastedText(sessionID)
   const context = sessionContextAttachments(sessionID)
-  attachmentDock.hidden = Boolean(pendingSessionID) || !sessionID || (!editorContext && !context.length && !inline.length)
+  attachmentDock.hidden = Boolean(pendingSessionID) || !sessionID || (!editorContext && !context.length && !inline.length && !pasted.length)
   attachmentDock.innerHTML = sessionID ? [
     editorContext && !editorContext.attached ? `<button type="button" class="attachment-chip implicit-context" data-add-editor-context title="Add ${escapeHtml(editorContext.name)}${editorContext.detail ? ` · ${escapeHtml(editorContext.detail)}` : ""}"><b>+</b><span>${escapeHtml(editorContext.name)}</span></button>` : "",
-    ...context.map((attachment) => `<span class="attachment-chip context-chip context-${escapeHtml(attachment.kind)}" title="${escapeHtml(attachment.detail || attachment.name)}">${attachment.kind === "folder" ? FOLDER_ICON : FILE_ICON}<span>${escapeHtml(attachment.name)}</span><button type="button" data-remove-context="${escapeHtml(attachment.id)}" title="Remove from context" aria-label="Remove ${escapeHtml(attachment.name)} from context">×</button></span>`),
-    ...inline.map((attachment, index) => `<span class="attachment-chip" title="${escapeHtml(`${attachment.name} · ${attachment.mime}`)}"><span>${escapeHtml(attachment.name)}</span><button type="button" data-remove-attachment="${index}" title="Remove attachment" aria-label="Remove ${escapeHtml(attachment.name)}">×</button></span>`),
+    ...context.map((attachment) => `<span class="attachment-chip context-chip context-${escapeHtml(attachment.kind)}" title="${escapeHtml(`${attachment.name}${attachment.detail ? ` · ${attachment.detail}` : ""}`)}">${attachment.kind === "folder" ? FOLDER_ICON : FILE_ICON}<button type="button" class="context-chip-copy" data-open-context="${escapeHtml(attachment.id)}" aria-label="Open ${escapeHtml(attachment.name)}"><strong>${escapeHtml(attachment.name)}</strong></button><button type="button" data-remove-context="${escapeHtml(attachment.id)}" title="Remove from context" aria-label="Remove ${escapeHtml(attachment.name)} from context">×</button></span>`),
+    ...inline.map((attachment) => {
+      const metadata = `${attachment.name} · ${attachment.mime} · ${formatBytes(attachment.size)}${attachment.width && attachment.height ? ` · ${attachment.width}×${attachment.height}` : ""}`
+      const thumbnail = attachmentThumbnails.get(attachment.id)
+      return `<span class="attachment-card" title="${escapeHtml(metadata)}">${attachment.mime.startsWith("image/") && thumbnail ? `<button type="button" class="attachment-thumbnail" data-preview-attachment="${escapeHtml(attachment.id)}" aria-label="Preview ${escapeHtml(attachment.label)}"><img src="${thumbnail}" alt=""></button>` : `<span class="attachment-file-icon" aria-hidden="true">${attachment.mime === "application/pdf" ? "PDF" : "IMG"}</span>`}<span class="attachment-card-copy"><strong>${escapeHtml(attachment.label)}</strong></span><button type="button" class="attachment-remove" data-remove-attachment="${escapeHtml(attachment.id)}" title="Remove attachment" aria-label="Remove ${escapeHtml(attachment.label)}">×</button></span>`
+    }),
+    ...pasted.map((block) => `<details class="attachment-card pasted-text-card"><summary><span class="attachment-file-icon" aria-hidden="true">TXT</span><span class="attachment-card-copy"><strong>${escapeHtml(block.label)}</strong><small>${block.text.length.toLocaleString()} characters</small></span></summary><div class="pasted-text-detail"><pre>${escapeHtml(block.text)}</pre><div class="permission-actions"><button type="button" data-copy-paste="${escapeHtml(block.id)}">Copy</button><button type="button" data-remove-paste="${escapeHtml(block.id)}">Remove</button></div></div></details>`),
   ].join("") : ""
 }
 
-async function inlineAttachment(file: File): Promise<InlineAttachment> {
+function formatBytes(value: number): string {
+  if (value < 1_000) return `${value} B`
+  if (value < 1_000_000) return `${Math.round(value / 100) / 10} KB`
+  return `${Math.round(value / 100_000) / 10} MB`
+}
+
+function openAttachmentPreview(title: string, source: string, alt: string, metadata: string, returnFocus: HTMLElement): void {
+  attachmentPreviewReturnFocus = returnFocus
+  attachmentPreviewTitle.textContent = title
+  attachmentPreviewImage.src = source
+  attachmentPreviewImage.alt = alt
+  attachmentPreviewMeta.textContent = metadata
+  attachmentPreview.hidden = false
+  attachmentPreview.querySelector<HTMLButtonElement>("[data-close-attachment-preview]")?.focus()
+}
+
+function closeAttachmentPreview(): void {
+  attachmentPreview.hidden = true
+  attachmentPreviewImage.removeAttribute("src")
+  const returnFocus = attachmentPreviewReturnFocus
+  attachmentPreviewReturnFocus = undefined
+  if (returnFocus?.isConnected) returnFocus.focus()
+  else draft.focus()
+}
+
+function attachmentOrdinal(kind: "Image" | "PDF", values = sessionAttachments()): number {
+  return values.reduce((maximum, attachment) => {
+    const match = new RegExp(`^\\[${kind} (\\d+)\\]$`).exec(attachment.label)
+    return Math.max(maximum, Number(match?.[1] ?? 0))
+  }, 0) + 1
+}
+
+function pastedTextOrdinal(values = sessionPastedText()): number {
+  return values.reduce((maximum, block) => Math.max(maximum, Number(/^\[Pasted text (\d+)/.exec(block.label)?.[1] ?? 0)), 0) + 1
+}
+
+async function imageDimensions(url: string): Promise<{ width?: number; height?: number }> {
+  return await new Promise((resolve) => {
+    const image = new Image()
+    image.onload = () => resolve({ width: image.naturalWidth || undefined, height: image.naturalHeight || undefined })
+    image.onerror = () => resolve({})
+    image.src = url
+  })
+}
+
+async function imageThumbnail(url: string): Promise<string | undefined> {
+  return await new Promise((resolve) => {
+    const image = new Image()
+    image.onload = () => {
+      const scale = Math.min(1, 160 / Math.max(image.naturalWidth, image.naturalHeight))
+      const canvas = document.createElement("canvas")
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+      const context = canvas.getContext("2d")
+      if (!context) {
+        resolve(undefined)
+        return
+      }
+      context.drawImage(image, 0, 0, canvas.width, canvas.height)
+      resolve(canvas.toDataURL("image/webp", .78))
+    }
+    image.onerror = () => resolve(undefined)
+    image.src = url
+  })
+}
+
+async function cacheAttachmentThumbnails(values: InlineAttachment[]): Promise<void> {
+  await Promise.all(values.filter((attachment) => attachment.mime.startsWith("image/") && !attachmentThumbnails.has(attachment.id)).map(async (attachment) => {
+    const thumbnail = await imageThumbnail(`data:${attachment.mime};base64,${attachment.data}`)
+    if (thumbnail) attachmentThumbnails.set(attachment.id, thumbnail)
+  }))
+}
+
+async function inlineAttachment(file: File, label: string): Promise<InlineAttachment> {
   const mime = file.type === "image/jpg" ? "image/jpeg" : file.type
   if (!["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp", "application/pdf"].includes(mime)) throw new Error(`Unsupported attachment type: ${mime || file.name}`)
   const maxBytes = mime === "application/pdf" ? 10_000_000 : 3_900_000
@@ -1164,22 +1375,103 @@ async function inlineAttachment(file: File): Promise<InlineAttachment> {
     reader.readAsDataURL(file)
   })
   const data = result.slice(result.indexOf(",") + 1)
-  return { name: file.name.slice(0, 255) || "attachment", mime: mime as InlineAttachment["mime"], data }
+  const dimensions = mime.startsWith("image/") ? await imageDimensions(result) : {}
+  const id = crypto.randomUUID()
+  return { id, label, name: file.name.slice(0, 255) || "attachment", mime: mime as InlineAttachment["mime"], data, size: file.size, ...dimensions }
+}
+
+function syncComposerPayload(sessionID = snapshot.session?.id): void {
+  if (!sessionID) return
+  const revision = composerPayloadRevisions.get(sessionID) ?? 0
+  const payload = { attachments: sessionAttachments(sessionID), pastedText: sessionPastedText(sessionID) }
+  const base = acknowledgedComposerPayloads.get(sessionID) ?? { attachments: [], pastedText: [] }
+  const mutationID = `cmp_${crypto.randomUUID().replaceAll("-", "")}`
+  composerPayloadRevisions.set(sessionID, revision + 1)
+  pendingComposerPayloads.set(sessionID, { revision: revision + 1, mutationID, base, ...payload })
+  post({ type: "setComposerPayload", sessionID, revision, mutationID, ...payload })
 }
 
 async function addInlineFiles(files: File[]): Promise<void> {
   const sessionID = snapshot.session?.id
   if (!sessionID || !files.length) return
+  attachmentDock.setAttribute("aria-busy", "true")
+  status.textContent = `Attaching ${files.length} file${files.length === 1 ? "" : "s"}…`
   try {
     const current = sessionAttachments(sessionID)
-    const remaining = Math.max(0, 10 - current.length)
-    const added = await Promise.all(files.slice(0, remaining).map(inlineAttachment))
-    attachments.set(sessionID, [...current, ...added])
+    const remaining = Math.max(0, Math.min(INLINE_ATTACHMENT_COUNT_LIMIT - current.length, PROMPT_ATTACHMENT_COUNT_LIMIT - current.length - sessionPastedText(sessionID).length))
+    if (!remaining) throw new Error(current.length >= INLINE_ATTACHMENT_COUNT_LIMIT
+      ? `This prompt already has ${INLINE_ATTACHMENT_COUNT_LIMIT} image or PDF attachments`
+      : `This prompt already has ${PROMPT_ATTACHMENT_COUNT_LIMIT} file and pasted-text attachments`)
+    let image = attachmentOrdinal("Image", current)
+    let pdf = attachmentOrdinal("PDF", current)
+    const added = await Promise.all(files.slice(0, remaining).map((file) => inlineAttachment(file, file.type === "application/pdf" ? attachmentReference("PDF", pdf++) : attachmentReference("Image", image++))))
+    const unique = added.filter((attachment) => !current.some((value) => value.mime === attachment.mime && value.data === attachment.data))
+    if (!unique.length) {
+      status.textContent = "Already attached"
+      status.title = "This attachment is already in the prompt."
+      return
+    }
+    const combined = [...current, ...unique]
+    const characters = combined.reduce((total, attachment) => total + attachment.id.length + attachment.label.length + attachment.name.length + attachment.mime.length + attachment.data.length, 0)
+    if (characters > 20_000_000) throw new Error("Attachments exceed the 20 MB prompt payload limit")
+    await cacheAttachmentThumbnails(unique)
+    attachments.set(sessionID, combined)
+    clearNotice("error")
+    insertComposerText(unique.map((attachment) => attachment.label).join(" "))
+    syncComposerPayload(sessionID)
     renderAttachments()
     updatePrimaryAction()
+    status.textContent = ""
+    status.title = ""
   } catch (error) {
-    status.textContent = error instanceof Error ? error.message : String(error)
+    const message = error instanceof Error ? error.message : String(error)
+    status.textContent = message
+    status.title = message
+    showNotice("error", "Could not attach file", message)
+  } finally {
+    attachmentDock.setAttribute("aria-busy", "false")
   }
+}
+
+function addPastedText(value: string): void {
+  const sessionID = snapshot.session?.id
+  if (!sessionID) return
+  const normalized = value.replace(/\r\n?/g, "\n")
+  const current = sessionPastedText(sessionID)
+  if (current.some((block) => block.text === normalized)) {
+    status.textContent = "Already pasted"
+    status.title = "This pasted block is already in the prompt."
+    return
+  }
+  if (current.length + sessionAttachments(sessionID).length >= PROMPT_ATTACHMENT_COUNT_LIMIT || current.reduce((total, block) => total + block.text.length, 0) + normalized.length > PROMPT_TEXT_CHARACTER_LIMIT) {
+    const message = `Pasted text exceeds the ${PROMPT_TEXT_CHARACTER_LIMIT.toLocaleString()}-character or ${PROMPT_ATTACHMENT_COUNT_LIMIT}-attachment prompt limit`
+    status.textContent = "Paste too large"
+    status.title = message
+    showNotice("error", "Could not add pasted text", message)
+    return
+  }
+  const lineCount = (normalized.match(/\n/g)?.length ?? 0) + 1
+  const ordinal = pastedTextOrdinal(current)
+  const block: PastedTextBlock = {
+    id: crypto.randomUUID(),
+    label: pastedTextReference(ordinal, lineCount),
+    text: normalized,
+    lineCount,
+  }
+  pastedText.set(sessionID, [...current, block])
+  insertComposerText(block.label)
+  syncComposerPayload(sessionID)
+  renderAttachments()
+}
+
+function removeDraftLabel(sessionID: string, label: string): void {
+  const index = draft.value.indexOf(label)
+  if (index < 0) return
+  const before = draft.value.slice(0, index).replace(/[ \t]+$/, "")
+  const after = draft.value.slice(index + label.length).replace(/^[ \t]+/, "")
+  draft.value = before && after ? `${before} ${after}` : `${before}${after}`
+  postDraftNow(sessionID, draft.value)
+  resizeDraft()
 }
 
 function insertComposerText(text: string): void {
@@ -1201,6 +1493,9 @@ function insertComposerText(text: string): void {
 }
 
 function updatePrimaryAction(): void {
+  sendOptions.hidden = true
+  sendOptions.open = false
+  sendGroup.classList.remove("split")
   if (creatingSession) {
     send.dataset.action = "idle"
     send.disabled = true
@@ -1229,7 +1524,7 @@ function updatePrimaryAction(): void {
     send.setAttribute("aria-label", "Loading session")
     return
   }
-  const hasDraft = Boolean(draft.value.trim() || sessionAttachments(session?.id).length || sessionContextAttachments(session?.id).length)
+  const hasDraft = Boolean(draft.value.trim() || sessionAttachments(session?.id).length || sessionPastedText(session?.id).length || sessionContextAttachments(session?.id).length)
   if (!session) {
     send.dataset.action = hasDraft ? "send" : "idle"
     send.disabled = !snapshot.connected || !hasDraft
@@ -1247,8 +1542,10 @@ function updatePrimaryAction(): void {
   send.disabled = !session || !snapshot.connected || action === "idle" || action === "stopping"
   send.classList.toggle("stop-action", action === "stop" || action === "stopping")
   send.classList.toggle("queue-action", action === "queue")
+  sendOptions.hidden = action !== "queue"
+  sendGroup.classList.toggle("split", action === "queue")
   send.innerHTML = PRIMARY_ICONS[action === "idle" ? "send" : action as keyof typeof PRIMARY_ICONS]
-  const label = action === "stopping" ? "Stopping response…" : action === "stop" ? "Stop response" : action === "queue" ? "Queue message" : "Send message"
+  const label = action === "stopping" ? "Stopping response…" : action === "stop" ? "Stop response (Esc)" : action === "queue" ? "Add to Queue (Enter)" : "Send message"
   send.title = label
   send.setAttribute("aria-label", label)
 }
@@ -1363,7 +1660,7 @@ function chooseFile(index = selectedFileIndex): void {
   const cursor = draft.selectionStart
   const sessionID = snapshot.session?.id
   if (!sessionID) return
-  const replacement = suggestion.kind === "agent" ? `@${suggestion.value} ` : ""
+  const replacement = suggestion.kind === "agent" ? `@${suggestion.value} ` : suggestion.kind === "file" ? `@<${suggestion.value}> ` : ""
   draft.value = `${draft.value.slice(0, mention.start)}${replacement}${draft.value.slice(cursor)}`
   const next = mention.start + replacement.length
   draft.setSelectionRange(next, next)
@@ -1466,12 +1763,36 @@ function syncAnimationTimers(active: boolean): void {
   }
 }
 
+function syncConnectionNotice(): boolean {
+  if (snapshot.connected) {
+    if (offlineNoticeTimer !== undefined) window.clearTimeout(offlineNoticeTimer)
+    offlineNoticeTimer = undefined
+    offlineNoticeVisible = false
+  } else if (snapshot.connectionError) {
+    offlineNoticeVisible = true
+  } else if (!offlineNoticeVisible && offlineNoticeTimer === undefined) {
+    offlineNoticeTimer = window.setTimeout(() => {
+      offlineNoticeTimer = undefined
+      if (snapshot.connected) return
+      offlineNoticeVisible = true
+      render()
+    }, 2_000)
+  }
+  const showOffline = !snapshot.connected && offlineNoticeVisible
+  connection.hidden = !showOffline
+  connection.textContent = showOffline ? "Offline" : ""
+  if (showOffline) {
+    const needsWorkspace = snapshot.connectionError?.startsWith("Open a trusted workspace folder")
+    showNotice("offline", "OpenCode is offline", snapshot.connectionError || "The OpenCode server is unavailable. Reload the window to restart the managed connection.", needsWorkspace ? "Open folder" : "Reload window")
+  } else clearNotice("offline")
+  return showOffline
+}
+
 function render(): void {
   const session = snapshot.session
   const active = session?.status.type === "busy" || session?.status.type === "retry"
   const loading = Boolean(session && session.loadState !== "ready" && session.loadState !== "error")
-  connection.hidden = snapshot.connected
-  connection.textContent = snapshot.connected ? "" : "Offline"
+  const showOffline = syncConnectionNotice()
   sessionTitle.textContent = session?.title || "No session"
   backParent.hidden = !session?.parentID && document.body.dataset.mode !== "editor"
   const backLabel = session?.parentID ? "Back to parent session" : "Go back"
@@ -1487,13 +1808,14 @@ function render(): void {
   createEmpty.disabled = !snapshot.connected
   const emptyConversation = Boolean(session && session.messages.length === 0)
   empty.hidden = loading || Boolean(session && !emptyConversation)
+  sessionLoading.hidden = !loading
   messages.hidden = loading || !session || emptyConversation
   createEmpty.hidden = Boolean(session)
   draft.disabled = loading || !snapshot.connected || creatingSession
   composer.setAttribute("aria-busy", String(Boolean(active)))
   messages.setAttribute("aria-busy", String(Boolean(active)))
   updatePrimaryAction()
-  status.innerHTML = session ? loading ? "Loading session…" : stoppingSessionID === session.id ? "Stopping…" : active ? activeThrobberHtml() : session.loadState === "error" ? "Transcript unavailable" : session.status.type === "error" ? "Error" : "" : snapshot.connected ? "" : "Offline"
+  status.innerHTML = session ? loading ? "Loading session…" : stoppingSessionID === session.id ? "Stopping…" : active ? activeThrobberHtml() : session.loadState === "error" ? "Transcript unavailable" : session.status.type === "error" ? "Error" : "" : showOffline ? "Offline" : ""
   status.title = session?.status.type === "error" ? session.status.message || "Session error" : ""
   renderCatalogs(session)
   const selectedModel = snapshot.models.find((item) => `${item.providerID}/${item.id}` === session?.model)
@@ -1523,10 +1845,6 @@ function render(): void {
   } else {
     renderTranscript(session, Boolean(active))
     syncDraft(session)
-    if (submittedAttachments.has(session.id) && session.draft === "") {
-      attachments.delete(session.id)
-      submittedAttachments.delete(session.id)
-    }
     renderAttachments()
     renderQueue(session)
     renderPermissions(session)
@@ -1534,8 +1852,6 @@ function render(): void {
     renderSummaries(session)
   }
   renderSessionLists()
-  renderDetails(session)
-  renderChanges(session)
   renderWorkspaceStrip(session)
   renderCommandSuggestions()
   resizeDraft()
@@ -1563,20 +1879,12 @@ function openHistory(): void {
   requestAnimationFrame(() => historySearch.focus())
 }
 
-function showRail(tab = activeRailTab): void {
+function showRail(): void {
   if (!document.body.classList.contains("rail-open")) {
     railReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
   }
-  activeRailTab = tab
-  vscode.setState({ ...(vscode.getState() ?? {}), activeRailTab })
   document.body.classList.add("rail-open")
   railToggle.setAttribute("aria-expanded", "true")
-  document.querySelectorAll<HTMLButtonElement>("[data-rail-tab]").forEach((button) => {
-    const selected = button.dataset.railTab === tab
-    button.setAttribute("aria-selected", String(selected))
-    button.tabIndex = selected ? 0 : -1
-  })
-  document.querySelectorAll<HTMLElement>(".rail-panel").forEach((panel) => panel.hidden = panel.id !== `rail-${tab}`)
 }
 
 function closeRail(): void {
@@ -1599,8 +1907,8 @@ function requestSessionSelection(sessionID: string): void {
   flushPendingDraft()
   pendingSessionID = sessionID
   clearTranscript()
-  messages.hidden = false
-  messages.innerHTML = `<p class="placeholder session-loading">Loading session…</p>`
+  messages.hidden = true
+  sessionLoading.hidden = false
   empty.hidden = true
   sessionTitle.textContent = "Loading session…"
   draft.value = ""
@@ -1613,9 +1921,7 @@ function requestSessionSelection(sessionID: string): void {
     dock.hidden = true
     dock.replaceChildren()
   }
-  railDetails.innerHTML = `<p class="placeholder">Loading session…</p>`
-  railChanges.innerHTML = `<p class="placeholder">Loading session…</p>`
-  queueSignature = permissionSignature = questionSignature = summarySignature = detailsSignature = changesSignature = ""
+  queueSignature = permissionSignature = questionSignature = summarySignature = ""
   updatePrimaryAction()
   post({ type: "selectSession", sessionID })
 }
@@ -1658,13 +1964,23 @@ draft.addEventListener("keydown", (event) => {
     chooseCommand()
     return
   }
-  if (event.key === "Escape" && commands.length) {
+  if (event.key === "Escape" && !fileSuggestionList.hidden) {
+    event.preventDefault()
+    event.stopPropagation()
+    fileSuggestionList.hidden = true
+    return
+  }
+  if (event.key === "Escape" && !commandSuggestions.hidden) {
+    event.preventDefault()
+    event.stopPropagation()
     commandSuggestions.hidden = true
     return
   }
   if (shouldSubmitComposerKey(event)) {
     event.preventDefault()
-    send.click()
+    const active = snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry"
+    if (active && event.altKey) submitMessage("steer")
+    else send.click()
   }
 })
 commandSuggestions.addEventListener("click", (event) => {
@@ -1704,18 +2020,24 @@ modelPicker.addEventListener("click", (event) => {
     closeModelPicker()
   }
 })
-send.addEventListener("click", () => {
+function requestStop(): void {
+  const sessionID = snapshot.session?.id
+  const active = snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry"
+  if (!sessionID || !active || stoppingSessionID === sessionID) return
+  stoppingSessionID = sessionID
+  updatePrimaryAction()
+  status.textContent = "Stopping…"
+  post({ type: "abort", sessionID })
+}
+
+function submitMessage(delivery?: "queue" | "steer" | "replace"): void {
   const sessionID = snapshot.session?.id
   if (send.dataset.action === "stop") {
-    if (sessionID) {
-      stoppingSessionID = sessionID
-      updatePrimaryAction()
-      status.textContent = "Stopping…"
-      post({ type: "abort", sessionID })
-    }
+    requestStop()
     return
   }
   const text = draft.value
+  clearNotice("error")
   if (!sessionID) {
     if (!text.trim() || !snapshot.connected || creatingSession) return
     creatingSession = true
@@ -1724,17 +2046,48 @@ send.addEventListener("click", () => {
     return
   }
   const files = sessionAttachments(sessionID)
+  const pasted = sessionPastedText(sessionID)
   const contexts = sessionContextAttachments(sessionID)
-  if (!sessionID || (!text.trim() && !files.length && !contexts.length) || !snapshot.connected) return
+  if (!sessionID || (!text.trim() && !files.length && !pasted.length && !contexts.length) || !snapshot.connected) return
+  const selected = snapshot.models.find((item) => `${item.providerID}/${item.id}` === (model.value || snapshot.session?.model))
+  const needsImages = files.some((file) => file.mime.startsWith("image/"))
+  const needsPdf = files.some((file) => file.mime === "application/pdf")
+  if ((needsImages && selected?.capabilities?.input?.image === false) || (needsPdf && selected?.capabilities?.input?.pdf === false)) {
+    const detail = `${selected?.name ?? "The selected model"} does not support ${needsImages ? "image" : "PDF"} input. Choose a compatible model or remove the attachment.`
+    status.textContent = "Unsupported attachment"
+    status.title = detail
+    showNotice("error", "Unsupported attachment", detail)
+    return
+  }
   cancelPendingDraft()
   submittedDrafts.set(sessionID, text)
-  if (files.length) submittedAttachments.add(sessionID)
-  post({ type: "send", sessionID, text, agent: agent.value || undefined, model: model.value || undefined, variant: variant.value || undefined, attachments: files.length ? files : undefined, contextIDs: contexts.length ? contexts.map((attachment) => attachment.id) : undefined })
+  const promptID = createOpenCodeMessageID()
+  if (files.length || pasted.length) {
+    if (files.length) {
+      sentAttachmentPreviews.set(promptID, { sessionID, attachments: files.map((file) => ({
+        label: file.label,
+        name: file.name,
+        mime: file.mime,
+        thumbnail: file.mime.startsWith("image/") ? attachmentThumbnails.get(file.id) : undefined,
+      })) })
+      while (sentAttachmentPreviews.size > 10) sentAttachmentPreviews.delete(sentAttachmentPreviews.keys().next().value!)
+    }
+  }
+  const active = snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry"
+  const effectiveDelivery = active ? delivery ?? "queue" : undefined
+  post({ type: "send", sessionID, promptID, composerRevision: composerPayloadRevisions.get(sessionID) ?? 0, delivery: effectiveDelivery, text, agent: agent.value || undefined, model: model.value || undefined, variant: variant.value || undefined, attachments: files.length ? files : undefined, pastedText: pasted.length ? pasted : undefined, contextIDs: contexts.length ? contexts.map((attachment) => attachment.id) : undefined })
   send.dataset.action = "sent"
   send.innerHTML = PRIMARY_ICONS.sent
   send.disabled = true
-  send.title = send.getAttribute("aria-label") === "Queue message" ? "Queued" : "Sent"
+  send.title = effectiveDelivery === "queue" ? "Queued" : effectiveDelivery === "steer" ? "Steering" : effectiveDelivery === "replace" ? "Stopping and sending" : "Sent"
+  sendOptions.open = false
   setTimeout(updatePrimaryAction, 350)
+}
+send.addEventListener("click", () => submitMessage())
+sendOptions.addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-send-delivery]") : undefined
+  const delivery = button?.dataset.sendDelivery
+  if (delivery === "queue" || delivery === "steer" || delivery === "replace") submitMessage(delivery)
 })
 attachFiles.addEventListener("click", () => {
   const sessionID = snapshot.session?.id
@@ -1756,20 +2109,66 @@ attachmentDock.addEventListener("click", (event) => {
     post({ type: "removeContextAttachment", sessionID, attachmentID: target.dataset.removeContext })
     return
   }
-  const index = Number(target.dataset.removeAttachment)
-  if (!sessionID || !Number.isSafeInteger(index)) return
-  const values = sessionAttachments(sessionID).filter((_, candidate) => candidate !== index)
-  if (values.length) attachments.set(sessionID, values)
-  else attachments.delete(sessionID)
+  if (target.dataset.openContext) {
+    post({ type: "openContextAttachment", sessionID, attachmentID: target.dataset.openContext })
+    return
+  }
+  if (target.dataset.previewAttachment) {
+    const attachment = sessionAttachments(sessionID).find((value) => value.id === target.dataset.previewAttachment)
+    if (!attachment || !attachment.mime.startsWith("image/")) return
+    openAttachmentPreview(`${attachment.label} · ${attachment.name}`, `data:${attachment.mime};base64,${attachment.data}`, `Preview of ${attachment.name}`, `${attachment.mime} · ${formatBytes(attachment.size)}${attachment.width && attachment.height ? ` · ${attachment.width}×${attachment.height}` : ""}`, target)
+    return
+  }
+  if (target.dataset.copyPaste) {
+    const block = sessionPastedText(sessionID).find((value) => value.id === target.dataset.copyPaste)
+    if (block) post({ type: "copyText", text: block.text })
+    return
+  }
+  if (target.dataset.removePaste) {
+    const block = sessionPastedText(sessionID).find((value) => value.id === target.dataset.removePaste)
+    if (!block) return
+    const values = sessionPastedText(sessionID).filter((value) => value.id !== block.id)
+    if (values.length) pastedText.set(sessionID, values)
+    else pastedText.delete(sessionID)
+    removeDraftLabel(sessionID, block.label)
+  } else if (target.dataset.removeAttachment) {
+    const attachment = sessionAttachments(sessionID).find((value) => value.id === target.dataset.removeAttachment)
+    if (!attachment) return
+    const values = sessionAttachments(sessionID).filter((value) => value.id !== attachment.id)
+    if (values.length) attachments.set(sessionID, values)
+    else attachments.delete(sessionID)
+    attachmentThumbnails.delete(attachment.id)
+    removeDraftLabel(sessionID, attachment.label)
+  } else return
+  syncComposerPayload(sessionID)
   renderAttachments()
   updatePrimaryAction()
 })
 draft.addEventListener("paste", (event) => {
   const files = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith("image/") || file.type === "application/pdf")
-  if (!files.length) return
+  if (files.length) {
+    event.preventDefault()
+    void addInlineFiles(files)
+    return
+  }
+  const text = event.clipboardData?.getData("text/plain") ?? ""
+  if (!shouldCollapsePaste(text)) return
   event.preventDefault()
-  void addInlineFiles(files)
+  addPastedText(text)
 })
+attachmentPreview.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element) || !event.target.closest("[data-close-attachment-preview]")) return
+  closeAttachmentPreview()
+})
+noticeRetry.addEventListener("click", () => {
+  if (noticeKind === "offline") post({ type: snapshot.connectionError?.startsWith("Open a trusted workspace folder") ? "openFolder" : "reloadWindow" })
+  else post({ type: "refresh" })
+})
+noticeLogs.addEventListener("click", () => post({ type: "openLogs" }))
+noticeCopy.addEventListener("click", () => {
+  if (noticeDetail) post({ type: "copyText", text: noticeDetail })
+})
+noticeDismiss.addEventListener("click", () => clearNotice())
 composer.addEventListener("dragover", (event) => {
   if (!event.dataTransfer) return
   const types = Array.from(event.dataTransfer.types, (type) => type.toLowerCase())
@@ -1804,8 +2203,7 @@ composer.addEventListener("drop", (event) => {
     try {
       const values = JSON.parse(event.dataTransfer.getData(type))
       if (Array.isArray(values)) uris.push(...values.filter((value): value is string => typeof value === "string").map((value) => {
-        const normalized = value.replaceAll("\\", "/")
-        return `file://${normalized.startsWith("/") ? "" : "/"}${encodeURI(normalized)}`
+        return fileUriFromPath(value)
       }))
     } catch { /* Ignore malformed private VS Code drag data. */ }
   }
@@ -1890,8 +2288,13 @@ sessionMenu.addEventListener("click", (event) => {
       draft.focus()
     }
   } else if (command === "latest") messages.scrollTop = messages.scrollHeight
-  else if (command === "expand-thinking") messages.querySelectorAll<HTMLDetailsElement>("details.reasoning").forEach((detail) => detail.open = true)
-  else if (command === "collapse-thinking") messages.querySelectorAll<HTMLDetailsElement>("details.reasoning").forEach((detail) => detail.open = false)
+  else if (command === "expand-thinking") {
+    reasoningExpanded = true
+    messages.querySelectorAll<HTMLDetailsElement>("details.reasoning").forEach((detail) => detail.open = true)
+  } else if (command === "collapse-thinking") {
+    reasoningExpanded = false
+    messages.querySelectorAll<HTMLDetailsElement>("details.reasoning").forEach((detail) => detail.open = false)
+  }
   else if (command === "expand-tools") messages.querySelectorAll<HTMLDetailsElement>("details.activity").forEach((detail) => detail.open = true)
   else if (command === "collapse-tools") messages.querySelectorAll<HTMLDetailsElement>("details.activity").forEach((detail) => detail.open = false)
   else if (command === "timestamps") document.body.classList.toggle("show-timestamps")
@@ -1943,6 +2346,7 @@ queueDock.addEventListener("click", (event) => {
   const promptID = button?.dataset.promptId
   if (!session || !button || !promptID) return
   if (button.dataset.queueAction === "remove") post({ type: "removeQueued", sessionID: session.id, promptID })
+  else if (button.dataset.queueAction === "edit") post({ type: "editQueued", sessionID: session.id, promptID })
   else if (button.dataset.queueAction === "now") post({ type: "sendQueuedNow", sessionID: session.id, promptID })
   else {
     const ids = (session.queue ?? []).map((prompt) => prompt.id)
@@ -1959,9 +2363,11 @@ permissionDock.addEventListener("click", (event) => {
   const sessionID = card?.dataset.requestSession
   const protocol = card?.dataset.requestProtocol
   const response = button?.dataset.permission
-  if (button && sessionID && card?.dataset.requestId && (protocol === "legacy" || protocol === "current" || protocol === "v2") && (response === "once" || response === "always" || response === "reject")) {
+  if (button && sessionID && card?.dataset.requestId && (protocol === "legacy" || protocol === "current" || protocol === "v2") && (response === "once" || response === "exact" || response === "scope" || response === "reject")) {
     const feedback = response === "reject" ? card.querySelector<HTMLInputElement>("[data-permission-feedback]")?.value.trim() || undefined : undefined
-    post({ type: "respondPermission", sessionID, requestID: card.dataset.requestId, protocol, response, feedback })
+    const scope = response === "scope" ? button.dataset.permissionScope : undefined
+    if (response === "scope" && !scope) return
+    post({ type: "respondPermission", sessionID, requestID: card.dataset.requestId, protocol, response, scope, feedback })
   }
 })
 questionDock.addEventListener("submit", (event) => {
@@ -1992,14 +2398,6 @@ questionDock.addEventListener("click", (event) => {
     post({ type: "rejectQuestion", sessionID, requestID: form.dataset.questionRequest })
     button.disabled = true
   }
-})
-railChanges.addEventListener("click", (event) => {
-  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-change-action]") : undefined
-  const row = button?.closest<HTMLElement>("[data-change-file]")
-  const sessionID = snapshot.session?.id
-  const file = row?.dataset.changeFile
-  if (!button || !sessionID || !file) return
-  post({ type: button.dataset.changeAction === "patch" ? "openPatch" : "openFile", sessionID, file })
 })
 function closeSessionContextMenu(restoreFocus = false): void {
   const returnSessionID = contextReturnSessionID
@@ -2088,13 +2486,13 @@ sessionContextMenu.addEventListener("keydown", (event) => {
   const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (Math.max(index, 0) + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length
   buttons[next]?.focus()
 })
-goalDock.addEventListener("click", () => showRail("details"))
+goalDock.addEventListener("click", () => {
+  const sessionID = snapshot.session?.id
+  if (sessionID) post({ type: "openPlan", sessionID })
+})
 todoDock.addEventListener("click", (event) => {
   const header = event.target instanceof Element ? event.target.closest<HTMLButtonElement>(".todo-dock-header") : undefined
-  if (!header) {
-    showRail("details")
-    return
-  }
+  if (!header) return
   todoExpanded = !todoExpanded
   todoDock.classList.toggle("collapsed", !todoExpanded)
   header.setAttribute("aria-expanded", String(todoExpanded))
@@ -2103,43 +2501,11 @@ todoDock.addEventListener("click", (event) => {
   if (list) list.hidden = !todoExpanded
   vscode.setState({ ...(vscode.getState() ?? {}), todoExpanded })
 })
-railDetails.addEventListener("click", (event) => {
-  const plan = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-open-plan]") : undefined
-  const checkpoint = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-copy-checkpoint]") : undefined
-  const mcp = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-mcp-action]") : undefined
-  const sessionID = snapshot.session?.id
-  if (plan && sessionID) post({ type: "openPlan", sessionID })
-  if (checkpoint?.dataset.copyCheckpoint) post({ type: "copyText", text: checkpoint.dataset.copyCheckpoint })
-  const action = mcp?.dataset.mcpAction
-  if (mcp?.dataset.mcpName && sessionID && (action === "connect" || action === "disconnect" || action === "authenticate" || action === "removeAuth")) {
-    post({ type: "mcpAction", sessionID, name: mcp.dataset.mcpName, action })
-  }
-})
-workspaceStrip.addEventListener("click", () => showRail("details"))
-workspaceStrip.tabIndex = 0
-workspaceStrip.setAttribute("role", "button")
-workspaceStrip.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") showRail("details")
-})
 railToggle.addEventListener("click", () => {
   if (document.body.classList.contains("rail-open")) closeRail()
   else showRail()
 })
 railClose.addEventListener("click", closeRail)
-const railTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-rail-tab]"))
-railTabs.forEach((button) => {
-  button.addEventListener("click", () => showRail(button.dataset.railTab || "sessions"))
-  button.addEventListener("keydown", (event) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
-    event.preventDefault()
-    const index = railTabs.indexOf(button)
-    const next = event.key === "Home" ? 0 : event.key === "End" ? railTabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : railTabs.length - 1)) % railTabs.length
-    const target = railTabs[next]
-    if (!target) return
-    showRail(target.dataset.railTab || "sessions")
-    target.focus()
-  })
-})
 document.querySelectorAll<HTMLButtonElement>("[data-prompt]").forEach((button) => button.addEventListener("click", () => {
   const prompt = button.dataset.prompt || ""
   if (!snapshot.session) post({ type: "createSession", draft: prompt })
@@ -2168,6 +2534,35 @@ document.addEventListener("click", (event) => {
   }, 1_500)
 })
 messages.addEventListener("click", (event) => {
+  const transcriptPreview = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-transcript-preview]") : undefined
+  if (transcriptPreview?.dataset.transcriptPreview) {
+    const messageID = transcriptPreview.closest<HTMLElement>("[data-message-id]")?.dataset.messageId
+    const preview = messageID ? sentAttachmentPreviews.get(messageID)?.attachments.find((item) => item.label === transcriptPreview.dataset.transcriptPreview) : undefined
+    if (!preview?.thumbnail) return
+    openAttachmentPreview(`${preview.label} · ${preview.name}`, preview.thumbnail, `Preview of ${preview.name}`, preview.mime, transcriptPreview)
+    return
+  }
+  const messageAction = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-message-action]") : undefined
+  if (messageAction) {
+    const article = messageAction.closest<HTMLElement>("[data-message-id]")
+    const message = snapshot.session?.messages.find((value) => value.info.id === article?.dataset.messageId)
+    const sessionID = snapshot.session?.id
+    if (!message || !sessionID) return
+    const text = message.parts.filter((part) => !part.synthetic && part.type === "text" && part.text).map((part) => part.text).join("\n")
+    if (messageAction.dataset.messageAction === "copy") post({ type: "copyText", text })
+    else if (messageAction.dataset.messageAction === "edit") {
+      draft.value = text
+      postDraftNow(sessionID, text)
+      resizeDraft()
+      draft.focus()
+      if (message.parts.some((part) => part.type === "file")) {
+        status.textContent = "Text restored"
+        status.title = "Historical attachments cannot be restored automatically. Add them again before sending."
+      }
+    } else if (messageAction.dataset.messageAction === "fork") post({ type: "sessionAction", sessionID, action: "fork", messageID: message.info.id })
+    else if (messageAction.dataset.messageAction === "retry") post({ type: "sessionAction", sessionID, action: "retry", messageID: message.info.id })
+    return
+  }
   const activityToggle = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-turn-activity]") : undefined
   if (activityToggle) {
     const turn = activityToggle.closest<HTMLElement>(".turn")
@@ -2205,7 +2600,26 @@ messages.addEventListener("click", (event) => {
     post({ type: "openFile", sessionID, file: file.dataset.file, line, column, endLine, endColumn })
   }
 })
+jumpLatest.addEventListener("click", () => {
+  messages.scrollTop = messages.scrollHeight
+  unseenMessages = 0
+  updateJumpLatest()
+})
+messages.addEventListener("scroll", () => {
+  if (transcriptNearBottom()) unseenMessages = 0
+  updateJumpLatest()
+}, { passive: true })
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Tab" && !attachmentPreview.hidden) {
+    const focusable = Array.from(attachmentPreview.querySelectorAll<HTMLElement>("button:not([disabled]), [tabindex]:not([tabindex='-1'])"))
+    const first = focusable[0]
+    const last = focusable.at(-1)
+    if (first && last && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+      event.preventDefault()
+      ;(event.shiftKey ? last : first).focus()
+    }
+    return
+  }
   if (event.key === "Tab" && !historyOverlay.hidden) {
     const focusable = Array.from(historyOverlay.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])"))
     const first = focusable[0]
@@ -2217,7 +2631,10 @@ document.addEventListener("keydown", (event) => {
     return
   }
   if (event.key === "Escape") {
-    if (!sessionContextMenu.hidden) closeSessionContextMenu(true)
+    if (!attachmentPreview.hidden) {
+      closeAttachmentPreview()
+    }
+    else if (!sessionContextMenu.hidden) closeSessionContextMenu(true)
     else if (!historyOverlay.hidden) closeHistory()
     else if (!modelPicker.hidden) {
       closeModelPicker()
@@ -2227,7 +2644,18 @@ document.addEventListener("keydown", (event) => {
       closeSessionMenu()
       sessionMenuToggle.focus()
     }
+    else if (sendOptions.open) {
+      sendOptions.open = false
+      send.focus()
+    }
+    else if (permissionDock.querySelector<HTMLDetailsElement>(".permission-allow-menu[open]")) {
+      permissionDock.querySelector<HTMLDetailsElement>(".permission-allow-menu[open]")!.open = false
+    }
     else if (document.body.dataset.mode === "sidebar" && document.body.classList.contains("rail-open")) closeRail()
+    else if (snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry") {
+      event.preventDefault()
+      requestStop()
+    }
     else if (snapshot.session?.parentID) backParent.click()
   }
 })
@@ -2261,6 +2689,7 @@ window.addEventListener("message", (event) => {
     }
     status.textContent = message.message
     status.title = message.message
+    showNotice("error", "OpenCode request failed", message.message)
     permissionSignature = ""
     questionSignature = ""
     if (snapshot.session) {
@@ -2293,6 +2722,58 @@ window.addEventListener("message", (event) => {
     }
     return
   }
+  if (message.type === "composerPayloadChanged") {
+    const localRevision = composerPayloadRevisions.get(message.sessionID) ?? 0
+    if (!message.conflict && message.revision < localRevision) return
+    const remote = { attachments: message.attachments, pastedText: message.pastedText }
+    const pending = pendingComposerPayloads.get(message.sessionID)
+    if (pending && message.mutationID !== pending.mutationID) return
+    if (message.conflict && pending) {
+      const previousLabels = [...pending.base.attachments, ...pending.attachments, ...remote.attachments].map((attachment) => attachment.label)
+        .concat([...pending.base.pastedText, ...pending.pastedText, ...remote.pastedText].map((block) => block.label))
+      const merged = normalizeComposerLabels({
+        attachments: mergeRevisionValues(remote.attachments, pending.base.attachments, pending.attachments),
+        pastedText: mergeRevisionValues(remote.pastedText, pending.base.pastedText, pending.pastedText),
+      })
+      composerPayloadRevisions.set(message.sessionID, message.revision)
+      acknowledgedComposerPayloads.set(message.sessionID, remote)
+      pendingComposerPayloads.delete(message.sessionID)
+      if (merged.attachments.length) attachments.set(message.sessionID, merged.attachments)
+      else attachments.delete(message.sessionID)
+      if (merged.pastedText.length) pastedText.set(message.sessionID, merged.pastedText)
+      else pastedText.delete(message.sessionID)
+      reconcileComposerReferences(message.sessionID, previousLabels, merged)
+      if (composerPayloadCanSync(merged)) syncComposerPayload(message.sessionID)
+      if (message.sessionID === snapshot.session?.id) {
+        const syncable = composerPayloadCanSync(merged)
+        status.textContent = syncable ? "Merged concurrent composer changes" : "Merged composer exceeds limits"
+        status.title = syncable ? "Attachments and pasted text from both chat views were preserved." : "Remove attachments or pasted text before sending."
+        if (!syncable) showNotice("error", "Merged composer exceeds limits", "Changes from both chat views were preserved locally. Remove attachments or pasted text before sending.")
+        renderAttachments()
+        updatePrimaryAction()
+      }
+      return
+    }
+    composerPayloadRevisions.set(message.sessionID, message.revision)
+    acknowledgedComposerPayloads.set(message.sessionID, remote)
+    if (pending?.revision === message.revision) pendingComposerPayloads.delete(message.sessionID)
+    const previous = attachments.get(message.sessionID) ?? []
+    if (message.attachments.length) attachments.set(message.sessionID, message.attachments)
+    else attachments.delete(message.sessionID)
+    const retained = new Set(message.attachments.map((attachment) => attachment.id))
+    for (const attachment of previous) if (!retained.has(attachment.id)) attachmentThumbnails.delete(attachment.id)
+    if (message.attachments.length) void cacheAttachmentThumbnails(message.attachments).then(() => {
+      if (message.sessionID === snapshot.session?.id) renderAttachments()
+    })
+    if (message.pastedText.length) pastedText.set(message.sessionID, message.pastedText)
+    else pastedText.delete(message.sessionID)
+    if (message.sessionID === snapshot.session?.id) {
+      if (message.conflict) showNotice("error", "Composer changed in another view", "The synchronized composer was updated before this view had a pending local change.")
+      renderAttachments()
+      updatePrimaryAction()
+    }
+    return
+  }
   if (message.type === "draftChanged") {
     const previous = draftRevisions.get(message.sessionID) ?? -1
     if (message.revision <= previous) return
@@ -2310,9 +2791,14 @@ window.addEventListener("message", (event) => {
     localDrafts.delete(message.sessionID)
     draftRevisions.delete(message.sessionID)
     submittedDrafts.delete(message.sessionID)
+    for (const [messageID, previews] of sentAttachmentPreviews) if (previews.sessionID === message.sessionID) sentAttachmentPreviews.delete(messageID)
+    for (const attachment of attachments.get(message.sessionID) ?? []) attachmentThumbnails.delete(attachment.id)
     attachments.delete(message.sessionID)
+    pastedText.delete(message.sessionID)
     contextAttachments.delete(message.sessionID)
-    submittedAttachments.delete(message.sessionID)
+    composerPayloadRevisions.delete(message.sessionID)
+    acknowledgedComposerPayloads.delete(message.sessionID)
+    pendingComposerPayloads.delete(message.sessionID)
     stashedDrafts.delete(message.sessionID)
     if (pendingDraft?.sessionID === message.sessionID) cancelPendingDraft()
     return
@@ -2322,7 +2808,9 @@ window.addEventListener("message", (event) => {
     const session = snapshot.session
     if (!session) return
     let active = session.status.type === "busy" || session.status.type === "retry"
+    const wasNearBottom = transcriptNearBottom()
     let changed = false
+    let addedMessages = 0
     for (const patch of message.patches) {
       if (patch.sessionID !== session.id) continue
       const currentRevision = session.messageRevisions[patch.messageID] ?? -1
@@ -2341,6 +2829,7 @@ window.addEventListener("message", (event) => {
           if (previous >= 0) session.messages.splice(previous + 1, 0, patch.message)
           else if (patch.append) session.messages.push(patch.message)
           else continue
+          addedMessages += 1
         } else session.messages[index] = patch.message
         session.messageRevisions[patch.messageID] = patch.revision
       } else if (index >= 0) {
@@ -2350,6 +2839,7 @@ window.addEventListener("message", (event) => {
       changed = true
     }
     if (changed) {
+      if (!wasNearBottom) unseenMessages += addedMessages
       renderTranscript(session, active)
       updatePrimaryAction()
       syncAnimationTimers(active)
@@ -2368,7 +2858,7 @@ window.addEventListener("message", (event) => {
   render()
 })
 
-if (document.body.dataset.mode === "editor") showRail(activeRailTab)
+if (document.body.dataset.mode === "editor") showRail()
 document.addEventListener("visibilitychange", () => {
   const active = snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry"
   syncAnimationTimers(Boolean(active))

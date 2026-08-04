@@ -1,3 +1,29 @@
+const OPEN_CODE_ID_RANDOM_LENGTH = 14
+const OPEN_CODE_ID_RANDOM_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+let lastMessageIDTimestamp = 0
+let messageIDCounter = 0
+
+export function isOpenCodeMessageID(value: unknown): value is string {
+  return typeof value === "string" && /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(value)
+}
+
+export function createOpenCodeMessageID(timestamp = Date.now()): string {
+  let currentTimestamp = Math.max(Math.trunc(timestamp), lastMessageIDTimestamp)
+  if (currentTimestamp !== lastMessageIDTimestamp) {
+    lastMessageIDTimestamp = currentTimestamp
+    messageIDCounter = 0
+  } else if (messageIDCounter >= 0xfff) {
+    currentTimestamp += 1
+    lastMessageIDTimestamp = currentTimestamp
+    messageIDCounter = 0
+  }
+  messageIDCounter += 1
+  const encoded = (BigInt(currentTimestamp) * 0x1000n + BigInt(messageIDCounter)) & 0xffffffffffffn
+  const bytes = crypto.getRandomValues(new Uint8Array(OPEN_CODE_ID_RANDOM_LENGTH))
+  const random = Array.from(bytes, (byte) => OPEN_CODE_ID_RANDOM_CHARS[byte % OPEN_CODE_ID_RANDOM_CHARS.length]).join("")
+  return `msg_${encoded.toString(16).padStart(12, "0")}${random}`
+}
+
 export type SessionStatus =
   | { type: "idle" }
   | { type: "busy" }
@@ -118,9 +144,21 @@ export const PROMPT_QUEUE_COUNT_LIMIT = 100
 export const PROMPT_QUEUE_CHARACTER_LIMIT = 2_000_000
 
 export interface InlineAttachment {
+  id: string
+  label: string
   name: string
   mime: "image/avif" | "image/gif" | "image/jpeg" | "image/png" | "image/webp" | "application/pdf"
   data: string
+  size: number
+  width?: number
+  height?: number
+}
+
+export interface PastedTextBlock {
+  id: string
+  label: string
+  text: string
+  lineCount: number
 }
 
 export interface ContextAttachmentSummary {
@@ -197,6 +235,40 @@ export interface PermissionRequest {
   truncated?: boolean
 }
 
+const SHELL_PERMISSION_TYPES = new Set(["bash", "shell"])
+const SHELL_SCOPE_CONTROL_CHARACTERS = /[\r\n;&|`$()<>\\]/
+
+export function permissionPatternMatches(input: string, pattern: string): boolean {
+  if (pattern === "*") return true
+  if (input === pattern) return true
+  if (!pattern.endsWith(" *") || pattern.slice(0, -2).includes("*")) return false
+  const prefix = pattern.slice(0, -2)
+  if (!prefix || prefix.trim() !== prefix || SHELL_SCOPE_CONTROL_CHARACTERS.test(input)) return false
+  return input === prefix || input.startsWith(`${prefix} `)
+}
+
+export function reusablePermissionScopes(request: PermissionRequest): string[] {
+  if (!SHELL_PERMISSION_TYPES.has(request.type ?? "") || request.truncated) return []
+  const patterns = typeof request.pattern === "string" ? [request.pattern] : request.pattern ?? []
+  if (!patterns.length) return []
+  const candidates = new Set<string>()
+  for (const suggested of request.always ?? []) candidates.add(suggested)
+  for (const pattern of patterns) {
+    if (SHELL_SCOPE_CONTROL_CHARACTERS.test(pattern)) continue
+    const parts = pattern.trim().split(/\s+/)
+    if (!parts[0] || !/^[\w./:@+-]+$/.test(parts[0])) continue
+    const subcommand = parts.findIndex((part, index) => index > 0 && !part.startsWith("-"))
+    if (subcommand > 0 && parts.slice(0, subcommand + 1).every((part) => /^[\w./:@+-]+$/.test(part))) {
+      candidates.add(`${parts.slice(0, subcommand + 1).join(" ")} *`)
+    }
+    candidates.add(`${parts[0]} *`)
+  }
+  return [...candidates]
+    .filter((candidate) => candidate.endsWith(" *") && !candidate.slice(0, -2).includes("*") && patterns.every((pattern) => permissionPatternMatches(pattern, candidate)))
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))
+    .concat("*")
+}
+
 export function permissionRequestCharacters(request: PermissionRequest): number {
   let metadata = 0
   try {
@@ -268,6 +340,7 @@ export interface GoalSummary {
 }
 
 export interface OpenCodeEvent {
+  id?: string
   type: string
   properties: Record<string, unknown>
 }
