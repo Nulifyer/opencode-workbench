@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-03
+
 ### Added
 
 - Added ordered image and PDF prompt references, draft thumbnails and previews,
@@ -26,6 +28,12 @@
 - Removed repeated attachment reference labels from sent-message cards and kept
   compact image thumbnails for newly sent attachments.
 - Kept the composer anchored to the bottom while session messages are loading.
+- Restored selected sessions across reloads and recovered incompatible legacy
+  conversations into one mapped fork without hiding the real OpenCode title.
+- Preserved legacy and V2 prompt transport, generated chronologically sortable
+  message IDs, and checked durable admission before retrying uncertain sends.
+- Revalidated external OpenCode servers during reconnects and surfaced webview
+  request failures in the Workbench output log.
 
 ## 0.3.0 - 2026-08-03
 
