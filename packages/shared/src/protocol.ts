@@ -20,6 +20,7 @@ import type {
   SessionStatus,
   TodoItem,
 } from "./opencode.ts"
+import type { ConnectionState } from "./session-state.ts"
 import {
   PERMISSION_AGGREGATE_CHARACTER_LIMIT,
   PERMISSION_METADATA_CHARACTER_LIMIT,
@@ -74,6 +75,7 @@ export type WebviewToHostMessage =
 
 export interface ChatSnapshot {
   connected: boolean
+  connectionState: ConnectionState
   connectionError?: string
   sessions: Array<{
     id: string
@@ -97,6 +99,7 @@ export interface ChatSnapshot {
     title: string
     draft: string
     status: SessionStatus
+    loaded: boolean
     loadState: "idle" | "loading" | "ready" | "error"
     messages: MessageBundle[]
     messageRevisions: Record<string, number>
@@ -723,7 +726,8 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
   if (value.type !== "snapshot" || !record(value.snapshot)) return undefined
   const snapshot = value.snapshot
   if (
-    typeof snapshot.connected !== "boolean" || !boundedOptionalString(snapshot.connectionError, 20_000) ||
+    typeof snapshot.connected !== "boolean" || !["connecting", "connected", "reconnecting", "failed"].includes(String(snapshot.connectionState)) ||
+    snapshot.connected !== (snapshot.connectionState === "connected") || !boundedOptionalString(snapshot.connectionError, 20_000) ||
     !Array.isArray(snapshot.sessions) || !validSessionOptions(snapshot.sessions) ||
     !Array.isArray(snapshot.agents) || snapshot.agents.length > 500 || !validCatalog(snapshot.agents, validAgent) ||
     (snapshot.mentionAgents !== undefined && (!Array.isArray(snapshot.mentionAgents) || snapshot.mentionAgents.length > 500 || !validCatalog(snapshot.mentionAgents, validAgent))) ||
@@ -748,6 +752,7 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
       !boundedString(session.title, 2_000) ||
       !boundedString(session.draft, PROMPT_TEXT_CHARACTER_LIMIT) ||
       !validStatus(session.status) ||
+      typeof session.loaded !== "boolean" ||
       !["idle", "loading", "ready", "error"].includes(String(session.loadState)) ||
       !Array.isArray(session.messages) || !validMessages(session.messages) ||
       !validMessageRevisions(session.messageRevisions, session.messages) ||

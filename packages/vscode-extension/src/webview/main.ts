@@ -1,6 +1,6 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
 import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type WebviewToHostMessage } from "@opencode-workbench/shared"
-import { applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
+import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
 
 interface WebviewState {
   todoExpanded?: boolean
@@ -77,7 +77,7 @@ const railSessions = element<HTMLElement>("rail-sessions")
 const railSessionCount = element<HTMLElement>("rail-session-count")
 const railSessionSearch = element<HTMLInputElement>("rail-session-search")
 const railSessionList = element<HTMLElement>("rail-session-list")
-let snapshot: ChatSnapshot = { connected: false, sessions: [], agents: [], models: [] }
+let snapshot: ChatSnapshot = { connected: false, connectionState: "connecting", sessions: [], agents: [], models: [] }
 const storedState = vscode.getState()
 let todoExpanded = storedState?.todoExpanded ?? true
 let overlayReturnFocus: HTMLElement | undefined
@@ -112,8 +112,6 @@ let creatingSession = false
 let unseenMessages = 0
 let attachmentPreviewReturnFocus: HTMLElement | undefined
 let reasoningExpanded = false
-let offlineNoticeVisible = false
-let offlineNoticeTimer: number | undefined
 let noticeKind: "error" | "offline" | undefined
 let noticeDetail = ""
 const localDrafts = new Map<string, string>()
@@ -619,10 +617,10 @@ function partTime(part: MessagePart, key: "start" | "end"): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
-function timingHtml(entries: Array<{ message: MessageBundle; live: boolean }>): string {
+function timingHtml(entries: Array<{ message: MessageBundle; live: boolean }>, working?: boolean): string {
   const assistants = entries.filter((entry) => entry.message.info.role === "assistant")
   if (!assistants.length) return ""
-  const live = assistants.some((entry) => entry.live)
+  const live = working ?? assistants.some((entry) => entry.live)
   const starts = assistants.flatMap(({ message }) => message.parts.map((part) => partTime(part, "start"))).filter((value): value is number => value !== undefined)
   const ends = assistants.flatMap(({ message }) => message.parts.map((part) => partTime(part, "end"))).filter((value): value is number => value !== undefined)
   const start = starts.length ? Math.min(...starts) : assistants.map((entry) => entry.message.info.time?.created).find((value): value is number => typeof value === "number")
@@ -642,7 +640,7 @@ function assistantHtml(message: MessageBundle, live: boolean, finalTextParts: Re
     if (part.type === "text" && part.text) {
       const html = `<div class="markdown">${markdown(part.text)}</div>`
       if (finalTextParts.has(`${message.info.id}:${part.id}`)) responseBody += html
-      else processBody += html
+      else processBody += `<div class="assistant-update"><div class="assistant-update-label">Update</div>${html}</div>`
     }
     else if (part.type === "reasoning" && part.text?.trim()) {
       const grouped = [part]
@@ -866,12 +864,15 @@ function renderTranscript(session: NonNullable<ChatSnapshot["session"]>, active:
     if (cachedContent !== content) turnClassifications.set(key, content)
     const finalTextParts = new Set(content.finalTextPartKeys)
     const hasActivity = content.hasActivity
-    const turnTiming = timingHtml(entries)
+    const working = activityWorking(active, lastAssistantID, entries.filter((entry) => entry.message.info.role === "assistant").map((entry) => entry.message.info.id))
+    const turnTiming = timingHtml(entries, working)
     const activityKey = `${session.id}:${key}`
     let activityHeader = turn.querySelector<HTMLElement>(":scope > .turn-activity-header")
     let activityToggle = activityHeader?.querySelector<HTMLButtonElement>(".turn-activity-toggle") ?? null
     if (hasActivity) {
-      const working = entries.some((entry) => entry.live)
+      const wasWorking = activityToggle?.dataset.working === "true"
+      const existingCollapse = activityToggle ? turn.classList.contains("activity-collapsed") : undefined
+      if (working) activityCollapsePreferences.delete(activityKey)
       if (!activityToggle) {
         activityHeader = document.createElement("div")
         activityHeader.className = "turn-activity-header"
@@ -882,15 +883,15 @@ function renderTranscript(session: NonNullable<ChatSnapshot["session"]>, active:
         const divider = document.createElement("div")
         divider.className = "turn-activity-divider"
         activityHeader.append(activityToggle, divider)
-        const preferred = activityCollapsePreferences.get(activityKey)
-        turn.classList.toggle("activity-collapsed", preferred ?? finalTextParts.size > 0)
-      } else if (finalTextParts.size > 0 && !activityCollapsePreferences.has(activityKey)) turn.classList.add("activity-collapsed")
+      }
+      turn.classList.toggle("activity-collapsed", activityCollapsed(working, wasWorking, activityCollapsePreferences.get(activityKey), existingCollapse))
       activityToggle.dataset.activityKey = activityKey
       activityToggle.dataset.working = String(working)
+      activityToggle.setAttribute("aria-disabled", String(working))
       activityToggle.classList.toggle("working", working)
       activityToggle.innerHTML = turnTiming || `<span>Activity</span><span class="activity-chevron" aria-hidden="true">›</span>`
       activityToggle.setAttribute("aria-expanded", String(!turn.classList.contains("activity-collapsed")))
-      activityToggle.title = turn.classList.contains("activity-collapsed") ? "Show work activity" : "Hide work activity"
+      activityToggle.title = working ? "Work activity stays expanded while OpenCode is working" : turn.classList.contains("activity-collapsed") ? "Show work activity" : "Hide work activity"
       const expectedHeader = turn.children.item(firstAssistant)
       if (expectedHeader !== activityHeader) turn.insertBefore(activityHeader!, expectedHeader)
     } else {
@@ -1550,7 +1551,7 @@ function updatePrimaryAction(): void {
     return
   }
   const session = snapshot.session
-  if (session && session.loadState !== "ready" && session.loadState !== "error") {
+  if (sessionLoadPhase(session) === "initial") {
     send.dataset.action = "idle"
     send.disabled = true
     send.classList.remove("stop-action", "queue-action")
@@ -1799,43 +1800,35 @@ function syncAnimationTimers(active: boolean): void {
 }
 
 function syncConnectionNotice(): boolean {
-  if (snapshot.connected) {
-    if (offlineNoticeTimer !== undefined) window.clearTimeout(offlineNoticeTimer)
-    offlineNoticeTimer = undefined
-    offlineNoticeVisible = false
-  } else if (snapshot.connectionError) {
-    offlineNoticeVisible = true
-  } else if (!offlineNoticeVisible && offlineNoticeTimer === undefined) {
-    offlineNoticeTimer = window.setTimeout(() => {
-      offlineNoticeTimer = undefined
-      if (snapshot.connected) return
-      offlineNoticeVisible = true
-      render()
-    }, 2_000)
-  }
-  const showOffline = !snapshot.connected && offlineNoticeVisible
-  connection.hidden = !showOffline
-  connection.textContent = showOffline ? "Offline" : ""
-  if (showOffline) {
+  const presentation = connectionPresentation(snapshot.connectionState, snapshot.connectionError)
+  connection.hidden = !presentation.showNotice
+  connection.textContent = presentation.label
+  connection.classList.toggle("reconnecting", snapshot.connectionState === "reconnecting")
+  if (presentation.showNotice) {
     const needsWorkspace = snapshot.connectionError?.startsWith("Open a trusted workspace folder")
-    showNotice("offline", "OpenCode is offline", snapshot.connectionError || "The OpenCode server is unavailable. Reload the window to restart the managed connection.", needsWorkspace ? "Open folder" : "Reload window")
+    showNotice("offline", presentation.title, presentation.message, needsWorkspace ? "Open folder" : "Reload window")
   } else clearNotice("offline")
-  return showOffline
+  return presentation.showNotice
 }
 
 function render(): void {
   const session = snapshot.session
   const active = session?.status.type === "busy" || session?.status.type === "retry"
-  const loading = Boolean(session && session.loadState !== "ready" && session.loadState !== "error")
-  const showOffline = syncConnectionNotice()
+  const loadPhase = sessionLoadPhase(session)
+  const loading = loadPhase === "initial"
+  const refreshing = loadPhase === "refreshing"
+  const connectionUnavailable = syncConnectionNotice()
+  const connecting = snapshot.connectionState === "connecting"
   sessionTitle.textContent = session?.title || "No session"
   backParent.hidden = !session?.parentID && document.body.dataset.mode !== "editor"
   const backLabel = session?.parentID ? "Back to parent session" : "Go back"
   backParent.title = backLabel
   backParent.setAttribute("aria-label", backLabel)
   const sessionOption = session ? snapshot.sessions.find((value) => value.id === session.id) ?? { id: session.id, title: session.title, status: session.status, unread: 0 } : undefined
-  sessionState.innerHTML = sessionOption && (sessionOption.status.type === "busy" || sessionOption.status.type === "retry")
-    ? `<span class="header-active-indicator" title="Working" aria-label="Working"></span>`
+  sessionState.innerHTML = connecting
+    ? `<span class="header-active-indicator" title="Connecting to OpenCode" aria-label="Connecting to OpenCode"></span>`
+    : sessionOption && (sessionOption.status.type === "busy" || sessionOption.status.type === "retry" || refreshing)
+    ? `<span class="header-active-indicator" title="${refreshing && !active ? "Refreshing session" : "Working"}" aria-label="${refreshing && !active ? "Refreshing session" : "Working"}"></span>`
     : sessionOption ? escapeHtml(statusLabel(sessionOption)) : ""
   sessionCurrent.disabled = snapshot.sessions.length === 0
   sessionMenuToggle.disabled = !session
@@ -1850,7 +1843,7 @@ function render(): void {
   composer.setAttribute("aria-busy", String(Boolean(active)))
   messages.setAttribute("aria-busy", String(Boolean(active)))
   updatePrimaryAction()
-  status.innerHTML = session ? loading ? "Loading session…" : stoppingSessionID === session.id ? "Stopping…" : active ? activeThrobberHtml() : session.loadState === "error" ? "Transcript unavailable" : session.status.type === "error" ? "Error" : "" : showOffline ? "Offline" : ""
+  status.innerHTML = session ? loading ? "Loading session…" : stoppingSessionID === session.id ? "Stopping…" : active ? activeThrobberHtml() : session.loadState === "error" ? "Transcript unavailable" : session.status.type === "error" ? "Error" : "" : connecting ? "Connecting…" : connectionUnavailable ? snapshot.connectionState === "reconnecting" ? "Reconnecting…" : "Offline" : ""
   status.title = session?.status.type === "error" ? session.status.message || "Session error" : ""
   renderCatalogs(session)
   const selectedModel = snapshot.models.find((item) => `${item.providerID}/${item.id}` === session?.model)
@@ -2607,6 +2600,7 @@ messages.addEventListener("click", (event) => {
   }
   const activityToggle = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-turn-activity]") : undefined
   if (activityToggle) {
+    if (activityToggle.dataset.working === "true") return
     const turn = activityToggle.closest<HTMLElement>(".turn")
     if (!turn) return
     turn.classList.toggle("activity-collapsed")

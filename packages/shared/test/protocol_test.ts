@@ -95,6 +95,7 @@ Deno.test("validates host snapshots", () => {
     type: "snapshot",
     snapshot: {
       connected: true,
+      connectionState: "connected",
       sessions: [{ id: "s", title: "Session", status: { type: "idle" }, unread: 0, directory: "/work", updatedAt: 1, attention: 1, questionCount: 1, permissionCount: 0, queued: 1, todo: { completed: 0, total: 1 }, changeCount: 0 }],
       agents: [{ name: "build", model: { providerID: "p", modelID: "m" } }],
       providers: [{ id: "p", name: "Provider", source: "api" }],
@@ -110,6 +111,7 @@ Deno.test("validates host snapshots", () => {
         title: "Session",
         draft: "",
         status: { type: "idle" },
+        loaded: true,
         loadState: "ready",
         messages: [],
         messageRevisions: {},
@@ -126,6 +128,9 @@ Deno.test("validates host snapshots", () => {
     },
   }
   assert(parseHostMessage(valid)?.type === "snapshot", "valid snapshot rejected")
+  const inconsistentConnection = structuredClone(valid)
+  inconsistentConnection.snapshot.connectionState = "failed"
+  assert(!parseHostMessage(inconsistentConnection), "contradictory connection state was accepted")
   assert(parseHostMessage({
     type: "messagePatches",
     patches: [{

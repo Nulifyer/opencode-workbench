@@ -45,6 +45,27 @@ Deno.test("event stream treats instance disposal as a clean end and bounds unfin
   }
 })
 
+Deno.test("event stream preserves a large ordered burst without dropping frames", async () => {
+  const originalFetch = globalThis.fetch
+  const count = 20_000
+  const frames = Array.from({ length: count }, (_, index) =>
+    `data: ${JSON.stringify({ id: `event-${index}`, type: "message.part.delta", properties: { sessionID: "session", messageID: "message", partID: "part", field: "text", delta: String(index) } })}\n\n`
+  ).join("") + `data: {"id":"disposed","type":"server.instance.disposed","properties":{}}\n\n`
+  globalThis.fetch = () => Promise.resolve(new Response(frames, { status: 200 }))
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const received: string[] = []
+    await client.events(new AbortController().signal, () => undefined, (event) => received.push(event.id ?? ""))
+    if (received.length !== count + 1) throw new Error(`Event stream dropped frames: received ${received.length}`)
+    for (let index = 0; index < count; index += 1) {
+      if (received[index] !== `event-${index}`) throw new Error(`Event stream reordered frame ${index}: ${received[index]}`)
+    }
+    if (received.at(-1) !== "disposed") throw new Error("Event stream omitted the terminal disposal event")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 Deno.test("current permission events expose permission and patterns", () => {
   const permission = parsePermission({
     type: "permission.asked",
@@ -112,6 +133,7 @@ Deno.test("truncated permission metadata remains protocol-valid and reject-only 
     type: "snapshot",
     snapshot: {
       connected: true,
+      connectionState: "connected",
       sessions: [{ id: "session", title: "Session", status: { type: "idle" }, unread: 0 }],
       agents: [],
       models: [],
@@ -120,6 +142,7 @@ Deno.test("truncated permission metadata remains protocol-valid and reject-only 
         title: "Session",
         draft: "",
         status: { type: "idle" },
+        loaded: true,
         loadState: "ready",
         messages: [],
         messageRevisions: {},

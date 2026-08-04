@@ -1,8 +1,6 @@
 import { isOpenCodeMessageID } from "@opencode-workbench/shared"
 import { Buffer } from "node:buffer"
 import { createServer, type ServerResponse } from "node:http"
-import { fileURLToPath } from "node:url"
-import { ManagedOpenCodeServer } from "../src/managed-server.ts"
 import { OpenCodeClient } from "../src/opencode-client.ts"
 import { SessionController } from "../src/session-controller.ts"
 
@@ -156,80 +154,4 @@ Deno.test("controller communicates with OpenCode over authenticated HTTP and SSE
     for (const stream of eventStreams) stream.end()
     await new Promise<void>((resolve) => server.close(() => resolve()))
   }
-})
-
-const integrationExecutable = Deno.env.get("OPENCODE_INTEGRATION_EXECUTABLE")
-
-Deno.test({
-  name: "installed OpenCode serves the extension's health, event, session, and fork contracts",
-  ignore: !integrationExecutable,
-  fn: async () => {
-    const workspace = await Deno.makeTempDir()
-    const extensionPath = fileURLToPath(new URL("../../../", import.meta.url))
-    const output: string[] = []
-    const manager = new ManagedOpenCodeServer({
-      directory: workspace,
-      extensionPath,
-      executablePath: integrationExecutable,
-      output: { appendLine: (line) => output.push(line) },
-    })
-    let client: OpenCodeClient | undefined
-    let createdID: string | undefined
-    let forkedID: string | undefined
-    const streamAbort = new AbortController()
-    try {
-      const connection = await manager.start()
-      client = new OpenCodeClient(connection)
-      const health = await client.health()
-      if (health.version !== "1.18.11") throw new Error(`Expected OpenCode 1.18.11, received ${health.version}`)
-      const formatterStatus = await client.formatter()
-      const mcpStatus = await client.mcp()
-      if (!Array.isArray(formatterStatus) || !formatterStatus.every((formatter) => typeof formatter === "object" && formatter !== null &&
-        "name" in formatter && typeof formatter.name === "string" && "extensions" in formatter && Array.isArray(formatter.extensions) &&
-        "enabled" in formatter && typeof formatter.enabled === "boolean") || typeof mcpStatus !== "object" || mcpStatus === null || Array.isArray(mcpStatus)) {
-        throw new Error("OpenCode returned an incompatible formatter or MCP status contract")
-      }
-
-      const opened = deferred<void>()
-      const createdEvent = deferred<string>()
-      const stream = client.events(
-        streamAbort.signal,
-        () => opened.resolve(undefined),
-        (event) => {
-          const info = event.properties.info
-          if (event.type === "session.created" && typeof info === "object" && info && "id" in info && typeof info.id === "string") createdEvent.resolve(info.id)
-        },
-      ).catch((error) => {
-        if (!streamAbort.signal.aborted) throw error
-      })
-      await within(opened.promise, 10_000)
-      const created = await client.createSession("Workbench integration")
-      createdID = created.id
-      if (await within(createdEvent.promise, 10_000) !== created.id) throw new Error("OpenCode SSE did not report the created session")
-      const renamed = await client.renameSession(created.id, "Workbench integration renamed")
-      if (renamed.title !== "Workbench integration renamed") throw new Error("OpenCode did not return the renamed session")
-      const forked = await client.forkSession(created.id)
-      forkedID = forked.id
-      if (forked.id === created.id) throw new Error("OpenCode fork reused the source session ID")
-      const listed = await client.listSessions()
-      if (!listed.some((session) => session.id === created.id) || !listed.some((session) => session.id === forked.id)) {
-        throw new Error("OpenCode session listing omitted a created or forked session")
-      }
-      const history = await client.messageHistory(created.id)
-      if (history.messages.length || history.legacyMessageIDs.length || history.v2MessageIDs.length) throw new Error("New OpenCode session unexpectedly contained messages")
-      if (await client.deleteSession(forked.id) !== true || await client.deleteSession(created.id) !== true) throw new Error("OpenCode did not delete integration sessions")
-      forkedID = undefined
-      createdID = undefined
-      streamAbort.abort()
-      await stream
-    } catch (error) {
-      throw new Error(`${error instanceof Error ? error.message : String(error)}\nManaged OpenCode output:\n${output.join("\n")}`)
-    } finally {
-      streamAbort.abort()
-      if (client && forkedID) await client.deleteSession(forkedID).catch(() => undefined)
-      if (client && createdID) await client.deleteSession(createdID).catch(() => undefined)
-      await manager.stop()
-      await Deno.remove(workspace, { recursive: true })
-    }
-  },
 })

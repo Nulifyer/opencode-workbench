@@ -147,18 +147,34 @@ Development requires Deno 2.9 or newer.
 
 ```sh
 deno task check
-deno task test
+deno task test:synthetic
 deno task package
 ```
 
-Run the live OpenCode compatibility test against an installed `1.18.11`
-executable. The test starts an authenticated server in a temporary workspace
-and exercises health, SSE, session, fork, history, and deletion contracts
-without sending a model prompt.
+The test tasks are layered so feature work can select the smallest useful
+suite. See [`TESTING.md`](TESTING.md) for invariants and the feature checklist.
+
+| Task | Coverage |
+| --- | --- |
+| `deno task test:synthetic` | All deterministic unit, protocol, mocked HTTP/SSE, controller, packaging, and stress tests. This is the default `test` task. |
+| `deno task test:integration:synthetic` | Mocked HTTP/SSE, managed-process, and end-to-end event-pipeline integration tests. |
+| `deno task test:stress` | Ordered event-bus and parser-to-controller backpressure tests with 20,000-event bursts. |
+| `deno task test:stress:repeat` | Runs each stress test five times to detect timing-sensitive regressions. |
+| `deno task test:integration:real` | Starts an installed OpenCode server and validates live contracts without a model request. |
+
+Run the real integration suite against an installed `1.18.11` executable. The
+suite starts an authenticated server in a temporary workspace and exercises
+health, SSE, session, fork, history, and deletion contracts without sending a
+model prompt. Real integration is intentionally excluded from the deterministic
+default suite.
 
 ```sh
-OPENCODE_INTEGRATION_EXECUTABLE=/absolute/path/to/opencode deno task test:opencode
+OPENCODE_INTEGRATION_EXECUTABLE=/absolute/path/to/opencode deno task test:integration:real
 ```
+
+Set `OPENCODE_INTEGRATION_VERSION` when validating another explicitly supported
+version. `deno task test:opencode` remains an alias for the real integration
+suite.
 
 Install a local build:
 

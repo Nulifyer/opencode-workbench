@@ -74,6 +74,7 @@ Deno.test({
 const http = require("node:http")
 if (process.argv[2] === "--version") { console.log("1.18.11"); process.exit(0) }
 if (process.env.OPENCODE_WORKBENCH_BRIDGE_ID !== "bridge-test") process.exit(2)
+if (process.env.OPENCODE_WORKBENCH_TEST_ENV !== "isolated") process.exit(3)
 const expected = "Basic " + Buffer.from(process.env.OPENCODE_SERVER_USERNAME + ":" + process.env.OPENCODE_SERVER_PASSWORD).toString("base64")
 const server = http.createServer((request, response) => {
   if (request.headers.authorization !== expected) { response.writeHead(401); response.end(); return }
@@ -85,7 +86,7 @@ const server = http.createServer((request, response) => {
 server.listen(0, "127.0.0.1", () => console.log("opencode server listening on http://127.0.0.1:" + server.address().port))
 `)
     await Deno.chmod(executable, 0o700)
-    const manager = new ManagedOpenCodeServer({ directory: root, extensionPath: extension, executablePath: executable, bridgeID: "bridge-test" })
+    const manager = new ManagedOpenCodeServer({ directory: root, extensionPath: extension, executablePath: executable, bridgeID: "bridge-test", environment: { ...process.env, OPENCODE_WORKBENCH_TEST_ENV: "isolated" } })
     try {
       const connection = await manager.start()
       assertEquals(connection.baseUrl.startsWith("http://127.0.0.1:"), true)

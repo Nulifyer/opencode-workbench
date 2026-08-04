@@ -74,7 +74,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly extensionUri: vscode.Uri,
     private readonly controller?: SessionController,
     private readonly workspaceRoot?: string,
-    private readonly connectionError?: string,
+    private connectionError?: string,
     private readonly showLogs?: () => void,
     private readonly reportError?: (message: string) => void,
   ) {
@@ -87,7 +87,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return { cancel: () => clearTimeout(timer) }
       },
     )
-    const subscription = controller?.subscribe((update) => this.queueUpdate(update))
+    const subscription = controller?.subscribe((update) => {
+      if (update.type === "connected" && update.connected) this.connectionError = undefined
+      this.queueUpdate(update)
+    })
     if (subscription) this.disposables.push(subscription)
     this.disposables.push(
       vscode.window.onDidChangeActiveTextEditor((editor) => {
@@ -747,7 +750,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private snapshot() {
-    const snapshot = this.controller?.chatSnapshot() ?? { connected: false, sessions: [], agents: [], models: [] }
+    const snapshot = this.controller?.chatSnapshot() ?? { connected: false, connectionState: this.connectionError ? "failed" as const : "connecting" as const, sessions: [], agents: [], models: [] }
     return !snapshot.connected && this.connectionError ? { ...snapshot, connectionError: this.connectionError } : snapshot
   }
 

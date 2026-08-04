@@ -1,5 +1,6 @@
 const css = await Deno.readTextFile(new URL("../media/chat.css", import.meta.url))
 const webview = await Deno.readTextFile(new URL("../src/webview/main.ts", import.meta.url))
+const chatView = await Deno.readTextFile(new URL("../src/views/chat-view.ts", import.meta.url))
 
 Deno.test("reduced motion preserves operational progress animations", () => {
   const reducedMotion = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"))
@@ -36,5 +37,45 @@ Deno.test("workspace detail popovers escape the muted status stacking context", 
   }
   if (!webview.includes('.workspace-detail[open]')) {
     throw new Error("Workspace detail popovers do not close on Escape, outside click, or sibling activation")
+  }
+})
+
+Deno.test("non-final assistant text renders as distinct update activity", () => {
+  if (!/else processBody \+= `<div class="assistant-update">/.test(webview)) {
+    throw new Error("Non-final assistant text is not rendered as a labeled update")
+  }
+  if (webview.includes('<section class="assistant-update"') || webview.includes('class="assistant-update" aria-label=')) {
+    throw new Error("Assistant updates create repetitive named landmarks")
+  }
+  if (!css.includes(".assistant-update {") || !css.includes(".assistant-update-label {")) {
+    throw new Error("Assistant updates do not have distinct activity styling")
+  }
+})
+
+Deno.test("offline notice uses a theme-safe muted warning surface", () => {
+  const rule = /\.notice\.offline\s*\{([^}]*)\}/.exec(css)?.[1] ?? ""
+  if (!rule.includes("color: var(--vscode-foreground)") || !rule.includes("background: color-mix")) {
+    throw new Error("Offline notice does not preserve readable foreground contrast")
+  }
+  if (rule.includes("var(--vscode-inputValidation-warningBackground")) {
+    throw new Error("Offline notice still uses the high-intensity validation warning background")
+  }
+})
+
+Deno.test("connection warnings are driven by settled connection state rather than a timer", () => {
+  if (webview.includes("offlineNoticeTimer") || webview.includes("offlineNoticeVisible")) {
+    throw new Error("Connection warning still relies on a startup timeout")
+  }
+  if (!webview.includes("connectionPresentation(snapshot.connectionState")) {
+    throw new Error("Connection warning does not distinguish loading from failure")
+  }
+  if (!chatView.includes('update.type === "connected" && update.connected') || !chatView.includes("this.connectionError = undefined")) {
+    throw new Error("Successful reconnection does not clear a stale startup error")
+  }
+})
+
+Deno.test("active inter-step activity keeps working timing", () => {
+  if (!webview.includes("timingHtml(entries, working)")) {
+    throw new Error("Activity timing can fall back to Worked during an active inter-step gap")
   }
 })

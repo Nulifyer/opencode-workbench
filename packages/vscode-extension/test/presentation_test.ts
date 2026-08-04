@@ -1,4 +1,4 @@
-import { applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, markdownFenceEnd, markdownFenceLanguage, markdownTableDelimiter, markdownTableRow, mergeRevisionValues, orderedListItem, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
@@ -25,6 +25,32 @@ Deno.test("groups sessions by actionable state before age", () => {
   assertEquals(sessionGroup({ ...base, updatedAt: start - 1 }, now), "Yesterday")
   assertEquals(sessionGroup({ ...base, updatedAt: start - 2 * day }, now), "Previous 7 days")
   assertEquals(sessionGroup({ ...base, updatedAt: start - 8 * day }, now), "Older")
+})
+
+Deno.test("distinguishes initial transcript hydration from background refresh", () => {
+  assertEquals(sessionLoadPhase(undefined), "none")
+  assertEquals(sessionLoadPhase({ loaded: false, loadState: "idle" }), "initial")
+  assertEquals(sessionLoadPhase({ loaded: false, loadState: "loading" }), "initial")
+  assertEquals(sessionLoadPhase({ loaded: true, loadState: "loading" }), "refreshing")
+  assertEquals(sessionLoadPhase({ loaded: true, loadState: "ready" }), "ready")
+  assertEquals(sessionLoadPhase({ loaded: true, loadState: "error" }), "error")
+})
+
+Deno.test("connection presentation stays quiet while loading and warns after failure", () => {
+  assertEquals(connectionPresentation("connecting"), { showNotice: false, label: "", title: "", message: "" })
+  assertEquals(connectionPresentation("connected"), { showNotice: false, label: "", title: "", message: "" })
+  assertEquals(connectionPresentation("reconnecting"), { showNotice: true, label: "Reconnecting", title: "Reconnecting to OpenCode", message: "The OpenCode connection failed. Workbench is retrying automatically." })
+  assertEquals(connectionPresentation("failed", "No server"), { showNotice: true, label: "Offline", title: "OpenCode is offline", message: "No server" })
+})
+
+Deno.test("work activity stays expanded while active and collapses on completion", () => {
+  assertEquals(activityWorking(true, "assistant-step-one", ["assistant-step-one"]), true)
+  assertEquals(activityWorking(true, "assistant-step-two", ["assistant-step-one"]), false)
+  assertEquals(activityWorking(false, "assistant-step-one", ["assistant-step-one"]), false)
+  assertEquals(activityCollapsed(true, false, true, true), false)
+  assertEquals(activityCollapsed(false, true, false, false), true)
+  assertEquals(activityCollapsed(false, false, false, true), false)
+  assertEquals(activityCollapsed(false, false, undefined, undefined), true)
 })
 
 Deno.test("summarizes reasoning and tool presentation", () => {

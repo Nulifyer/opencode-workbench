@@ -16,6 +16,7 @@ export interface ManagedServerOptions {
   directory: string
   extensionPath: string
   executablePath?: string
+  environment?: NodeJS.ProcessEnv
   startupTimeoutMilliseconds?: number
   bridgeID?: string
   output?: { appendLine(value: string): void }
@@ -240,12 +241,13 @@ export class ManagedOpenCodeServer {
     const username = `workbench-${randomBytes(16).toString("hex")}`
     const password = randomBytes(32).toString("base64url")
     this.password = password
+    const processEnvironment = this.options.environment ?? process.env
     const env = {
-      ...process.env,
+      ...processEnvironment,
       OPENCODE_SERVER_USERNAME: username,
       OPENCODE_SERVER_PASSWORD: password,
       ...(this.options.bridgeID ? { OPENCODE_WORKBENCH_BRIDGE_ID: this.options.bridgeID } : {}),
-      OPENCODE_CONFIG_CONTENT: managedConfigContent(process.env.OPENCODE_CONFIG_CONTENT, pluginUrl),
+      OPENCODE_CONFIG_CONTENT: managedConfigContent(processEnvironment.OPENCODE_CONFIG_CONTENT, pluginUrl),
     }
     this.options.output?.appendLine(`Starting OpenCode ${version} for ${this.options.directory}`)
     const invocation = executableInvocation(executable, ["serve", "--hostname", "127.0.0.1", "--port", "0"])
@@ -261,8 +263,8 @@ export class ManagedOpenCodeServer {
     const connection = await new Promise<OpenCodeConnection>((resolve, reject) => {
       const timer = setTimeout(() => finish(new Error(`Managed OpenCode server did not become ready within ${startupTimeout / 1_000} seconds`)), remainingMilliseconds(deadline))
       const buffers = { stdout: "", stderr: "" }
-      const sensitive = [username, password, authorization(username, password), process.env.OPENCODE_CONFIG_CONTENT,
-        ...Object.entries(process.env).filter(([key, value]) => value && /(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)/i.test(key)).map(([, value]) => value),
+      const sensitive = [username, password, authorization(username, password), processEnvironment.OPENCODE_CONFIG_CONTENT,
+        ...Object.entries(processEnvironment).filter(([key, value]) => value && /(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)/i.test(key)).map(([, value]) => value),
       ].filter((value): value is string => typeof value === "string" && value.length >= 4).sort((left, right) => right.length - left.length).slice(0, 200)
       let loggedLines = 0
       const redact = (value: string) => sensitive.reduce((result, secret) => result.replaceAll(secret, "[redacted]"), value)

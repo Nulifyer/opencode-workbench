@@ -36,10 +36,13 @@ export interface WorkbenchState {
   order: string[]
   selectedID?: string
   connected: boolean
+  connectionState: ConnectionState
 }
 
+export type ConnectionState = "connecting" | "connected" | "reconnecting" | "failed"
+
 export type SessionAction =
-  | { type: "connected"; connected: boolean }
+  | { type: "connected"; connected: boolean; connectionState?: ConnectionState }
   | { type: "reconcile"; sessions: SessionInfo[]; statuses?: Record<string, SessionStatus> }
   | { type: "select"; sessionID?: string }
   | { type: "draft"; sessionID: string; draft: string }
@@ -62,6 +65,7 @@ export const initialWorkbenchState: WorkbenchState = {
   sessions: Object.create(null) as Record<string, SessionViewState>,
   order: [],
   connected: false,
+  connectionState: "connecting",
 }
 
 function hasSession(sessions: Record<string, SessionViewState>, sessionID: string): boolean {
@@ -157,7 +161,7 @@ function removePart(messages: MessageBundle[], messageID: string, partID: string
 }
 
 export function sessionReducer(state: WorkbenchState, action: SessionAction): WorkbenchState {
-  if (action.type === "connected") return { ...state, connected: action.connected }
+  if (action.type === "connected") return { ...state, connected: action.connected, connectionState: action.connectionState ?? (action.connected ? "connected" : "reconnecting") }
   if (action.type === "autoApproval") {
     if (!hasSession(state.sessions, action.sessionID) || state.sessions[action.sessionID]!.autoApproval === action.enabled) return state
     const sessions = copySessions(state.sessions)

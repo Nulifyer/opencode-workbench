@@ -68,3 +68,50 @@ Deno.test("latest update pump cancels scheduled work on disposal", () => {
   pump.dispose()
   assert(callbacks.length === 0, "Disposal retained scheduled work")
 })
+
+Deno.test("latest update pump serializes a large burst behind a blocked publisher", async () => {
+  const callbacks: Array<() => void> = []
+  const blocked = deferred()
+  let value = -1
+  let active = 0
+  let maximumActive = 0
+  const published: number[] = []
+  const pump = new LatestUpdatePump(
+    () => value,
+    async (next) => {
+      active += 1
+      maximumActive = Math.max(maximumActive, active)
+      published.push(next)
+      if (published.length === 1) await blocked.promise
+      active -= 1
+    },
+    (callback) => {
+      callbacks.push(callback)
+      return { cancel: () => callbacks.splice(callbacks.indexOf(callback), 1) }
+    },
+  )
+
+  for (let index = 0; index < 10_000; index += 1) {
+    value = index
+    pump.request()
+  }
+  assert(callbacks.length === 1, "Initial burst scheduled parallel publications")
+  callbacks.shift()!()
+  await Promise.resolve()
+  assert(published[0] === 9_999, "Initial publication did not contain the latest burst state")
+
+  for (let index = 10_000; index < 20_000; index += 1) {
+    value = index
+    pump.request()
+  }
+  assert(Number(callbacks.length) === 0, "Blocked publisher allowed a parallel publication")
+  blocked.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  assert(Number(callbacks.length) === 1, "Blocked publisher omitted the trailing publication")
+  callbacks.shift()!()
+  await Promise.resolve()
+  assert(published.join(",") === "9999,19999", `Burst publications were stale: ${published.join(",")}`)
+  assert(maximumActive === 1, `Publication concurrency reached ${maximumActive}`)
+  pump.dispose()
+})

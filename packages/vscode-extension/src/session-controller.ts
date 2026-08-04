@@ -36,6 +36,7 @@ import {
   sessionReducer,
 } from "@opencode-workbench/shared"
 import { OpenCodeClient, parseChanges, parsePermission, parseQuestion, parseTodos, type PromptFilePart, type SessionMessageHistory } from "./opencode-client.js"
+import { OrderedEventBus } from "./ordered-event-bus.js"
 
 export interface ControllerCallbacks {
   error(message: string): void
@@ -204,7 +205,7 @@ function snapshotPartCharacters(part: MessagePart): number {
     (part.state?.metadata === undefined ? 0 : JSON.stringify(part.state.metadata).length)
 }
 
-function snapshotMessage(message: MessageBundle): MessageBundle | undefined {
+function snapshotMessage(message: MessageBundle, pendingText?: string): MessageBundle | undefined {
   const info = message.info
   if (typeof info.id !== "string" || !info.id || info.id.length > 1_024 ||
     typeof info.sessionID !== "string" || !info.sessionID || info.sessionID.length > 1_024 ||
@@ -230,6 +231,10 @@ function snapshotMessage(message: MessageBundle): MessageBundle | undefined {
     parts.push(safe)
   }
   parts.reverse()
+  const fallbackText = boundedText(pendingText, 500_000)
+  if (info.role === "user" && fallbackText && characters + fallbackText.length <= 1_500_000 && !parts.some((part) => part.type === "text" && Boolean(part.text))) {
+    parts.push({ id: `${info.id}-pending-text`, sessionID: info.sessionID, messageID: info.id, type: "text", text: fallbackText })
+  }
   return { info: safeInfo, parts }
 }
 
@@ -239,12 +244,13 @@ function snapshotTranscript(
   characterLimit = 3_800_000,
   partLimit = 19_000,
   messageLimit = 5_000,
+  pendingText?: (messageID: string) => string | undefined,
 ): { messages: MessageBundle[]; revisions: Record<string, number> } {
   const output: MessageBundle[] = []
   let parts = 0
   let characters = 0
   for (const message of messages.slice(-messageLimit).reverse()) {
-    const safe = snapshotMessage(message)
+    const safe = snapshotMessage(message, pendingText?.(message.info.id))
     if (!safe) continue
     const nextParts = parts + safe.parts.length
     const nextCharacters = characters + safe.parts.reduce((total, part) => total + snapshotPartCharacters(part), 0)
@@ -537,6 +543,7 @@ function boundedPermissionList(requests: PermissionRequest[]): PermissionRequest
 export class SessionController {
   private state: WorkbenchState = initialWorkbenchState
   private readonly listeners = new Set<(update: ControllerUpdate) => void>()
+  private readonly eventBus: OrderedEventBus<OpenCodeEvent>
   private stream?: AbortController
   private disposed = false
   private readonly respondingPermissions = new Set<string>()
@@ -599,6 +606,9 @@ export class SessionController {
     selectedSessionID?: string,
     recoveredSessions?: Record<string, string>,
   ) {
+    this.eventBus = new OrderedEventBus((event) => this.handleEvent(event), {
+      onError: (error) => this.callbacks.error(`Could not handle OpenCode event: ${message(error)}`),
+    })
     if (selectedSessionID) this.restoreSelectionID = selectedSessionID
     for (const [source, recovered] of Object.entries(recoveredSessions ?? {}).slice(0, 100)) {
       if (source && recovered && source.length <= 1_024 && recovered.length <= 1_024) this.recoveredSessions.set(source, recovered)
@@ -659,18 +669,20 @@ export class SessionController {
     this.client.cancelPendingRequests?.()
     this.stream?.abort()
     this.stream = undefined
+    this.eventBus.discard()
     this.reconcileGeneration += 1
     this.permissionGeneration += 1
     this.questionGeneration += 1
     for (const [sessionID, generation] of this.transcriptGenerations) {
       this.transcriptGenerations.set(sessionID, generation + 1)
     }
-    this.dispatch({ type: "connected", connected: false })
+    this.dispatch({ type: "connected", connected: false, connectionState: "connecting" })
     this.start()
   }
 
   dispose(): void {
     this.disposed = true
+    this.eventBus.dispose()
     this.permissionGeneration += 1
     this.questionGeneration += 1
     this.stream?.abort()
@@ -682,6 +694,7 @@ export class SessionController {
     this.transcriptRefreshTimers.clear()
     this.promptFiles.clear()
     this.promptAgents.clear()
+    this.pendingPromptSessions.clear()
     this.permissionGrants.clear()
     this.listeners.clear()
   }
@@ -733,6 +746,11 @@ export class SessionController {
     return sessionID && messageID && sessionID === this.state.selectedID ? { sessionID, messageID } : undefined
   }
 
+  private pendingPromptTextFor(messageID: string): string | undefined {
+    const sessionID = this.pendingPromptSessions.get(messageID)
+    return sessionID ? this.state.sessions[sessionID]?.queue.find((prompt) => prompt.id === messageID)?.text : undefined
+  }
+
   messagePatches(keys: Array<{ sessionID: string; messageID: string }>): MessagePatch[] | undefined {
     if (keys.length > 100) return undefined
     const patches: MessagePatch[] = []
@@ -742,7 +760,7 @@ export class SessionController {
       if (!session || this.state.selectedID !== sessionID) continue
       const index = session.messages.findIndex((entry) => entry.info.id === messageID)
       const message = index < 0 ? undefined : session.messages[index]
-      const safe = message ? snapshotMessage(message) : undefined
+      const safe = message ? snapshotMessage(message, this.pendingPromptTextFor(messageID)) : undefined
       const nextCharacters = characters + (safe?.parts.reduce((total, part) => total + snapshotPartCharacters(part), 0) ?? 0)
       if (nextCharacters > 3_800_000) return undefined
       characters = nextCharacters
@@ -922,25 +940,29 @@ export class SessionController {
         await this.client.events(
           signal,
           async () => {
+            this.eventBus.flush()
             attempt = 0
             await this.callbacks.validateConnection?.()
+            if (signal.aborted) return
             await this.reconcile()
             if (signal.aborted) return
             await this.reconcilePermissions().catch((error) => this.callbacks.error(`Could not reconcile permission requests: ${message(error)}`))
             await this.reconcileQuestions().catch((error) => this.callbacks.error(`Could not reconcile questions: ${message(error)}`))
             if (signal.aborted) return
-            this.dispatch({ type: "connected", connected: true })
+            this.dispatch({ type: "connected", connected: true, connectionState: "connected" })
           },
           (event) => {
-            if (!signal.aborted) this.handleEvent(event)
+            if (!signal.aborted) this.eventBus.emit(event)
           },
         )
+        this.eventBus.flush()
         if (signal.aborted) return
-        this.dispatch({ type: "connected", connected: false })
+        this.dispatch({ type: "connected", connected: false, connectionState: "reconnecting" })
         await delay(250, signal)
       } catch (error) {
+        this.eventBus.flush()
         if (signal.aborted) return
-        this.dispatch({ type: "connected", connected: false })
+        this.dispatch({ type: "connected", connected: false, connectionState: "reconnecting" })
         if (attempt === 0) this.callbacks.error(message(error))
         attempt += 1
         try {
@@ -1530,6 +1552,7 @@ export class SessionController {
     this.promptFiles.delete(promptID)
     this.promptAgents.delete(promptID)
     this.steeringPrompts.delete(promptID)
+    this.pendingPromptSessions.delete(promptID)
     this.dispatch({ type: "removeQueued", sessionID, promptID })
   }
 
@@ -1580,7 +1603,10 @@ export class SessionController {
     this.sendingPrompts.delete(sessionID)
     this.retryingSessions.delete(sessionID)
     this.drainingQueues.delete(sessionID)
-    for (const [promptID, ownerID] of this.pendingPromptSessions) if (ownerID === sessionID) this.pendingPromptSessions.delete(promptID)
+    for (const [promptID, ownerID] of this.pendingPromptSessions) {
+      if (ownerID !== sessionID) continue
+      this.pendingPromptSessions.delete(promptID)
+    }
     this.sendGenerations.delete(sessionID)
     this.messageHistories.delete(sessionID)
     this.transcriptRevisions.delete(sessionID)
@@ -1622,13 +1648,18 @@ export class SessionController {
       if (command) await this.client.sendCommand(sessionID, command[1]!, command[2] ?? "", prompt.agent, prompt.model, prompt.variant, this.promptFiles.get(prompt.id) ?? [], prompt.id)
       else {
         const files = this.promptFiles.get(prompt.id) ?? []
+        if (!legacy) {
+          this.pendingPromptSessions.set(prompt.id, sessionID)
+          while (this.pendingPromptSessions.size > 1_000) {
+            const oldest = this.pendingPromptSessions.keys().next().value!
+            this.pendingPromptSessions.delete(oldest)
+          }
+        }
         if (legacy) await this.client.sendAsync(sessionID, prompt.text, prompt.agent, prompt.model, prompt.variant, files, createOpenCodeMessageID())
         else await this.client.sendPrompt(sessionID, prompt.id, prompt.text, delivery, prompt.agent, prompt.model, prompt.variant, files, this.promptAgents.get(prompt.id) ?? [])
         if (!legacy) {
-          this.pendingPromptSessions.set(prompt.id, sessionID)
-          while (this.pendingPromptSessions.size > 1_000) this.pendingPromptSessions.delete(this.pendingPromptSessions.keys().next().value!)
           const slash = prompt.model?.indexOf("/") ?? -1
-          this.handleEvent({
+          this.eventBus.emit({
             type: "message.updated",
             properties: {
               info: {
@@ -1641,14 +1672,15 @@ export class SessionController {
               },
             },
           })
-          if (prompt.text) this.handleEvent({
+          if (prompt.text) this.eventBus.emit({
             type: "message.part.updated",
             properties: { part: { id: `${prompt.id}-text`, sessionID, messageID: prompt.id, type: "text", text: prompt.text } },
           })
-          for (const [index, file] of files.entries()) this.handleEvent({
+          for (const [index, file] of files.entries()) this.eventBus.emit({
             type: "message.part.updated",
             properties: { part: { id: `${prompt.id}-file-${index}`, sessionID, messageID: prompt.id, type: "file", mime: file.mime, filename: file.filename, url: file.url } },
           })
+          this.eventBus.flush()
         }
         this.scheduleTranscriptRefresh(sessionID)
       }
@@ -1729,7 +1761,9 @@ export class SessionController {
 
   chatSnapshot(): ChatSnapshot {
     const current = this.state.selectedID ? this.state.sessions[this.state.selectedID] : undefined
-    const transcript = current ? snapshotTranscript(current.messages, this.messageRevisions.get(current.info.id) ?? new Map()) : undefined
+    const transcript = current
+      ? snapshotTranscript(current.messages, this.messageRevisions.get(current.info.id) ?? new Map(), 3_800_000, 19_000, 5_000, (messageID) => this.pendingPromptTextFor(messageID))
+      : undefined
     const delegations = current ? this.delegationProgress(current) : []
     const delegatedSessions = current && !current.info.parentID ? descendantSessions(this.state, current.info.id) : []
     const rootMemo = new Map<string, string>()
@@ -1784,6 +1818,7 @@ export class SessionController {
     const effectiveVariant = current?.variant ?? (effectiveModel && this.modelVariants.has(effectiveModel) ? this.modelVariants.get(effectiveModel) : fallbackVariant)
     return {
       connected: this.state.connected,
+      connectionState: this.state.connectionState,
       sessions: visibleRootIDs.flatMap((id) => {
         const session = this.state.sessions[id]
         const childPermissions = childAttention.get(id)?.permissions ?? 0
@@ -1823,6 +1858,7 @@ export class SessionController {
         title: current.info.title,
         draft: current.draft,
         status: current.status,
+        loaded: current.loaded,
         loadState: current.loadState,
         messages: transcript!.messages,
         messageRevisions: transcript!.revisions,

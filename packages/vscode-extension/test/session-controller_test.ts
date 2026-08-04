@@ -882,6 +882,83 @@ Deno.test("transcript refresh preserves admitted prompt text until the server pr
   controller.dispose()
 })
 
+Deno.test("pending prompt text fills an info-only server event before admission completes", async () => {
+  const promptID = "msg_018bcfe568001234567890abcd"
+  const admission = deferred<void>()
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    sendPrompt: () => admission.promise,
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+
+  const sending = controller.send("Visible before admission", undefined, undefined, undefined, [], [], promptID)
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user" } } })
+  const pending = controller.chatSnapshot().session?.messages.find((entry) => entry.info.id === promptID)
+  if (pending?.parts[0]?.text !== "Visible before admission") throw new Error("Info-only server event exposed the Message sent placeholder")
+  const patch = controller.messagePatches([{ sessionID: "one", messageID: promptID }])?.[0]
+  if (patch?.message?.parts[0]?.text !== "Visible before admission") throw new Error("Targeted info-only patch omitted pending prompt text")
+
+  admission.resolve()
+  await sending
+  controller.dispose()
+})
+
+Deno.test("ambiguous prompt failure retains visible text from the queued prompt", async () => {
+  const promptID = "msg_018bcfe568001234567890abce"
+  let emitInfo: () => void = () => undefined
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    sendPrompt: async () => {
+      emitInfo()
+      throw new Error("response lost after admission")
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  emitInfo = () => internal.handleEvent({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user" } } })
+
+  await controller.send("Still visible after failure", undefined, undefined, undefined, [], [], promptID).catch(() => undefined)
+  const message = controller.chatSnapshot().session?.messages.find((entry) => entry.info.id === promptID)
+  if (message?.parts[0]?.text !== "Still visible after failure") throw new Error("Ambiguous admission reverted to the Message sent placeholder")
+  controller.dispose()
+})
+
+Deno.test("synthetic prompt projection stays ordered after buffered server parts", async () => {
+  const promptID = "msg_018bcfe568001234567890abcf"
+  let enqueueServerProjection: () => void = () => undefined
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    sendPrompt: async () => enqueueServerProjection(),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const internal = controller as unknown as {
+    eventBus: { emit(event: { type: string; properties: Record<string, unknown> }): void; flush(): void }
+  }
+  enqueueServerProjection = () => {
+    internal.eventBus.emit({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user" } } })
+    internal.eventBus.emit({ type: "message.part.updated", properties: { part: { id: `${promptID}-text`, sessionID: "one", messageID: promptID, type: "text", text: "" } } })
+  }
+
+  await controller.send("Locally projected text", undefined, undefined, undefined, [], [], promptID)
+  internal.eventBus.flush()
+  const message = controller.snapshot.sessions.one?.messages.find((entry) => entry.info.id === promptID)
+  if (message?.parts[0]?.text !== "Locally projected text") throw new Error("Buffered server projection overwrote the newer synthetic prompt text")
+  controller.dispose()
+})
+
 Deno.test("reload pause rejects new prompts and resumes retained queues", async () => {
   const calls: string[] = []
   const fake = {
@@ -1529,7 +1606,7 @@ Deno.test("reconnect discards stale permission reconciliation", async () => {
   controller.dispose()
 })
 
-Deno.test("event reconnect reports connected only after reconciliation succeeds", async () => {
+Deno.test("event connection remains loading until session hydration settles", async () => {
   const sessions = deferred<ReturnType<typeof session>[]>()
   const opened = deferred<void>()
   const connected = deferred<void>()
@@ -1550,10 +1627,41 @@ Deno.test("event reconnect reports connected only after reconciliation succeeds"
   controller.start()
   await opened.promise
   await Promise.resolve()
-  if (controller.snapshot.connected) throw new Error("Connection became visible before reconciliation completed")
+  if (controller.snapshot.connected || controller.snapshot.connectionState !== "connecting") throw new Error("Unsettled session hydration was reported as connected or failed")
   sessions.resolve([])
   await connected.promise
-  if (!controller.snapshot.connected) throw new Error("Connection did not become visible after reconciliation")
+  if (!controller.snapshot.connected || String(controller.snapshot.connectionState) !== "connected") throw new Error("Settled connection was not reported as connected")
+  controller.dispose()
+})
+
+Deno.test("explicit reconnect discards old-stream terminal events before queue admission", async () => {
+  let sends = 0
+  const fake = {
+    events: (signal: AbortSignal) => new Promise<void>((resolve) => {
+      if (signal.aborted) resolve()
+      else signal.addEventListener("abort", () => resolve(), { once: true })
+    }),
+    sendPrompt: async () => sends += 1,
+    cancelPendingRequests: () => undefined,
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  const promptID = "msg_018bcfe568001234567890abda"
+  const internal = controller as unknown as {
+    dispatch(action: { type: string; [key: string]: unknown }): void
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+    eventBus: { emit(event: { type: string; properties: Record<string, unknown> }): void }
+  }
+  internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
+  internal.handleEvent({ type: "session.status", properties: { sessionID: "one", status: { type: "busy" } } })
+  internal.dispatch({ type: "queue", sessionID: "one", prompt: { id: promptID, text: "Do not resend", createdAt: 1 } })
+  internal.eventBus.emit({ type: "session.status", properties: { sessionID: "one", status: { type: "busy" } } })
+  internal.eventBus.emit({ type: "session.idle", properties: { sessionID: "one" } })
+
+  controller.reconnect()
+  await Promise.resolve()
+  if (sends !== 0 || controller.snapshot.sessions.one?.queue[0]?.id !== promptID || controller.snapshot.sessions.one?.status.type !== "busy") {
+    throw new Error("Reconnect applied a stale terminal event and admitted a queued prompt")
+  }
   controller.dispose()
 })
 
@@ -1874,6 +1982,33 @@ Deno.test("streaming message updates expose bounded targeted patches", async () 
   controller.dispose()
 })
 
+Deno.test("ordered event ingress applies a large delta burst without loss", async () => {
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({ one: { type: "busy" as const } }),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: (error) => { throw new Error(error) } })
+  await controller.reconcile()
+  const internal = controller as unknown as {
+    eventBus: { emit(event: { type: string; properties: Record<string, unknown> }): void; flush(): void }
+  }
+  internal.eventBus.emit({ type: "message.updated", properties: { info: { id: "assistant", sessionID: "one", role: "assistant" } } })
+  internal.eventBus.emit({ type: "message.part.updated", properties: { part: { id: "text", messageID: "assistant", sessionID: "one", type: "text", text: "" } } })
+  for (let index = 0; index < 20_000; index += 1) {
+    internal.eventBus.emit({
+      type: "message.part.delta",
+      properties: { sessionID: "one", messageID: "assistant", partID: "text", field: "text", delta: "x" },
+    })
+  }
+  internal.eventBus.flush()
+
+  const text = controller.snapshot.sessions.one?.messages[0]?.parts[0]?.text
+  if (text?.length !== 20_000) throw new Error(`Event ingress dropped deltas: received ${text?.length ?? 0}`)
+  controller.dispose()
+})
+
 Deno.test("permission reconciliation preserves failed protocols and protocol identity", async () => {
   const current = { id: "same", sessionID: "one", title: "Current", protocol: "current" as const }
   const v2 = { id: "same", sessionID: "one", title: "V2", protocol: "v2" as const }
@@ -1918,19 +2053,29 @@ Deno.test("permission reconciliation preserves failed protocols and protocol ide
 
 Deno.test("session hydration remains loading until transcript completion and exposes failure", async () => {
   const transcript = deferred<MessageBundle[]>()
+  const refresh = deferred<MessageBundle[]>()
+  let messageCalls = 0
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
     catalogs: async () => ({ agents: [], models: [] }),
-    messages: () => transcript.promise,
+    messages: () => ++messageCalls === 1 ? transcript.promise : refresh.promise,
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   const reconciling = controller.reconcile()
   for (let attempt = 0; attempt < 20 && controller.chatSnapshot().session?.loadState !== "loading"; attempt += 1) await Promise.resolve()
-  if (controller.chatSnapshot().session?.loadState !== "loading") throw new Error("Transcript hydration did not remain visible")
+  if (controller.chatSnapshot().session?.loadState !== "loading" || controller.chatSnapshot().session?.loaded !== false) throw new Error("Transcript hydration did not remain visible")
   transcript.resolve([])
   await reconciling
-  if (controller.chatSnapshot().session?.loadState !== "ready") throw new Error("Transcript hydration did not complete")
+  if (controller.chatSnapshot().session?.loadState !== "ready" || controller.chatSnapshot().session?.loaded !== true) throw new Error("Transcript hydration did not complete")
+  const internal = controller as unknown as { loadTranscript(sessionID: string): Promise<void> }
+  const refreshing = internal.loadTranscript("one")
+  await Promise.resolve()
+  if (controller.chatSnapshot().session?.loadState !== "loading" || controller.chatSnapshot().session?.loaded !== true) {
+    throw new Error("Background transcript refresh was mistaken for initial hydration")
+  }
+  refresh.resolve([])
+  await refreshing
   controller.dispose()
 
   const failed = {

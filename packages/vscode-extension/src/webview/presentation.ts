@@ -1,6 +1,29 @@
-import type { ChatSnapshot, MessageBundle, MessagePart, PermissionRequest, RuntimeService } from "@opencode-workbench/shared"
+import type { ChatSnapshot, ConnectionState, MessageBundle, MessagePart, PermissionRequest, RuntimeService } from "@opencode-workbench/shared"
 
 export type SessionGroup = "Needs input" | "Working" | "Completed" | "Today" | "Yesterday" | "Previous 7 days" | "Older"
+
+export function sessionLoadPhase(session?: { loaded: boolean; loadState: "idle" | "loading" | "ready" | "error" }): "none" | "initial" | "refreshing" | "ready" | "error" {
+  if (!session) return "none"
+  if (session.loadState === "error") return "error"
+  if (!session.loaded) return "initial"
+  return session.loadState === "loading" ? "refreshing" : "ready"
+}
+
+export function connectionPresentation(state: ConnectionState, error?: string): { showNotice: boolean; label: string; title: string; message: string } {
+  if (state === "connecting" || state === "connected") return { showNotice: false, label: "", title: "", message: "" }
+  if (state === "reconnecting") return {
+    showNotice: true,
+    label: "Reconnecting",
+    title: "Reconnecting to OpenCode",
+    message: error || "The OpenCode connection failed. Workbench is retrying automatically.",
+  }
+  return {
+    showNotice: true,
+    label: "Offline",
+    title: "OpenCode is offline",
+    message: error || "The OpenCode server is unavailable. Reload the window to restart the managed connection.",
+  }
+}
 
 export function runtimeServicePresentation(service: RuntimeService, kind: "lsp" | "formatter" | "mcp"): { status: string; detail?: string; healthy: boolean; tone: "status" | "warning" | "error" | "muted" } {
   if (kind === "formatter") return {
@@ -75,6 +98,16 @@ export function formatDuration(milliseconds: number): string {
   const minutes = Math.floor(milliseconds / 60_000)
   const seconds = Math.floor(milliseconds % 60_000 / 1_000)
   return `${minutes}m ${seconds}s`
+}
+
+export function activityCollapsed(working: boolean, wasWorking: boolean, preferred?: boolean, existing?: boolean): boolean {
+  if (working) return false
+  if (wasWorking) return true
+  return preferred ?? existing ?? true
+}
+
+export function activityWorking(active: boolean, lastAssistantID: string | undefined, turnAssistantIDs: string[]): boolean {
+  return Boolean(active && lastAssistantID && turnAssistantIDs.includes(lastAssistantID))
 }
 
 export function shouldSubmitComposerKey(event: { key: string; shiftKey: boolean; isComposing: boolean; keyCode?: number }): boolean {

@@ -18,6 +18,14 @@ const two: SessionInfo = {
   time: { created: 2, updated: 2 },
 }
 
+Deno.test("connection state distinguishes startup from a failed reconnect", () => {
+  assert(initialWorkbenchState.connectionState === "connecting" && !initialWorkbenchState.connected, "Initial connection was not represented as loading")
+  const connected = sessionReducer(initialWorkbenchState, { type: "connected", connected: true, connectionState: "connected" })
+  const reconnecting = sessionReducer(connected, { type: "connected", connected: false, connectionState: "reconnecting" })
+  assert(connected.connected && connected.connectionState === "connected", "Successful connection was not settled")
+  assert(!reconnecting.connected && reconnecting.connectionState === "reconnecting", "Failed connection was mistaken for startup loading")
+})
+
 Deno.test("reconcile preserves per-session local state", () => {
   let state = sessionReducer(initialWorkbenchState, { type: "reconcile", sessions: [one, two] })
   state = sessionReducer(state, { type: "draft", sessionID: "one", draft: "unfinished" })

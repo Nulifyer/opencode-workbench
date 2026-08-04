@@ -18,6 +18,7 @@ Deno.test("deferred reload waits for terminal session event and deduplicates req
   const pauses: boolean[] = []
   const snapshot = {
     connected: true,
+    connectionState: "connected",
     selectedID: "one",
     order: ["one"],
     sessions: { one: { info: { id: "one" }, status: { type: "busy" }, queue: [] } },
