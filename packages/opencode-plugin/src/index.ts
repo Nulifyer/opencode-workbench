@@ -159,6 +159,7 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
   const continueGoal = async (sessionID: string, pending: { cancelled: boolean; abort: AbortController }): Promise<void> => {
     if (reservingContinuation.has(sessionID)) return
     reservingContinuation.add(sessionID)
+    let admittedContinuation = false
     try {
       const sessionStatuses = await client.session.status({ query: { directory }, signal: pending.abort.signal })
       if (disposed || pending.cancelled) return
@@ -172,6 +173,7 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
         return
       }
       autoContinuation.set(sessionID, "admitted")
+      admittedContinuation = true
       if (idleContinuations.get(sessionID) === pending) idleContinuations.delete(sessionID)
       const result = await client.session.promptAsync({
         path: { id: sessionID },
@@ -185,7 +187,7 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
       await goalStore.mutate((state) => failGoalAutoContinue(state, sessionID, errorText(error))).catch(() => undefined)
     } finally {
       if (idleContinuations.get(sessionID) === pending) idleContinuations.delete(sessionID)
-      if (autoContinuation.get(sessionID) === "settling") autoContinuation.delete(sessionID)
+      if (!admittedContinuation && autoContinuation.get(sessionID) === "settling") autoContinuation.delete(sessionID)
       reservingContinuation.delete(sessionID)
     }
   }

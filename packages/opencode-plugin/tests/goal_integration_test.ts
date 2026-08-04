@@ -177,12 +177,14 @@ Deno.test("goal continuation follows OpenCode status ordering and pauses on back
   try {
     const prompts: Array<Record<string, unknown>> = []
     let admitted = deferred()
+    const secondPromptReturn = deferred()
     let statusError: unknown
     const client = { session: {
       status: async () => statusError === undefined ? { data: {}, error: undefined } : { data: undefined, error: statusError },
       promptAsync: async (request: Record<string, unknown>) => {
         prompts.push(request)
         admitted.resolve()
+        if (prompts.length === 2) await secondPromptReturn.promise
         return { data: undefined, error: undefined }
       },
     } }
@@ -209,6 +211,9 @@ Deno.test("goal continuation follows OpenCode status ordering and pauses on back
 
     await hooks.event({ event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } } })
     await hooks.event({ event: { type: "session.status", properties: { sessionID, status: { type: "idle" } } } })
+    secondPromptReturn.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
     await hooks.event({ event: { type: "session.error", properties: { sessionID, error: { message: "background prompt execution failed" } } } })
     const failed = parsed(await hooks.tool.get_goal.execute({}, context(sessionID))).goal as { status?: string; lastStatus?: string }
     if (failed.status !== "paused" || !failed.lastStatus?.includes("background prompt execution failed")) {
