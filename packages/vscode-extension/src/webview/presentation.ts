@@ -125,7 +125,26 @@ export function activityWorking(active: boolean, lastAssistantID: string | undef
 
 export function activityVisualState(status: string | undefined, active: boolean): string {
   const value = (status || "pending").toLowerCase()
-  return !active && ["pending", "running", "in_progress", "in-progress", "active"].includes(value) ? "stopped" : value
+  if (["pending", "running", "in_progress", "in-progress", "active"].includes(value)) return active ? "running" : "stopped"
+  return value
+}
+
+export function commandActivityLabel(status: string | undefined): string {
+  const value = (status || "pending").toLowerCase()
+  if (["pending", "running", "in_progress", "in-progress", "active"].includes(value)) return "Running Command"
+  if (["error", "failed", "rejected"].includes(value)) return "Failed Command"
+  if (value === "stopped") return "Stopped Command"
+  return "Ran Command"
+}
+
+export function stripTerminalSequences(value: string): string {
+  return value
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1B[@-_]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
 }
 
 export function shouldSubmitComposerKey(event: { key: string; shiftKey: boolean; isComposing: boolean; keyCode?: number }): boolean {
@@ -159,13 +178,16 @@ export function questionAnswerValues(checked: string[], custom: string, multiple
 export function currentTodoContent(todos: Array<{ content: string; status: string }>): string {
   const working = todos.find((todo) => ["in_progress", "in-progress", "active"].includes(todo.status.toLowerCase()))
   if (working) return working.content
-  return todos.find((todo) => !["completed", "cancelled", "canceled", "skipped"].includes(todo.status.toLowerCase()))?.content ?? "All todos complete"
+  const unfinished = todos.find((todo) => !["completed", "cancelled", "canceled", "skipped"].includes(todo.status.toLowerCase()))
+  if (unfinished) return unfinished.content
+  return todos.length > 0 && todos.every((todo) => todo.status.toLowerCase() === "completed") ? "All todos complete" : "No active todos"
 }
 
 export function patchActivityLabel(status: string | undefined): string {
   const value = (status || "pending").toLowerCase()
-  if (["pending", "running"].includes(value)) return "Preparing patch"
+  if (["pending", "running", "in_progress", "in-progress", "active"].includes(value)) return "Preparing patch"
   if (["error", "failed", "rejected"].includes(value)) return "Patch failed"
+  if (value === "stopped") return "Patch stopped"
   return "Applied patch"
 }
 

@@ -1,4 +1,4 @@
-import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
@@ -128,11 +128,13 @@ Deno.test("collapsed todos summarize current work", () => {
     { content: "Working now", status: "in_progress" },
   ]), "Working now")
   assertEquals(currentTodoContent([{ content: "Done", status: "completed" }]), "All todos complete")
+  assertEquals(currentTodoContent([{ content: "Skipped", status: "skipped" }]), "No active todos")
+  assertEquals(currentTodoContent([{ content: "Done", status: "completed" }, { content: "Cancelled", status: "cancelled" }]), "No active todos")
 })
 
 Deno.test("terminal sessions stop incomplete activity indicators", () => {
   assertEquals(activityVisualState("running", true), "running")
-  assertEquals(activityVisualState("in_progress", true), "in_progress")
+  assertEquals(activityVisualState("in_progress", true), "running")
   assertEquals(activityVisualState("running", false), "stopped")
   assertEquals(activityVisualState("pending", false), "stopped")
   assertEquals(activityVisualState("in_progress", false), "stopped")
@@ -140,11 +142,26 @@ Deno.test("terminal sessions stop incomplete activity indicators", () => {
   assertEquals(activityVisualState("error", false), "error")
 })
 
+Deno.test("command labels reflect execution state", () => {
+  assertEquals(commandActivityLabel("pending"), "Running Command")
+  assertEquals(commandActivityLabel("running"), "Running Command")
+  assertEquals(commandActivityLabel("completed"), "Ran Command")
+  assertEquals(commandActivityLabel("error"), "Failed Command")
+  assertEquals(commandActivityLabel("stopped"), "Stopped Command")
+})
+
+Deno.test("terminal output removes ANSI and unsafe control sequences", () => {
+  assertEquals(stripTerminalSequences("\u001b[32mok\u001b[0m\r\nnext\u0007"), "ok\nnext")
+  assertEquals(stripTerminalSequences("\u001b]0;title\u0007output"), "output")
+})
+
 Deno.test("patch labels reflect execution state", () => {
   assertEquals(patchActivityLabel("pending"), "Preparing patch")
   assertEquals(patchActivityLabel("running"), "Preparing patch")
+  assertEquals(patchActivityLabel("in_progress"), "Preparing patch")
   assertEquals(patchActivityLabel("completed"), "Applied patch")
   assertEquals(patchActivityLabel("error"), "Patch failed")
+  assertEquals(patchActivityLabel("stopped"), "Patch stopped")
 })
 
 Deno.test("multi-select custom answers preserve checked choices", () => {

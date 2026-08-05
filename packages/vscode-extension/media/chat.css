@@ -171,21 +171,14 @@ a { color: var(--vscode-textLink-foreground); }
 .activity-status { flex: none; color: var(--vscode-descriptionForeground); font-size: var(--vscode-font-size); opacity: .78; }
 .tool-detail { display: grid; gap: 7px; padding: 3px 7px 9px 25px; }
 .tool-detail .code-block { margin: 0; }
-.command-review { gap: 5px; }
-.review-block { position: relative; border: 0; border-radius: 5px; }
-.review-block > .copy-block { position: absolute; z-index: 1; top: 4px; right: 4px; }
-.review-block pre { max-height: 420px; padding: 8px 34px 8px 10px; border: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.review-command { border-left: 2px solid var(--vscode-textBlockQuote-border, var(--workbench-divider)); border-radius: 0; background: transparent; }
-.review-command::before { position: absolute; top: 8px; left: 8px; color: var(--vscode-descriptionForeground); content: ">"; }
-.review-command pre { padding-left: 25px; }
-.review-output { background: color-mix(in srgb, var(--vscode-foreground) 5%, var(--vscode-sideBar-background)); }
-.review-error { border-left: 2px solid var(--vscode-errorForeground); color: var(--vscode-errorForeground); background: color-mix(in srgb, var(--vscode-errorForeground) 7%, var(--vscode-sideBar-background)); }
-.tool-detail-fields { display: grid; gap: 5px; margin: 0; padding: 2px 0; }
-.tool-detail-fields > div { display: grid; grid-template-columns: minmax(90px, .28fr) minmax(0, 1fr); align-items: start; gap: 8px; }
-.tool-detail-fields dt { color: var(--vscode-descriptionForeground); }
-.tool-detail-fields dd { min-width: 0; margin: 0; }
-.tool-detail-fields dd > code { display: block; padding: 3px 5px; overflow-wrap: anywhere; }
-.tool-detail-fields dd > pre { max-height: 220px; margin: 0; }
+.shell-detail { gap: 7px; }
+.shell-block { border-radius: 6px; }
+.shell-block pre { max-height: 420px; }
+.shell-command code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.shell-command code::before { color: var(--vscode-terminal-ansiGreen, var(--vscode-testing-iconPassed)); content: "$ "; user-select: none; }
+.shell-output { background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 88%, var(--vscode-sideBar-background)); }
+.shell-error { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); color: var(--vscode-errorForeground); background: color-mix(in srgb, var(--vscode-errorForeground) 7%, var(--vscode-textCodeBlock-background)); }
+.tool-field-block pre { max-height: 300px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-command-context { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px; color: var(--vscode-descriptionForeground); }
 .tool-command-context span { white-space: nowrap; }
 .tool-command-context code { color: var(--vscode-foreground); overflow-wrap: anywhere; }
@@ -201,12 +194,16 @@ a { color: var(--vscode-textLink-foreground); }
 .edit-entry > summary { min-height: 27px; display: flex; align-items: center; gap: 6px; padding: 3px 6px; color: var(--vscode-descriptionForeground); cursor: pointer; list-style: none; }
 .edit-entry > summary::-webkit-details-marker { display: none; }
 .edit-entry:hover, .edit-entry[open] { background: color-mix(in srgb, var(--vscode-editorWidget-background) 45%, transparent); }
-.edit-file { min-width: 0; overflow: hidden; flex: 1; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; text-decoration: underline dotted color-mix(in srgb, currentColor 60%, transparent); text-overflow: ellipsis; white-space: nowrap; text-underline-offset: 3px; }
-.edit-file:hover { color: var(--vscode-textLink-foreground); text-decoration-style: solid; }
+.edit-file { min-width: 0; max-width: 100%; overflow: hidden; flex: 0 1 auto; padding: 0; border: 0; color: var(--vscode-textLink-foreground); background: transparent; text-align: left; text-decoration: underline; text-overflow: ellipsis; white-space: nowrap; text-underline-offset: 3px; }
+.edit-file:hover { color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
+.edit-entry .edit-stats { margin-left: auto; }
 .edit-stats, .diff-stats { display: flex; flex: none; gap: 4px; font-size: 11px; font-weight: 400; }
 .edit-stats b, .diff-stats b { color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-testing-iconPassed)); font-weight: 400; }
 .edit-stats i, .diff-stats i { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-testing-iconFailed)); font-style: normal; }
 .edit-entry > .code-block { margin: 3px 6px 8px; }
+.edit-patch-block { position: relative; }
+.edit-patch-block > .copy-block { position: absolute; z-index: 1; top: 4px; right: 4px; background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 88%, transparent); }
+.edit-patch-block > pre { padding-top: 8px; padding-right: 34px; }
 .diff-file { min-width: 0; overflow: hidden; flex: 1; padding: 0; border: 0; color: var(--vscode-foreground); background: transparent; font-family: var(--vscode-editor-font-family); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .diff-file:hover { color: var(--vscode-textLink-foreground); }
 .diff-code pre { padding-left: 0; }
@@ -242,7 +239,7 @@ a { color: var(--vscode-textLink-foreground); }
 .delegation-history[open] > summary::after, .delegation-raw[open] > summary::after, .task-prompt[open] > summary::after { transform: rotate(90deg); }
 .delegation-history > div { max-height: min(52vh, 520px); display: grid; gap: 2px; overflow-y: auto; padding-top: 4px; }
 .delegation-request-body { display: grid; gap: 6px; padding: 6px 5px 2px 20px; }
-.delegation-request-body .tool-detail-fields { padding: 0; }
+.delegation-request-body .tool-field-block { margin: 0; }
 .task-prompt > .code-block { margin: 5px 0 0; }
 .task-prompt .code-block pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .delegated-session-action { min-height: 30px; display: inline-flex; align-items: center; justify-self: center; gap: 6px; margin: 3px auto 1px; padding: 4px 10px !important; border-color: var(--workbench-divider) !important; color: var(--vscode-textLink-foreground); background: transparent !important; }

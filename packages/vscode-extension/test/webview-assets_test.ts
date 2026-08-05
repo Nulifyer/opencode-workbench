@@ -103,3 +103,51 @@ Deno.test("idle sessions stop stale tool, delegation, and todo activity", () => 
     throw new Error("Incomplete activity can remain visually active after its session becomes idle")
   }
 })
+
+Deno.test("command activity includes the command and current execution state", () => {
+  if (!webview.includes("commandActivityLabel(state)") || !webview.includes("`${label}: ${command}`") ||
+    !webview.includes("toolLabel(part, state)") || !webview.includes("toolLabel(action.tool, visualState)")) {
+    throw new Error("Command activity does not transition from Running Command to its terminal label")
+  }
+})
+
+Deno.test("edited filenames open files without toggling patch details", () => {
+  if (!webview.includes("Open ${fileName(entry.file)} in VS Code") ||
+    !webview.includes('file.classList.contains("edit-file")') || !webview.includes("event.preventDefault()") ||
+    !css.includes(".edit-file { min-width: 0; max-width: 100%; overflow: hidden; flex: 0 1 auto") ||
+    !css.includes(".edit-entry .edit-stats { margin-left: auto; }")) {
+    throw new Error("Edited-file rows do not separate the file link from the patch disclosure target")
+  }
+})
+
+Deno.test("expanded edited files do not repeat filename and stats", () => {
+  if (!webview.includes('class="code-block diff-block edit-patch-block"') ||
+    !webview.includes("editPatchBlock(entry.patch)") ||
+    !css.includes(".edit-patch-block > .copy-block { position: absolute") ||
+    webview.includes("diffBlock(entry.file, entry.patch, entry.additions, entry.deletions)")) {
+    throw new Error("Expanded patch details still repeat the edited-file row header")
+  }
+})
+
+Deno.test("activity wording follows actual state", () => {
+  if (!webview.includes('stateful("Loading skill", "Loaded skill"') ||
+    !webview.includes('stateful("Exploring item", "Explored item"') ||
+    !webview.includes('stateful("Updating todos", "Updated todos"') ||
+    !webview.includes('(kind === "edit" || kind === "patch") && completed(part)') ||
+    !webview.includes('if (!live && typeof end !== "number") return ""') ||
+    !webview.includes("const trailing = live && !message.parts.slice(index + 1).some")) {
+    throw new Error("Activity labels can claim completion or continued work in the wrong state")
+  }
+})
+
+Deno.test("shell and structured tool details use labeled sections", () => {
+  if (!webview.includes('class="code-block shell-block shell-${kind}"') ||
+    !webview.includes("stripTerminalSequences(content)") ||
+    !webview.includes('codeBlock(stringify(item), fieldLabel(key), "tool-field-block")') ||
+    !css.includes('.shell-command code::before') || !css.includes('.tool-field-block pre')) {
+    throw new Error("Tool details still expose raw terminal escapes or two-column input fields")
+  }
+  if (webview.includes('class="tool-detail-fields"') || css.includes(".tool-detail-fields > div")) {
+    throw new Error("Legacy two-column tool detail layout is still present")
+  }
+})

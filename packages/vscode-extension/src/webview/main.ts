@@ -1,6 +1,6 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
 import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type WebviewToHostMessage } from "@opencode-workbench/shared"
-import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
+import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
 import { renderMarkdown } from "./markdown.js"
 
 interface WebviewState {
@@ -213,9 +213,10 @@ function codeBlock(content: string, language = "", extraClass = ""): string {
   return `<div class="code-block${extraClass ? ` ${extraClass}` : ""}"><div class="code-block-header"><span>${escapeHtml(language)}</span><button type="button" class="copy-block" data-copy-block title="Copy code" aria-label="Copy code">${COPY_ICON}</button></div><pre><code${language ? ` data-language="${escapeHtml(language)}"` : ""}>${escapeHtml(content)}</code></pre></div>`
 }
 
-function reviewBlock(content: string, kind: "command" | "output" | "error"): string {
+function shellBlock(content: string, kind: "command" | "output" | "error"): string {
   const label = kind === "command" ? "Command" : kind === "output" ? "Output" : "Error"
-  return `<div class="code-block review-block review-${kind}"><button type="button" class="copy-block" data-copy-block title="Copy ${label.toLowerCase()}" aria-label="Copy ${label.toLowerCase()}">${COPY_ICON}</button><pre aria-label="${label}"><code>${escapeHtml(content)}</code></pre></div>`
+  const clean = stripTerminalSequences(content)
+  return `<div class="code-block shell-block shell-${kind}"><div class="code-block-header"><span>${label}</span><button type="button" class="copy-block" data-copy-block title="Copy ${label.toLowerCase()}" aria-label="Copy ${label.toLowerCase()}">${COPY_ICON}</button></div><pre aria-label="${label}"><code>${escapeHtml(clean)}</code></pre></div>`
 }
 
 function markdown(source: string): string {
@@ -256,13 +257,10 @@ function fieldLabel(key: string): string {
 }
 
 function detailFields(value: UnknownRecord, excluded: ReadonlySet<string> = new Set()): string {
-  const rows = Object.entries(value).filter(([key]) => !excluded.has(key)).map(([key, item]) => {
-    const body = typeof item === "string" || typeof item === "number" || typeof item === "boolean"
-      ? `<code>${escapeHtml(String(item))}</code>`
-      : `<pre>${escapeHtml(stringify(item))}</pre>`
-    return `<div><dt>${escapeHtml(fieldLabel(key))}</dt><dd>${body}</dd></div>`
-  }).join("")
-  return rows ? `<dl class="tool-detail-fields">${rows}</dl>` : ""
+  return Object.entries(value)
+    .filter(([key]) => !excluded.has(key))
+    .map(([key, item]) => codeBlock(stringify(item), fieldLabel(key), "tool-field-block"))
+    .join("")
 }
 
 function detailBody(part: MessagePart): string {
@@ -271,9 +269,9 @@ function detailBody(part: MessagePart): string {
   const input = record(state.input) ? state.input : undefined
   const command = toolKind(part) === "bash" && typeof input?.command === "string" ? input.command : undefined
   if (command) {
-    const output = state.output === undefined || state.output === "" ? "" : reviewBlock(stringify(state.output), "output")
-    const error = state.error === undefined || state.error === "" ? "" : reviewBlock(stringify(state.error), "error")
-    return `<div class="tool-detail command-review">${reviewBlock(command, "command")}${output}${error}</div>`
+    const output = state.output === undefined || state.output === "" ? "" : shellBlock(stringify(state.output), "output")
+    const error = state.error === undefined || state.error === "" ? "" : shellBlock(stringify(state.error), "error")
+    return `<div class="tool-detail shell-detail">${shellBlock(command, "command")}${output}${error}</div>`
   }
   const inputBody = input ? detailFields(input) : state.input === undefined ? "" : codeBlock(stringify(state.input), "Input", "tool-input-block")
   const output = state.output === undefined || state.output === "" ? "" : codeBlock(stringify(state.output), "Output", "tool-output-block")
@@ -291,18 +289,29 @@ function toolSubject(part: MessagePart): string {
   return typeof subject === "string" ? subject : ""
 }
 
-function toolLabel(part: MessagePart): string {
+function toolLabel(part: MessagePart, state = String(part.state?.status || "pending").toLowerCase()): string {
   const subject = toolSubject(part)
   const kind = toolKind(part)
   const patch = kind === "patch" || kind === "edit" && part.tool === "apply_patch"
+  if (kind === "bash") {
+    const details = stateRecord(part)
+    const input = record(details?.input) ? details.input : undefined
+    const command = typeof input?.command === "string" ? input.command.replace(/\s+/g, " ").trim().slice(0, 500) : ""
+    const label = commandActivityLabel(state)
+    return command ? `${label}: ${command}` : label
+  }
+  const stateful = (running: string, completed: string, failed: string, stopped: string): string => {
+    if (["pending", "running", "in_progress", "in-progress", "active"].includes(state)) return running
+    if (["error", "failed", "rejected"].includes(state)) return failed
+    return state === "stopped" ? stopped : completed
+  }
   const labels = {
-    skill: "Loaded skill",
-    explore: "Explored item",
-    bash: "Ran command",
-    edit: patch ? patchActivityLabel(part.state?.status) : "Edited file",
-    todo: "Updated todos",
-    task: "Delegated task",
-    patch: patchActivityLabel(part.state?.status),
+    skill: stateful("Loading skill", "Loaded skill", "Failed to load skill", "Stopped loading skill"),
+    explore: stateful("Exploring item", "Explored item", "Failed to explore item", "Stopped exploring item"),
+    edit: patch ? patchActivityLabel(state) : stateful("Editing file", "Edited file", "Failed to edit file", "Stopped editing file"),
+    todo: stateful("Updating todos", "Updated todos", "Failed to update todos", "Stopped updating todos"),
+    task: stateful("Delegating task", "Delegated task", "Failed to delegate task", "Stopped delegating task"),
+    patch: patchActivityLabel(state),
     unknown: part.state?.title || part.tool || "Tool call",
   }
   const label = labels[kind]
@@ -341,9 +350,9 @@ function diffMarkup(patch: string): string {
   }).join("\n")
 }
 
-function diffBlock(file: string, patch: string, additions: number, deletions: number): string {
+function editPatchBlock(patch: string): string {
   const preview = patch.length > 50_000 ? `${patch.slice(0, 50_000)}\n\n[Preview truncated; open the patch for complete output.]` : patch
-  return `<div class="code-block diff-block"><div class="code-block-header"><button type="button" class="diff-file" data-file="${escapeHtml(file)}" data-change-action="file" title="${escapeHtml(fileTooltip(file))}">${escapeHtml(fileName(file))}</button><span class="diff-stats"><b>+${additions}</b> <i>−${deletions}</i></span><button type="button" class="copy-block" data-copy-block title="Copy diff" aria-label="Copy diff">${COPY_ICON}</button></div><pre><code>${diffMarkup(preview)}</code></pre></div>`
+  return `<div class="code-block diff-block edit-patch-block"><button type="button" class="copy-block" data-copy-block title="Copy diff" aria-label="Copy diff">${COPY_ICON}</button><pre><code>${diffMarkup(preview)}</code></pre></div>`
 }
 
 interface EditEntry {
@@ -370,7 +379,8 @@ function editEntries(part: MessagePart, key: string): EditEntry[] {
 
 function editEntryHtml(entry: EditEntry): string {
   const stats = `<span class="edit-stats"><b>+${entry.additions}</b> <i>−${entry.deletions}</i></span>`
-  return `<details class="edit-entry" data-detail-key="${escapeHtml(entry.key)}"><summary>${EDIT_ICON}<button type="button" class="edit-file" data-file="${escapeHtml(entry.file)}" title="${escapeHtml(fileTooltip(entry.file))}">${escapeHtml(fileName(entry.file))}</button>${stats}</summary>${entry.patch ? diffBlock(entry.file, entry.patch, entry.additions, entry.deletions) : `<p class="placeholder">No patch preview available.</p>`}</details>`
+  const openLabel = `Open ${fileName(entry.file)} in VS Code`
+  return `<details class="edit-entry" data-detail-key="${escapeHtml(entry.key)}"><summary>${EDIT_ICON}<button type="button" class="edit-file" data-file="${escapeHtml(entry.file)}" title="${escapeHtml(openLabel)}" aria-label="${escapeHtml(openLabel)}">${escapeHtml(fileName(entry.file))}</button>${stats}</summary>${entry.patch ? editPatchBlock(entry.patch) : `<p class="placeholder">No patch preview available.</p>`}</details>`
 }
 
 function groupedEditsHtml(parts: MessagePart[], key: string, active: boolean): string {
@@ -398,6 +408,7 @@ interface DelegationAction {
   detail: string
   state: string
   kind: "reasoning" | "tool" | "output"
+  tool?: MessagePart
 }
 
 function delegationActions(delegation: Delegation): DelegationAction[] {
@@ -409,7 +420,8 @@ function delegationActions(delegation: Delegation): DelegationAction[] {
       if (part.type === "reasoning" && part.text?.trim()) {
         actions.push({ label: `Thought: ${reasoningSummary(part.text) || "Reasoning"}`, detail: `<div class="markdown">${markdown(part.text)}</div>`, state: "completed", kind: "reasoning" })
       } else if (part.type === "tool") {
-        actions.push({ label: toolLabel(part), detail: detailBody(part), state: String(part.state?.status || "pending").toLowerCase(), kind: "tool" })
+        const state = String(part.state?.status || "pending").toLowerCase()
+        actions.push({ label: toolLabel(part, state), detail: detailBody(part), state, kind: "tool", tool: part })
       } else if (part.type === "text" && part.text?.trim()) {
         actions.push({ label: "Assistant output", detail: `<div class="markdown">${markdown(part.text)}</div>`, state: "completed", kind: "output" })
       }
@@ -422,7 +434,8 @@ function delegationActionHtml(action: DelegationAction, key: string, active: boo
   const visualState = activityVisualState(action.state, active)
   const failed = ["error", "failed", "rejected"].includes(visualState)
   const state = failed ? "error" : ["running", "pending", "stopped"].includes(visualState) ? visualState : "completed"
-  const summary = `<span class="activity-dot" aria-hidden="true"></span><span>${escapeHtml(action.label)}</span>`
+  const label = action.tool ? toolLabel(action.tool, visualState) : action.label
+  const summary = `<span class="activity-dot" aria-hidden="true"></span><span>${escapeHtml(label)}</span>`
   return action.detail
     ? `<details class="delegation-action tool-${state}" data-detail-key="${escapeHtml(key)}"><summary>${summary}</summary>${action.detail}</details>`
     : `<div class="delegation-action delegation-action-static tool-${state}">${summary}</div>`
@@ -464,7 +477,7 @@ function toolHtml(part: MessagePart, key: string, active: boolean, specialize = 
   if (delegation) return delegationHtml(part, key, delegation, active)
   if (specialize && ["edit", "patch"].includes(toolKind(part))) return groupedEditsHtml([part], key, active)
   const detail = detailBody(part)
-  return `<details class="activity tool-${escapeHtml(state)}" data-detail-key="${escapeHtml(key)}"><summary><span class="activity-dot" aria-hidden="true"></span><span class="activity-title">${escapeHtml(toolLabel(part))}</span>${activityMetaHtml(part, state)}</summary>${detail}</details>`
+  return `<details class="activity tool-${escapeHtml(state)}" data-detail-key="${escapeHtml(key)}"><summary><span class="activity-dot" aria-hidden="true"></span><span class="activity-title">${escapeHtml(toolLabel(part, state))}</span>${activityMetaHtml(part, state)}</summary>${detail}</details>`
 }
 
 function groupedToolsHtml(parts: MessagePart[], kind: "skill" | "explore", key: string): string {
@@ -493,6 +506,7 @@ function timingHtml(entries: Array<{ message: MessageBundle; live: boolean }>, w
   const start = starts.length ? Math.min(...starts) : assistants.map((entry) => entry.message.info.time?.created).find((value): value is number => typeof value === "number")
   const end = ends.length ? Math.max(...ends) : assistants.map((entry) => entry.message.info.time?.completed).filter((value): value is number => typeof value === "number").at(-1)
   if (typeof start !== "number") return live ? `<span>Working</span><span class="activity-chevron" aria-hidden="true">›</span>` : ""
+  if (!live && typeof end !== "number") return ""
   const duration = Math.max(0, (typeof end === "number" ? end : Date.now()) - start)
   return `<span>${live ? "Working" : "Worked"} for ${formatDuration(duration)}</span><span class="activity-chevron" aria-hidden="true">›</span>`
 }
@@ -518,7 +532,8 @@ function assistantHtml(message: MessageBundle, live: boolean, finalTextParts: Re
         index += 1
       }
       const latestSummary = reasoningSummary(grouped.at(-1)!.text!)
-      const label = grouped.length > 1 ? `Thoughts (${grouped.length})` : live ? "Thinking" : "Thought"
+      const trailing = live && !message.parts.slice(index + 1).some((candidate) => !candidate.synthetic)
+      const label = grouped.length > 1 ? `Thoughts (${grouped.length})` : trailing ? "Thinking" : "Thought"
       const source = part.text.trim()
       const detail = reasoningDetail(source)
       const content = grouped.length > 1
@@ -534,15 +549,17 @@ function assistantHtml(message: MessageBundle, live: boolean, finalTextParts: Re
         : `<details class="reasoning${grouped.length > 1 ? " reasoning-group" : ""}" data-detail-key="${escapeHtml(`${message.info.id}:${part.id}`)}"${reasoningExpanded ? " open" : ""}><summary><span>${label}:</span>${latestSummary ? `<span class="reasoning-summary">${escapeHtml(latestSummary)}</span>` : ""}</summary>${grouped.length > 1 ? content : `<div class="markdown">${markdown(content as string)}</div>`}</details>`
     } else if (part.type === "tool") {
       const kind = toolKind(part)
-      if (kind === "edit" || kind === "patch") {
+      if ((kind === "edit" || kind === "patch") && completed(part)) {
         const grouped = [part]
         while (index + 1 < message.parts.length) {
           const next = message.parts[index + 1]!
-          if (next.synthetic || next.type !== "tool" || !["edit", "patch"].includes(toolKind(next))) break
+          if (next.synthetic || next.type !== "tool" || !completed(next) || !["edit", "patch"].includes(toolKind(next))) break
           grouped.push(next)
           index += 1
         }
         processBody += groupedEditsHtml(grouped, `${message.info.id}:${part.id}`, live)
+      } else if (kind === "edit" || kind === "patch") {
+        processBody += toolHtml(part, `${message.info.id}:${part.id}`, live, false)
       } else if ((kind === "skill" || kind === "explore") && completed(part)) {
         const grouped = [part]
         while (index + 1 < message.parts.length) {
@@ -2514,11 +2531,16 @@ messages.addEventListener("click", (event) => {
   const file = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-file]") : undefined
   const sessionID = snapshot.session?.id
   if (file?.dataset.file && sessionID) {
+    if (file.classList.contains("edit-file")) {
+      event.preventDefault()
+      event.stopPropagation()
+    }
     const line = file.dataset.line ? Number(file.dataset.line) : undefined
     const column = file.dataset.column ? Number(file.dataset.column) : undefined
     const endLine = file.dataset.endLine ? Number(file.dataset.endLine) : undefined
     const endColumn = file.dataset.endColumn ? Number(file.dataset.endColumn) : undefined
     post({ type: "openFile", sessionID, file: file.dataset.file, line, column, endLine, endColumn })
+    return
   }
 })
 jumpLatest.addEventListener("click", () => {

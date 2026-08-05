@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Displayed the active shell command as `Running Command: <command>` and changed
+  it to an outcome-specific label when execution stops.
+- Made edited filenames the dedicated **Open in VS Code** targets while the
+  remainder of each row expands or collapses patch details without repeating
+  the filename and change counts inside the expanded panel.
+- Aligned tool, patch, reasoning, todo, and elapsed-time wording with their
+  actual running, completed, failed, or stopped state.
+- Reworked shell details into labeled Command, Output, and Error sections,
+  removed terminal escape sequences, and replaced two-column tool inputs with
+  readable header-based sections.
+
 ## 0.4.5 - 2026-08-05
 
 ### Added
