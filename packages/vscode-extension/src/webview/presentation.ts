@@ -123,6 +123,11 @@ export function activityWorking(active: boolean, lastAssistantID: string | undef
   return Boolean(active && lastAssistantID && turnAssistantIDs.includes(lastAssistantID))
 }
 
+export function activityVisualState(status: string | undefined, active: boolean): string {
+  const value = (status || "pending").toLowerCase()
+  return !active && ["pending", "running", "in_progress", "in-progress", "active"].includes(value) ? "stopped" : value
+}
+
 export function shouldSubmitComposerKey(event: { key: string; shiftKey: boolean; isComposing: boolean; keyCode?: number }): boolean {
   return event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229
 }

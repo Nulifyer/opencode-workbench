@@ -1,4 +1,4 @@
-import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
@@ -128,6 +128,16 @@ Deno.test("collapsed todos summarize current work", () => {
     { content: "Working now", status: "in_progress" },
   ]), "Working now")
   assertEquals(currentTodoContent([{ content: "Done", status: "completed" }]), "All todos complete")
+})
+
+Deno.test("terminal sessions stop incomplete activity indicators", () => {
+  assertEquals(activityVisualState("running", true), "running")
+  assertEquals(activityVisualState("in_progress", true), "in_progress")
+  assertEquals(activityVisualState("running", false), "stopped")
+  assertEquals(activityVisualState("pending", false), "stopped")
+  assertEquals(activityVisualState("in_progress", false), "stopped")
+  assertEquals(activityVisualState("completed", false), "completed")
+  assertEquals(activityVisualState("error", false), "error")
 })
 
 Deno.test("patch labels reflect execution state", () => {

@@ -119,6 +119,7 @@ a { color: var(--vscode-textLink-foreground); }
 .copy-block:hover, .copy-block.copied { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
 .copy-block svg { width: 14px; height: 14px; fill: currentColor; }
 .pending, .placeholder { color: var(--vscode-descriptionForeground); }
+.message-failure { color: var(--vscode-errorForeground); }
 .compaction-divider { width: 100%; display: flex; align-items: center; gap: 9px; margin: 10px 0; color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; }
 .compaction-divider::before, .compaction-divider::after { height: 1px; content: ""; flex: 1; background: var(--workbench-divider); }
 .message-error { color: var(--vscode-errorForeground); border-color: var(--vscode-inputValidation-errorBorder); }
@@ -456,7 +457,8 @@ a { color: var(--vscode-textLink-foreground); }
 .send-group > details > div small { color: var(--vscode-descriptionForeground); font-weight: 400; }
 .send-group > details > div button:hover small, .send-group > details > div button:focus small { color: inherit; }
 .send-group.split #send { border-radius: 14px 0 0 14px; }
-#status { max-width: 90px; overflow: hidden; color: var(--vscode-descriptionForeground); font-size: var(--vscode-font-size); text-overflow: ellipsis; white-space: nowrap; }
+#status { max-width: min(420px, 42vw); overflow: hidden; color: var(--vscode-descriptionForeground); font-size: var(--vscode-font-size); text-overflow: ellipsis; white-space: nowrap; }
+#status.error { color: var(--vscode-errorForeground); }
 #status:empty { display: none; }
 .active-throbber { width: 61px; height: 8px; display: flex; align-items: center; gap: 3px; color: var(--vscode-charts-blue, var(--vscode-focusBorder, #3794ff)); }
 .active-throbber i { width: 5px; height: 6px; flex: none; background: currentColor; opacity: .22; animation: throbber-scan 2.16s linear infinite; }

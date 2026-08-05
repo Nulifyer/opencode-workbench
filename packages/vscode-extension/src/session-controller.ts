@@ -70,6 +70,23 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function errorDetail(value: unknown): string | undefined {
+  if (!record(value)) return undefined
+  if (typeof value.message === "string" && value.message.trim()) return value.message.slice(0, 20_000)
+  if (record(value.data) && typeof value.data.message === "string" && value.data.message.trim()) return value.data.message.slice(0, 20_000)
+  return undefined
+}
+
+function persistedAssistantFailure(entry?: MessageBundle): string | undefined {
+  if (entry?.info.role !== "assistant") return undefined
+  const detail = errorDetail(entry.info.error)
+  if (detail) return detail
+  const hasResponse = entry.parts.some((part) => part.type === "text" && Boolean(part.text?.trim()))
+  return entry.info.finish === "unknown" && !hasResponse
+    ? "The selected model or provider ended the turn without returning a response. Retry the turn or choose another model."
+    : undefined
+}
+
 export { permissionPatternMatches } from "@opencode-workbench/shared"
 
 const OMIT = Symbol("omit")
@@ -237,7 +254,8 @@ function snapshotMessage(message: MessageBundle, pendingText?: string): MessageB
   }
   parts.reverse()
   const fallbackText = boundedText(pendingText, 500_000)
-  if (info.role === "user" && fallbackText && characters + fallbackText.length <= 1_500_000 && !parts.some((part) => part.type === "text" && Boolean(part.text))) {
+  if (info.role === "user" && fallbackText && characters + fallbackText.length <= 1_500_000 &&
+    !parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text))) {
     parts.push({ id: `${info.id}-pending-text`, sessionID: info.sessionID, messageID: info.id, type: "text", text: fallbackText })
   }
   return { info: safeInfo, parts }
@@ -553,6 +571,7 @@ export class SessionController {
   private stream?: AbortController
   private disposed = false
   private readonly respondingPermissions = new Set<string>()
+  private readonly automaticallyRespondingPermissions = new Set<string>()
   private readonly permissionGrants = new Map<string, Array<{ protocol: PermissionRequest["protocol"]; type?: string; pattern: string }>>()
   private readonly respondingQuestions = new Set<string>()
   private permissionRevision = 0
@@ -585,6 +604,9 @@ export class SessionController {
   private readonly unknownEventTypes = new Set<string>()
   private readonly steeringPrompts = new Set<string>()
   private readonly pendingPromptSessions = new Map<string, string>()
+  private readonly pendingPromptTexts = new Map<string, string>()
+  private readonly pendingPromptFileCounts = new Map<string, number>()
+  private readonly sessionFailures = new Map<string, string>()
   private readonly promptFiles = new Map<string, PromptFilePart[]>()
   private readonly promptAgents = new Map<string, string[]>()
   private readonly messageHistories = new Map<string, { legacyMessageIDs: Set<string>; v2MessageIDs: Set<string> }>()
@@ -701,7 +723,11 @@ export class SessionController {
     this.promptFiles.clear()
     this.promptAgents.clear()
     this.pendingPromptSessions.clear()
+    this.pendingPromptTexts.clear()
+    this.pendingPromptFileCounts.clear()
+    this.sessionFailures.clear()
     this.permissionGrants.clear()
+    this.automaticallyRespondingPermissions.clear()
     this.listeners.clear()
   }
 
@@ -753,6 +779,8 @@ export class SessionController {
   }
 
   private pendingPromptTextFor(messageID: string): string | undefined {
+    const retained = this.pendingPromptTexts.get(messageID)
+    if (retained !== undefined) return retained
     const sessionID = this.pendingPromptSessions.get(messageID)
     return sessionID ? this.state.sessions[sessionID]?.queue.find((prompt) => prompt.id === messageID)?.text : undefined
   }
@@ -1028,9 +1056,12 @@ export class SessionController {
     if (changedPreferences) this.persistPreferences()
     this.commands = commands
     if (runtimeGeneration === this.runtimeGeneration) this.runtime = runtime
-    const effectiveStatuses = statusRevision === this.statusRevision
+    const effectiveStatuses: Record<string, SessionStatus> = statusRevision === this.statusRevision
       ? statuses
       : Object.fromEntries(Object.entries(this.state.sessions).map(([id, session]) => [id, session.status]))
+    for (const [sessionID, status] of Object.entries(effectiveStatuses)) {
+      if (status.type === "busy" || status.type === "retry") this.sessionFailures.delete(sessionID)
+    }
     const retained = new Set(sessions.map((session) => session.id))
     for (const id of this.state.order) if (!retained.has(id)) this.cleanupSession(id)
     this.dispatch({ type: "reconcile", sessions, statuses: effectiveStatuses })
@@ -1122,11 +1153,9 @@ export class SessionController {
       }
       grouped.set(request.sessionID, values)
     }
+    for (const requests of grouped.values()) for (const request of requests) this.maybeAutoRespond(request, true)
     for (const sessionID of this.state.order) this.dispatch({ type: "permissions", sessionID, permissions: grouped.get(sessionID) ?? [] })
-    for (const requests of grouped.values()) for (const request of requests) {
-      if (this.permissionCovered(request)) void this.respondPermission(request.id, "once", request.sessionID, request.protocol).catch(() => undefined)
-      else this.maybeAutoRespond(request)
-    }
+    for (const requests of grouped.values()) for (const request of requests) this.maybeAutoRespond(request)
   }
 
   private async reconcileQuestions(): Promise<void> {
@@ -1384,12 +1413,15 @@ export class SessionController {
       const serverIndex = projected.findIndex((entry) => entry.info.id === promptID)
       const serverMessage = serverIndex < 0 ? undefined : projected[serverIndex]
       const localMessage = current.messages.find((entry) => entry.info.id === promptID)
-      const expectedText = localMessage?.parts.some((part) => part.type === "text" && Boolean(part.text)) ?? false
-      const expectedFiles = localMessage?.parts.filter((part) => part.type === "file").length ?? 0
-      const serverHasText = serverMessage?.parts.some((part) => part.type === "text" && Boolean(part.text)) ?? false
+      const expectedText = localMessage?.parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text)) ?? false
+      const retainedText = this.pendingPromptTextFor(promptID)
+      const expectedFiles = Math.max(localMessage?.parts.filter((part) => part.type === "file").length ?? 0, this.pendingPromptFileCounts.get(promptID) ?? 0)
+      const serverHasText = serverMessage?.parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text)) ?? false
       const serverFiles = serverMessage?.parts.filter((part) => part.type === "file").length ?? 0
-      if (serverMessage && (!localMessage || ((!expectedText || serverHasText) && serverFiles >= expectedFiles))) {
+      if (serverMessage && (((!expectedText && retainedText === undefined) || serverHasText) && serverFiles >= expectedFiles)) {
         this.pendingPromptSessions.delete(promptID)
+        this.pendingPromptTexts.delete(promptID)
+        this.pendingPromptFileCounts.delete(promptID)
         continue
       }
       if (!localMessage) continue
@@ -1410,7 +1442,11 @@ export class SessionController {
     this.refreshMessageRevisions(sessionID, transcript)
     this.dispatch({ type: "transcript", sessionID, messages: transcript })
     const lastMessage = transcript.at(-1)
-    if ((current.status.type === "idle" || current.status.type === "error") && lastMessage?.info.role === "user" &&
+    const persistedFailure = persistedAssistantFailure(lastMessage)
+    if (current.status.type === "idle" && persistedFailure) {
+      this.statusRevision += 1
+      this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "error", message: persistedFailure } } } })
+    } else if (current.status.type === "idle" && lastMessage?.info.role === "user" &&
       !current.queue.length && !this.sendingPrompts.has(sessionID) && !this.pendingPromptSessions.has(lastMessage.info.id)) {
       this.statusRevision += 1
       this.dispatch({
@@ -1559,6 +1595,8 @@ export class SessionController {
     this.promptAgents.delete(promptID)
     this.steeringPrompts.delete(promptID)
     this.pendingPromptSessions.delete(promptID)
+    this.pendingPromptTexts.delete(promptID)
+    this.pendingPromptFileCounts.delete(promptID)
     this.dispatch({ type: "removeQueued", sessionID, promptID })
   }
 
@@ -1612,8 +1650,11 @@ export class SessionController {
     for (const [promptID, ownerID] of this.pendingPromptSessions) {
       if (ownerID !== sessionID) continue
       this.pendingPromptSessions.delete(promptID)
+      this.pendingPromptTexts.delete(promptID)
+      this.pendingPromptFileCounts.delete(promptID)
     }
     this.sendGenerations.delete(sessionID)
+    this.sessionFailures.delete(sessionID)
     this.messageHistories.delete(sessionID)
     this.transcriptRevisions.delete(sessionID)
     this.transcriptGenerations.delete(sessionID)
@@ -1647,6 +1688,7 @@ export class SessionController {
     this.sendGenerations.set(sessionID, generation)
     let accepted = false
     if (delivery === "steer") {
+      this.sessionFailures.delete(sessionID)
       this.statusRevision += 1
       this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } } })
     }
@@ -1654,14 +1696,17 @@ export class SessionController {
       if (command) await this.client.sendCommand(sessionID, command[1]!, command[2] ?? "", prompt.agent, prompt.model, prompt.variant, this.promptFiles.get(prompt.id) ?? [], prompt.id)
       else {
         const files = this.promptFiles.get(prompt.id) ?? []
-        if (!legacy) {
-          this.pendingPromptSessions.set(prompt.id, sessionID)
-          while (this.pendingPromptSessions.size > 1_000) {
-            const oldest = this.pendingPromptSessions.keys().next().value!
-            this.pendingPromptSessions.delete(oldest)
-          }
+        const admittedMessageID = legacy ? createOpenCodeMessageID() : prompt.id
+        this.pendingPromptSessions.set(admittedMessageID, sessionID)
+        if (prompt.text.trim()) this.pendingPromptTexts.set(admittedMessageID, prompt.text)
+        if (files.length) this.pendingPromptFileCounts.set(admittedMessageID, files.length)
+        while (this.pendingPromptSessions.size > 1_000) {
+          const oldest = this.pendingPromptSessions.keys().next().value!
+          this.pendingPromptSessions.delete(oldest)
+          this.pendingPromptTexts.delete(oldest)
+          this.pendingPromptFileCounts.delete(oldest)
         }
-        if (legacy) await this.client.sendAsync(sessionID, prompt.text, prompt.agent, prompt.model, prompt.variant, files, createOpenCodeMessageID())
+        if (legacy) await this.client.sendAsync(sessionID, prompt.text, prompt.agent, prompt.model, prompt.variant, files, admittedMessageID)
         else await this.client.sendPrompt(sessionID, prompt.id, prompt.text, delivery, prompt.agent, prompt.model, prompt.variant, files, this.promptAgents.get(prompt.id) ?? [])
         if (!legacy) {
           const slash = prompt.model?.indexOf("/") ?? -1
@@ -1767,6 +1812,10 @@ export class SessionController {
 
   chatSnapshot(): ChatSnapshot {
     const current = this.state.selectedID ? this.state.sessions[this.state.selectedID] : undefined
+    const visiblePermissions = new Map<string, PermissionRequest[]>(Object.values(this.state.sessions).map((session) => [
+      session.info.id,
+      session.permissions.filter((request) => !this.automaticallyRespondingPermissions.has(`${request.protocol}\0${request.sessionID}\0${request.id}`)),
+    ]))
     const transcript = current
       ? snapshotTranscript(current.messages, this.messageRevisions.get(current.info.id) ?? new Map(), 3_800_000, 19_000, 5_000, (messageID) => this.pendingPromptTextFor(messageID))
       : undefined
@@ -1799,7 +1848,7 @@ export class SessionController {
       if (!session.info.parentID) continue
       const root = rootID(session.info.id)
       const counts = childAttention.get(root) ?? { permissions: 0, questions: 0 }
-      counts.permissions += session.permissions.length
+      counts.permissions += visiblePermissions.get(session.info.id)?.length ?? 0
       counts.questions += session.questions.length
       childAttention.set(root, counts)
     }
@@ -1838,9 +1887,9 @@ export class SessionController {
           directory: session.info.directory.slice(0, 8_192),
           parentID: session.info.parentID?.slice(0, 1_024),
           updatedAt: Number.isSafeInteger(session.info.time.updated) && session.info.time.updated >= 0 ? session.info.time.updated : 0,
-          attention: session.permissions.length + session.questions.length + childPermissions + childQuestions,
+          attention: (visiblePermissions.get(id)?.length ?? 0) + session.questions.length + childPermissions + childQuestions,
           questionCount: session.questions.length + childQuestions,
-          permissionCount: session.permissions.length + childPermissions,
+          permissionCount: (visiblePermissions.get(id)?.length ?? 0) + childPermissions,
           queued: session.queue.filter((prompt) => prompt.id !== this.sendingPrompts.get(session.info.id)).length,
           todo: {
             completed: session.todos.filter((todo) => todo.status === "completed").length,
@@ -1874,7 +1923,10 @@ export class SessionController {
         variant: effectiveVariant,
         queue: current.queue,
         inFlightPromptID: this.sendingPrompts.get(current.info.id),
-        permissions: current.info.parentID ? [] : boundedPermissionList([...current.permissions, ...delegatedSessions.flatMap((session) => session.permissions)]),
+        permissions: current.info.parentID ? [] : boundedPermissionList([
+          ...(visiblePermissions.get(current.info.id) ?? []),
+          ...delegatedSessions.flatMap((session) => visiblePermissions.get(session.info.id) ?? []),
+        ]),
         questions: current.info.parentID ? [] : [...current.questions, ...delegatedSessions.flatMap((session) => session.questions)].slice(0, 100),
         todos: current.todos,
         changes: current.changes,
@@ -1897,11 +1949,25 @@ export class SessionController {
       : part && typeof part === "object" && "sessionID" in part && typeof part.sessionID === "string"
       ? part.sessionID
       : undefined
+    if (sessionID && event.type === "session.error") {
+      this.sessionFailures.set(sessionID, errorDetail(event.properties.error) ?? "Session failed")
+    } else if (sessionID && event.type === "session.next.step.failed") {
+      this.sessionFailures.set(sessionID, errorDetail(event.properties.error) ?? "OpenCode response failed")
+    } else if (sessionID && event.type === "message.updated" && record(info) && info.role === "assistant") {
+      const detail = errorDetail(info.error)
+      const status = this.state.sessions[sessionID]?.status.type
+      if (detail && status !== "busy" && status !== "retry") this.sessionFailures.set(sessionID, detail)
+    } else if (sessionID && ((event.type === "session.status" && record(event.properties.status) && ["busy", "retry"].includes(String(event.properties.status.type))) ||
+      ["session.next.prompt.admitted", "session.next.prompted", "session.next.step.started", "session.next.retried"].includes(event.type))) {
+      this.sessionFailures.delete(sessionID)
+    }
     if (sessionID && event.type.startsWith("message.")) {
       const revision = (this.transcriptRevisions.get(sessionID) ?? 0) + 1
       this.transcriptRevisions.set(sessionID, revision)
       if (event.type === "message.removed" && typeof event.properties.messageID === "string") {
         this.pendingPromptSessions.delete(event.properties.messageID)
+        this.pendingPromptTexts.delete(event.properties.messageID)
+        this.pendingPromptFileCounts.delete(event.properties.messageID)
         const removed = this.removedMessages.get(sessionID) ?? new Map<string, number>()
         removed.set(event.properties.messageID, revision)
         this.removedMessages.set(sessionID, removed)
@@ -1922,6 +1988,10 @@ export class SessionController {
       else if (messageID) this.bumpMessageRevision(sessionID, messageID)
     }
     let normalizedEvent = event
+    if (sessionID && this.sessionFailures.has(sessionID) && (event.type === "session.idle" ||
+      (event.type === "session.status" && record(event.properties.status) && event.properties.status.type === "idle"))) {
+      normalizedEvent = { type: "session.status", properties: { sessionID, status: { type: "error", message: this.sessionFailures.get(sessionID) } } }
+    }
     if (sessionID && event.type === "session.next.step.started" && typeof event.properties.assistantMessageID === "string") {
       const model = record(event.properties.model) && typeof event.properties.model.providerID === "string" && typeof event.properties.model.id === "string"
         ? { providerID: event.properties.model.providerID, modelID: event.properties.model.id }
@@ -1990,6 +2060,9 @@ export class SessionController {
       this.cleanupSession(event.properties.info.id)
     }
     this.dispatch({ type: "event", event: normalizedEvent })
+    if (sessionID && event.type === "message.updated" && record(info) && info.role === "assistant" && this.sessionFailures.has(sessionID)) {
+      this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "error", message: this.sessionFailures.get(sessionID) } } } })
+    }
     if (sessionID && event.type === "session.next.agent.switched" && typeof event.properties.agent === "string" && event.properties.agent.length <= 1_024) {
       this.dispatch({ type: "preference", sessionID, agent: event.properties.agent })
     }
@@ -2065,7 +2138,7 @@ export class SessionController {
     }
     if (!KNOWN_OPENCODE_EVENTS.has(event.type) && !this.unknownEventTypes.has(event.type)) {
       this.unknownEventTypes.add(event.type)
-      this.callbacks.error(`OpenCode emitted unsupported event type: ${event.type}`)
+      console.warn(`Ignored unsupported OpenCode event type: ${event.type}`)
     }
   }
 
@@ -2107,11 +2180,13 @@ export class SessionController {
   setAutoApproval(sessionID: string, enabled: boolean): void {
     this.requireSession(sessionID)
     const rootID = this.rootSessionID(sessionID)
+    const requests = Object.values(this.state.sessions)
+      .filter((session) => this.rootSessionID(session.info.id) === rootID)
+      .flatMap((session) => session.permissions)
+    if (enabled) for (const request of requests) this.maybeAutoRespond(request, true, true)
     this.dispatch({ type: "autoApproval", sessionID: rootID, enabled })
     if (!enabled) return
-    for (const session of Object.values(this.state.sessions)) {
-      if (this.rootSessionID(session.info.id) === rootID) for (const request of session.permissions) this.maybeAutoRespond(request)
-    }
+    for (const request of requests) this.maybeAutoRespond(request)
   }
 
   async respondPermission(requestID: string, response: "once" | "exact" | "scope" | "reject", sessionID = this.state.selectedID, protocol?: PermissionRequest["protocol"], feedback?: string, scope?: string): Promise<void> {
@@ -2165,9 +2240,9 @@ export class SessionController {
       this.callbacks.attention?.(storedRequest)
     }
     this.permissionRevision += 1
+    this.maybeAutoRespond(storedRequest, true)
     this.dispatch({ type: "permissions", sessionID: request.sessionID, permissions })
-    if (covered) void this.respondPermission(storedRequest.id, "once", storedRequest.sessionID, storedRequest.protocol).catch(() => undefined)
-    else this.maybeAutoRespond(storedRequest)
+    this.maybeAutoRespond(storedRequest)
   }
 
   private removePermission(sessionID: string, requestID: string, protocols?: PermissionRequest["protocol"][]): void {
@@ -2188,11 +2263,19 @@ export class SessionController {
     this.dispatch({ type: "permissions", sessionID, permissions })
   }
 
-  private maybeAutoRespond(request: PermissionRequest): void {
-    if (!this.autoApprovalFor(request.sessionID) || request.truncated || request.type === "vscode.reload_opencode") return
+  private maybeAutoRespond(request: PermissionRequest, prepareOnly = false, assumeAutoApproval = false): void {
+    if (!this.permissionCovered(request) && (!(assumeAutoApproval || this.autoApprovalFor(request.sessionID)) || request.truncated || request.type === "vscode.reload_opencode")) return
     const key = `${request.protocol}\0${request.sessionID}\0${request.id}`
-    if (this.respondingPermissions.has(key)) return
-    void this.respondPermission(request.id, "once", request.sessionID, request.protocol).catch(() => undefined)
+    if (this.respondingPermissions.has(key) && !this.automaticallyRespondingPermissions.has(key)) return
+    this.automaticallyRespondingPermissions.add(key)
+    if (prepareOnly || this.respondingPermissions.has(key)) return
+    void this.respondPermission(request.id, "once", request.sessionID, request.protocol).catch(() => undefined).finally(() => {
+      this.automaticallyRespondingPermissions.delete(key)
+      const session = this.state.sessions[request.sessionID]
+      if (session?.permissions.some((candidate) => candidate.id === request.id && candidate.protocol === request.protocol)) {
+        this.notify({ type: "permissions", sessionID: request.sessionID, permissions: session.permissions })
+      }
+    })
   }
 
   async respondQuestion(requestID: string, answers: string[][], sessionID = this.state.selectedID): Promise<void> {

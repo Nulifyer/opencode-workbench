@@ -845,6 +845,86 @@ Deno.test("idle trailing user turns are marked interrupted", async () => {
   controller.dispose()
 })
 
+Deno.test("upstream session errors survive transcript reconciliation", async () => {
+  const user: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "user", time: { created: 1 } }, parts: [] }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({ one: { type: "error" as const, message: "Expected an OpenCode prt_ part ID" } }),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messageHistory: async () => ({ messages: [user], legacyMessageIDs: [user.info.id], v2MessageIDs: [] }),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const status = controller.snapshot.sessions.one?.status
+  if (status?.type !== "error" || status.message !== "Expected an OpenCode prt_ part ID") {
+    throw new Error("Transcript reconciliation replaced the actionable upstream error")
+  }
+  controller.dispose()
+})
+
+Deno.test("persisted empty provider responses are explained", async () => {
+  const assistant: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "assistant", time: { created: 1, completed: 2 }, finish: "unknown" },
+    parts: [{ id: "step", sessionID: "one", messageID: "msg_018bcfe568001234567890abcd", type: "step-finish" }],
+  }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messageHistory: async () => ({ messages: [assistant], legacyMessageIDs: [assistant.info.id], v2MessageIDs: [] }),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const status = controller.snapshot.sessions.one?.status
+  if (status?.type !== "error" || !status.message?.includes("without returning a response")) {
+    throw new Error("An empty unknown provider result was presented as a successful turn")
+  }
+  controller.dispose()
+})
+
+Deno.test("provider errors remain terminal across error, idle, and message event ordering", async () => {
+  let polledStatus: Record<string, { type: "busy" }> = {}
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => polledStatus,
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const currentStatus = () => controller.snapshot.sessions.one?.status.type
+  internal.handleEvent({ type: "session.error", properties: { sessionID: "one", error: { data: { message: "Provider stream failed" } } } })
+  internal.handleEvent({ type: "session.status", properties: { sessionID: "one", status: { type: "idle" } } })
+  internal.handleEvent({ type: "session.idle", properties: { sessionID: "one" } })
+  internal.handleEvent({ type: "message.updated", properties: { info: {
+    id: "msg_018bcfe568001234567890abcd",
+    sessionID: "one",
+    role: "assistant",
+    error: { data: { message: "Provider stream failed" } },
+  } } })
+  const status = controller.snapshot.sessions.one?.status
+  if (status?.type !== "error" || status.message !== "Provider stream failed") {
+    throw new Error("Provider failure was overwritten by a trailing idle or message event")
+  }
+  internal.handleEvent({ type: "session.next.retried", properties: { sessionID: "one", attempt: 1, error: { message: "Retrying" } } })
+  internal.handleEvent({ type: "session.status", properties: { sessionID: "one", status: { type: "idle" } } })
+  if (currentStatus() !== "idle") throw new Error("A retry retained a stale terminal provider failure")
+  internal.handleEvent({ type: "session.error", properties: { sessionID: "one", error: { data: { message: "Provider stream failed" } } } })
+  polledStatus = { one: { type: "busy" } }
+  await controller.reconcile()
+  internal.handleEvent({ type: "message.updated", properties: { info: {
+    id: "msg_018bcfe568001234567890abcd",
+    sessionID: "one",
+    role: "assistant",
+    error: { data: { message: "Provider stream failed" } },
+  } } })
+  if (currentStatus() !== "busy") throw new Error("A delayed failed-assistant update replaced newer busy work")
+  internal.handleEvent({ type: "session.status", properties: { sessionID: "one", status: { type: "idle" } } })
+  if (currentStatus() !== "idle") throw new Error("A reconciled busy turn retained a stale provider failure")
+  controller.dispose()
+})
+
 Deno.test("controller restores the persisted selected session", async () => {
   let selected = ""
   const fake = {
@@ -929,6 +1009,110 @@ Deno.test("ambiguous prompt failure retains visible text from the queued prompt"
   await controller.send("Still visible after failure", undefined, undefined, undefined, [], [], promptID).catch(() => undefined)
   const message = controller.chatSnapshot().session?.messages.find((entry) => entry.info.id === promptID)
   if (message?.parts[0]?.text !== "Still visible after failure") throw new Error("Ambiguous admission reverted to the Message sent placeholder")
+  controller.dispose()
+})
+
+Deno.test("legacy background failures retain prompt text and exact error detail", async () => {
+  let emit: (event: { type: string; properties: Record<string, unknown> }) => void = () => undefined
+  let admittedID = ""
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], providers: [{ id: "custom", name: "Custom", source: "custom" as const }], models: [{ id: "model", providerID: "custom", name: "Model" }] }),
+    messageHistory: async () => ({ messages: [], legacyMessageIDs: [], v2MessageIDs: [] }),
+    sendAsync: async (_sessionID: string, _text: string, _agent?: string, _model?: string, _variant?: string, _files?: unknown[], messageID?: string) => {
+      admittedID = messageID ?? ""
+      emit({ type: "message.updated", properties: { info: { id: admittedID, sessionID: "one", role: "user" } } })
+      emit({ type: "session.error", properties: { sessionID: "one", error: { data: { message: "Injected part ID was invalid" } } } })
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  emit = (event) => internal.handleEvent(event)
+  await controller.send("Keep this visible", undefined, "custom/model")
+  const visible = controller.chatSnapshot().session?.messages.find((entry) => entry.info.id === admittedID)
+  const status = controller.snapshot.sessions.one?.status
+  if (visible?.parts[0]?.text !== "Keep this visible" || status?.type !== "error" || status.message !== "Injected part ID was invalid") {
+    throw new Error("Legacy asynchronous failure hid the prompt or its exact error")
+  }
+  controller.dispose()
+})
+
+Deno.test("legacy history shells cannot erase retained prompt text", async () => {
+  let admittedID = ""
+  let history: MessageBundle[] = []
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], providers: [{ id: "custom", name: "Custom", source: "custom" as const }], models: [{ id: "model", providerID: "custom", name: "Model" }] }),
+    messageHistory: async () => ({ messages: history, legacyMessageIDs: history.map((entry) => entry.info.id), v2MessageIDs: [] }),
+    sendAsync: async (_sessionID: string, _text: string, _agent?: string, _model?: string, _variant?: string, _files?: unknown[], messageID?: string) => {
+      admittedID = messageID ?? ""
+      history = [{ info: { id: admittedID, sessionID: "one", role: "user" as const }, parts: [{
+        id: "prt_018bcfe568001234567890abcd",
+        sessionID: "one",
+        messageID: admittedID,
+        type: "text",
+        text: "<approved_preference_data>Preference</approved_preference_data>",
+        synthetic: true,
+      }] }]
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.send("Retain across history", undefined, "custom/model")
+  const internal = controller as unknown as { loadTranscript(sessionID: string, markLoading: boolean): Promise<void> }
+  await internal.loadTranscript("one", false)
+  const visible = controller.chatSnapshot().session?.messages.find((entry) => entry.info.id === admittedID)
+  if (!visible?.parts.some((part) => !part.synthetic && part.text === "Retain across history")) {
+    throw new Error("A persisted legacy message shell erased retained prompt text")
+  }
+  controller.dispose()
+})
+
+Deno.test("attachment-only legacy prompts release pending state after file persistence", async () => {
+  let admittedID = ""
+  let history: MessageBundle[] = []
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], providers: [{ id: "custom", name: "Custom", source: "custom" as const }], models: [{ id: "model", providerID: "custom", name: "Model" }] }),
+    messageHistory: async () => ({ messages: history, legacyMessageIDs: history.map((entry) => entry.info.id), v2MessageIDs: [] }),
+    sendAsync: async (_sessionID: string, _text: string, _agent?: string, _model?: string, _variant?: string, _files?: unknown[], messageID?: string) => {
+      admittedID = messageID ?? ""
+      history = [{ info: { id: admittedID, sessionID: "one", role: "user" as const }, parts: [] }]
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.send("   ", undefined, "custom/model", undefined, [{ type: "file", mime: "image/png", filename: "theme.png", url: "data:image/png;base64,AA==" }])
+  const internal = controller as unknown as {
+    loadTranscript(sessionID: string, markLoading: boolean): Promise<void>
+    pendingPromptSessions: Map<string, string>
+  }
+  await internal.loadTranscript("one", false)
+  if (!internal.pendingPromptSessions.has(admittedID)) throw new Error("Partial file history released attachment-only pending state")
+  history = [{ info: { id: admittedID, sessionID: "one", role: "user" }, parts: [
+    {
+      id: "prt_018bcfe568001234567890abce",
+      sessionID: "one",
+      messageID: admittedID,
+      type: "text",
+      text: "<approved_preference_data>Preference</approved_preference_data>",
+      synthetic: true,
+    },
+    {
+      id: "prt_018bcfe568001234567890abcd",
+      sessionID: "one",
+      messageID: admittedID,
+      type: "file",
+      mime: "image/png",
+      filename: "theme.png",
+    },
+  ] }]
+  await internal.loadTranscript("one", false)
+  if (internal.pendingPromptSessions.has(admittedID)) throw new Error("Persisted attachment did not release pending legacy state")
   controller.dispose()
 })
 
@@ -1246,8 +1430,8 @@ Deno.test("v2 live events stream text, reasoning, tool input, and preferences", 
   const parts = state?.messages[0]?.parts ?? []
   if (parts.find((part) => part.id === "text")?.text !== "Hello" || parts.find((part) => part.id === "reasoning")?.text !== "Think" ||
     parts.find((part) => part.id === "tool")?.state?.input !== "pwd -P" || state?.agent !== "build" || state.model !== "acme/model" || state.variant !== "high" ||
-    errors.filter((message) => message.includes("future.event")).length !== 1 || errors.some((message) => message.includes("project.updated")) || messageCalls !== 1) {
-    throw new Error("V2 live event projection or unknown-event diagnostics failed")
+    errors.some((message) => message.includes("future.event") || message.includes("project.updated")) || messageCalls !== 1) {
+    throw new Error("V2 live event projection or forward-compatible event handling failed")
   }
   controller.dispose()
 })
@@ -1361,7 +1545,7 @@ Deno.test("file message snapshots retain labels without exposing attachment URLs
   controller.dispose()
 })
 
-Deno.test("auto approval responds once and removes only accepted permissions", async () => {
+Deno.test("auto approval hides delayed successful responses until removal", async () => {
   const response = deferred<boolean>()
   const replies: string[] = []
   let attention = 0
@@ -1380,14 +1564,88 @@ Deno.test("auto approval responds once and removes only accepted permissions", a
     properties: { id: "permission", sessionID: "one", permission: "bash", patterns: ["ls"], always: ["bash:*"] },
   })
 
-  if (replies.join(",") !== "once" || controller.chatSnapshot().session?.permissions?.length !== 1) {
-    throw new Error("Auto approval did not use once or removed an in-flight permission")
+  const snapshot = controller.chatSnapshot()
+  if (replies.join(",") !== "once" || controller.snapshot.sessions.one?.permissions.length !== 1 ||
+    snapshot.session?.permissions?.length !== 0 || snapshot.sessions[0]?.permissionCount !== 0 || snapshot.sessions[0]?.attention !== 0) {
+    throw new Error("Auto approval exposed an in-flight permission or lost internal pending state")
   }
   if (attention !== 0) throw new Error("Auto-approved permission emitted an attention notification")
+  const removed = deferred<void>()
+  controller.subscribe(() => {
+    if (controller.snapshot.sessions.one?.permissions.length === 0) removed.resolve(undefined)
+  })
+  response.resolve(true)
+  await removed.promise
+  if (controller.chatSnapshot().session?.permissions?.length !== 0) throw new Error("Accepted permission remained pending")
+  controller.dispose()
+})
+
+Deno.test("reconciled auto approval exposes permission after response failure", async () => {
+  const response = deferred<boolean>()
+  const request = { id: "permission", sessionID: "one", title: "Shell", type: "bash", pattern: ["ls"], protocol: "current" as const }
+  let errors = 0
+  const fake = {
+    pendingPermissionsDetailed: async () => ({ requests: [request], succeeded: ["current" as const] }),
+    respondPermission: () => response.promise,
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => errors += 1 })
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+    reconcilePermissions(): Promise<void>
+  }
+  internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
+  controller.setAutoApproval("one", true)
+  await internal.reconcilePermissions()
+
+  const hidden = controller.chatSnapshot()
+  if (controller.snapshot.sessions.one?.permissions.length !== 1 || hidden.session?.permissions?.length !== 0 ||
+    hidden.sessions[0]?.permissionCount !== 0 || hidden.sessions[0]?.attention !== 0) {
+    throw new Error("Reconciled auto approval exposed an in-flight permission")
+  }
+  const exposed = deferred<void>()
+  controller.subscribe(() => {
+    if (controller.chatSnapshot().session?.permissions?.[0]?.id === request.id) exposed.resolve(undefined)
+  })
+  response.reject(new Error("offline"))
+  await exposed.promise
+
+  const fallback = controller.chatSnapshot()
+  if (errors !== 1 || fallback.session?.permissions?.[0]?.id !== request.id || fallback.sessions[0]?.permissionCount !== 1 || fallback.sessions[0]?.attention !== 1) {
+    throw new Error("Failed automatic response did not expose manual permission fallback")
+  }
+  controller.dispose()
+})
+
+Deno.test("enabling auto approval hides an existing permission before publishing the mode", async () => {
+  const response = deferred<boolean>()
+  const replies: string[] = []
+  const fake = {
+    respondPermission: async (_request: unknown, reply: string) => {
+      replies.push(reply)
+      return await response.promise
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: { id: "permission", sessionID: "one", permission: "bash", patterns: ["ls"], always: [] },
+  })
+  if (controller.chatSnapshot().session?.permissions?.length !== 1) throw new Error("Manual permission was not initially visible")
+
+  let flashed = false
+  controller.subscribe(() => {
+    const snapshot = controller.chatSnapshot()
+    if (snapshot.autoApproval && snapshot.session?.permissions?.length) flashed = true
+  })
+  controller.setAutoApproval("one", true)
+  if (flashed || replies.join(",") !== "once" || controller.chatSnapshot().session?.permissions?.length !== 0) {
+    throw new Error("Enabling Auto published an eligible permission before hiding it")
+  }
   response.resolve(true)
   await Promise.resolve()
   await Promise.resolve()
-  if (controller.chatSnapshot().session?.permissions?.length !== 0) throw new Error("Accepted permission remained pending")
   controller.dispose()
 })
 

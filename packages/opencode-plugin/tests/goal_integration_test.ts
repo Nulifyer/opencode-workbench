@@ -58,7 +58,8 @@ Deno.test("native goal hooks integrate lifecycle, persistence, policy, compactio
     activePlugins.push(hooks)
     const config: Record<string, unknown> = {}
     await hooks.config(config)
-    if (!((config.command as Record<string, unknown>)?.goal)) throw new Error("Goal command was not registered through the plugin config hook")
+    const commands = config.command as Record<string, unknown>
+    if (!commands?.goal || !commands["goal-unlimited"]) throw new Error("Goal commands were not registered through the plugin config hook")
 
     const policy = { system: ["base policy"] }
     await hooks["experimental.chat.system.transform"]({}, policy)

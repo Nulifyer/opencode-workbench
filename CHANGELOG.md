@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.4.5 - 2026-08-05
+
+### Added
+
+- Added the discoverable `/goal-unlimited <objective>` command for creating a
+  goal without token, duration, or auto-turn limits.
+
+### Fixed
+
+- Prevented approved-preference injection from creating invalid OpenCode part
+  IDs, empty `Message sent` entries, and unexplained session failures.
+- Preserved pending legacy prompt text across asynchronous failures and exposed
+  exact session, persisted provider, and empty-response errors in the chat UI.
+- Treated unknown future OpenCode events as non-fatal for forward compatibility.
+- Prevented automatically approved permission prompts from briefly appearing in
+  the chat UI while preserving manual fallback when automatic approval fails.
+- Stopped stale tool, delegated-task, and todo spinners when their session is no
+  longer running, including incomplete history left by an interrupted step.
 
 ## 0.4.4 - 2026-08-04
 

@@ -25,14 +25,16 @@ Deno.test("native LSP defaults on without overriding explicit configuration", ()
   if (custom.lsp !== configured) throw new Error("Custom native LSP configuration was replaced")
 })
 
-Deno.test("goal command is registered without overriding user configuration", () => {
+Deno.test("goal commands are registered without overriding user configuration", () => {
   const omitted: { command?: Record<string, unknown> } = {}
-  configureGoalCommand(omitted, "template")
+  configureGoalCommand(omitted, "template", "unlimited")
   if ((omitted.command?.goal as { template?: string })?.template !== "template") throw new Error("Goal command was not registered")
+  if ((omitted.command?.["goal-unlimited"] as { template?: string })?.template !== "unlimited") throw new Error("Unlimited goal command was not registered")
 
-  const existing = { command: { goal: { template: "custom" } } }
-  configureGoalCommand(existing, "replacement")
+  const existing = { command: { goal: { template: "custom" }, "goal-unlimited": { template: "custom-unlimited" } } }
+  configureGoalCommand(existing, "replacement", "replacement-unlimited")
   if (existing.command.goal.template !== "custom") throw new Error("Existing goal command was overridden")
+  if (existing.command["goal-unlimited"].template !== "custom-unlimited") throw new Error("Existing unlimited goal command was overridden")
 })
 
 Deno.test("bundled plugin registers native goal tools and migrates legacy state", async () => {
@@ -80,6 +82,48 @@ Deno.test("bundled plugin registers native goal tools and migrates legacy state"
     else Deno.env.set("XDG_DATA_HOME", previousData)
     if (previousLegacy === undefined) Deno.env.delete("OPENCODE_GOAL_STATE_PATH")
     else Deno.env.set("OPENCODE_GOAL_STATE_PATH", previousLegacy)
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+Deno.test("approved preference injection uses an OpenCode-compatible part ID", async () => {
+  const root = await Deno.makeTempDir()
+  const previous = Deno.env.get("XDG_DATA_HOME")
+  Deno.env.set("XDG_DATA_HOME", root)
+  try {
+    const stateDirectory = join(root, "opencode-workbench", "plugin")
+    await Deno.mkdir(stateDirectory, { recursive: true })
+    await Deno.writeTextFile(join(stateDirectory, "state.json"), JSON.stringify({
+      version: 1,
+      preferences: [{
+        id: "preference",
+        scope: { kind: "project", project: "/work" },
+        category: "workflow",
+        key: "source",
+        value: "Use the canonical source.",
+        status: "approved",
+        provenance: { sessionID: "session", messageID: "msg_source", source: "explicit_tool" },
+        createdAt: 1,
+        approvedAt: 1,
+      }],
+      evidence: [],
+      skillCandidates: [],
+    }))
+    const hooks = await PluginModule.default.server({ worktree: "/work" } as never) as unknown as {
+      "chat.message": (input: { sessionID: string }, output: { message: { id: string }; parts: Array<Record<string, unknown>> }) => Promise<void>
+    }
+    const output = { message: { id: "msg_target" }, parts: [] as Array<Record<string, unknown>> }
+    await hooks["chat.message"]({ sessionID: "session" }, output)
+    const injected = output.parts[0]
+    if (typeof injected?.id !== "string" || !/^prt_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(injected.id)) {
+      throw new Error("Preference injection produced an invalid OpenCode part ID")
+    }
+    if (injected.sessionID !== "session" || injected.messageID !== "msg_target" || injected.synthetic !== true) {
+      throw new Error("Preference injection omitted required OpenCode part fields")
+    }
+  } finally {
+    if (previous === undefined) Deno.env.delete("XDG_DATA_HOME")
+    else Deno.env.set("XDG_DATA_HOME", previous)
     await Deno.remove(root, { recursive: true })
   }
 })

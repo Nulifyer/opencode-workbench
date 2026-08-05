@@ -1,6 +1,6 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
 import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type WebviewToHostMessage } from "@opencode-workbench/shared"
-import { activityCollapsed, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
+import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
 import { renderMarkdown } from "./markdown.js"
 
 interface WebviewState {
@@ -373,9 +373,9 @@ function editEntryHtml(entry: EditEntry): string {
   return `<details class="edit-entry" data-detail-key="${escapeHtml(entry.key)}"><summary>${EDIT_ICON}<button type="button" class="edit-file" data-file="${escapeHtml(entry.file)}" title="${escapeHtml(fileTooltip(entry.file))}">${escapeHtml(fileName(entry.file))}</button>${stats}</summary>${entry.patch ? diffBlock(entry.file, entry.patch, entry.additions, entry.deletions) : `<p class="placeholder">No patch preview available.</p>`}</details>`
 }
 
-function groupedEditsHtml(parts: MessagePart[], key: string): string {
+function groupedEditsHtml(parts: MessagePart[], key: string, active: boolean): string {
   const entries = parts.flatMap((part, index) => editEntries(part, `${key}:${index}`))
-  if (!entries.length) return parts.map((part, index) => toolHtml(part, `${key}:${index}`, false)).join("")
+  if (!entries.length) return parts.map((part, index) => toolHtml(part, `${key}:${index}`, active, false)).join("")
   if (entries.length === 1) return editEntryHtml(entries[0]!)
   return `<details class="activity edit-group" data-detail-key="${escapeHtml(key)}"><summary>${EDIT_ICON}<span class="activity-title">Edited files</span></summary><div class="edit-list">${entries.map(editEntryHtml).join("")}</div></details>`
 }
@@ -385,6 +385,7 @@ function activityMetaHtml(part: MessagePart, state: string): string {
   const end = partTime(part, "end")
   const failed = ["error", "failed", "rejected"].includes(state)
   if (failed) return `<span class="activity-status">Failed</span>`
+  if (state === "stopped") return `<span class="activity-status">Stopped</span>`
   if (start !== undefined && end !== undefined) return `<span class="activity-status">${escapeHtml(formatDuration(Math.max(0, end - start)))}</span>`
   if (start !== undefined && ["running", "pending"].includes(state)) {
     return `<span class="activity-status"><span class="activity-timer" data-start-time="${start}">${formatDuration(Math.max(0, Date.now() - start))}</span></span>`
@@ -417,9 +418,10 @@ function delegationActions(delegation: Delegation): DelegationAction[] {
   return actions.slice(-300)
 }
 
-function delegationActionHtml(action: DelegationAction, key: string): string {
-  const failed = ["error", "failed", "rejected"].includes(action.state)
-  const state = failed ? "error" : ["running", "pending"].includes(action.state) ? action.state : "completed"
+function delegationActionHtml(action: DelegationAction, key: string, active: boolean): string {
+  const visualState = activityVisualState(action.state, active)
+  const failed = ["error", "failed", "rejected"].includes(visualState)
+  const state = failed ? "error" : ["running", "pending", "stopped"].includes(visualState) ? visualState : "completed"
   const summary = `<span class="activity-dot" aria-hidden="true"></span><span>${escapeHtml(action.label)}</span>`
   return action.detail
     ? `<details class="delegation-action tool-${state}" data-detail-key="${escapeHtml(key)}"><summary>${summary}</summary>${action.detail}</details>`
@@ -435,31 +437,32 @@ function delegationRequestHtml(part: MessagePart, key: string): string {
   return `<details class="delegation-raw" data-detail-key="${escapeHtml(`${key}:request`)}"><summary>Task request</summary><div class="delegation-request-body">${fields}${prompt ? `<details class="task-prompt" data-detail-key="${escapeHtml(`${key}:prompt`)}"><summary>Full prompt</summary>${codeBlock(prompt, "Prompt")}</details>` : ""}</div></details>`
 }
 
-function delegationHtml(part: MessagePart, key: string, delegation: Delegation): string {
-  const state = delegation.status.type === "busy" || delegation.status.type === "retry" ? "running" : delegation.status.type === "error" ? "error" : "completed"
+function delegationHtml(part: MessagePart, key: string, delegation: Delegation, parentActive: boolean): string {
+  const state = delegation.status.type === "busy" || delegation.status.type === "retry" ? activityVisualState("running", parentActive) : delegation.status.type === "error" ? "error" : "completed"
   const actions = delegationActions(delegation)
   const recent = actions.slice(-4)
   const latest = actions.at(-1)
   const current = actions.slice().reverse().find((action) => ["running", "pending"].includes(action.state)) ?? latest
   const request = delegationRequestHtml(part, key)
   const active = state === "running"
-  const progress = active ? current?.label ?? "Starting subagent…" : delegationCompletionSummary(actions, state === "error")
+  const completion = delegationCompletionSummary(actions, state === "error")
+  const progress = active ? current?.label ?? "Starting subagent…" : state === "stopped" ? completion === "Completed" ? "Stopped" : `Stopped · ${completion}` : completion
   return `<details class="activity delegation tool-${state}" data-detail-key="${escapeHtml(key)}">
     <summary><span class="activity-dot" aria-hidden="true"></span><span class="delegation-summary"><span class="activity-title">${escapeHtml(delegation.title)}</span><span class="delegation-progress"><span>${escapeHtml(progress)}</span>${activityMetaHtml(part, state)}</span></span></summary>
     <div class="delegation-body">
-      ${recent.length ? `<div class="delegation-recent"><div class="picker-heading">Recent activity</div>${recent.map((action, index) => delegationActionHtml(action, `${key}:recent:${actions.length - recent.length + index}`)).join("")}</div>` : `<p class="placeholder">Waiting for delegated activity.</p>`}
-      ${actions.length > recent.length ? `<details class="delegation-history" data-detail-key="${escapeHtml(`${key}:history`)}"><summary>All activity (${actions.length})</summary><div>${actions.map((action, index) => delegationActionHtml(action, `${key}:history:${index}`)).join("")}</div></details>` : ""}
+      ${recent.length ? `<div class="delegation-recent"><div class="picker-heading">Recent activity</div>${recent.map((action, index) => delegationActionHtml(action, `${key}:recent:${actions.length - recent.length + index}`, active)).join("")}</div>` : `<p class="placeholder">Waiting for delegated activity.</p>`}
+      ${actions.length > recent.length ? `<details class="delegation-history" data-detail-key="${escapeHtml(`${key}:history`)}"><summary>All activity (${actions.length})</summary><div>${actions.map((action, index) => delegationActionHtml(action, `${key}:history:${index}`, active)).join("")}</div></details>` : ""}
       ${request}
       <button type="button" class="text-action delegated-session-action" data-delegation-session="${escapeHtml(delegation.sessionID)}"><span>Open delegated session</span>${OPEN_ICON}</button>
     </div>
   </details>`
 }
 
-function toolHtml(part: MessagePart, key: string, specialize = true): string {
-  const state = String(part.state?.status || "pending").toLowerCase()
+function toolHtml(part: MessagePart, key: string, active: boolean, specialize = true): string {
+  const state = activityVisualState(String(part.state?.status || "pending"), active)
   const delegation = part.tool === "task" ? snapshot.session?.delegations?.find((item) => item.partID === part.id) : undefined
-  if (delegation) return delegationHtml(part, key, delegation)
-  if (specialize && ["edit", "patch"].includes(toolKind(part))) return groupedEditsHtml([part], key)
+  if (delegation) return delegationHtml(part, key, delegation, active)
+  if (specialize && ["edit", "patch"].includes(toolKind(part))) return groupedEditsHtml([part], key, active)
   const detail = detailBody(part)
   return `<details class="activity tool-${escapeHtml(state)}" data-detail-key="${escapeHtml(key)}"><summary><span class="activity-dot" aria-hidden="true"></span><span class="activity-title">${escapeHtml(toolLabel(part))}</span>${activityMetaHtml(part, state)}</summary>${detail}</details>`
 }
@@ -539,7 +542,7 @@ function assistantHtml(message: MessageBundle, live: boolean, finalTextParts: Re
           grouped.push(next)
           index += 1
         }
-        processBody += groupedEditsHtml(grouped, `${message.info.id}:${part.id}`)
+        processBody += groupedEditsHtml(grouped, `${message.info.id}:${part.id}`, live)
       } else if ((kind === "skill" || kind === "explore") && completed(part)) {
         const grouped = [part]
         while (index + 1 < message.parts.length) {
@@ -549,10 +552,10 @@ function assistantHtml(message: MessageBundle, live: boolean, finalTextParts: Re
           index += 1
         }
         processBody += groupedToolsHtml(grouped, kind, `${message.info.id}:${part.id}`)
-      } else processBody += toolHtml(part, `${message.info.id}:${part.id}`)
+      } else processBody += toolHtml(part, `${message.info.id}:${part.id}`, live)
     } else if (["patch", "apply_patch", "edit", "write", "todowrite", "task", "bash"].includes(part.type)) {
       if (part.type === "patch" && hasEditTool) continue
-      processBody += toolHtml({ ...part, type: "tool", tool: part.type }, `${message.info.id}:${part.id}`)
+      processBody += toolHtml({ ...part, type: "tool", tool: part.type }, `${message.info.id}:${part.id}`, live)
     }
   }
   let error = ""
@@ -595,7 +598,14 @@ function userHtml(message: MessageBundle): string {
     return `<span class="attachment-chip transcript-attachment" title="${escapeHtml(typeof part.mime === "string" ? part.mime : "Attachment")}">${thumbnail}<span>${escapeHtml(display.name)}</span></span>`
   }).join("")
   const timestamp = message.info.time?.created ? new Date(message.info.time.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
-  return `<article class="message user" data-message-id="${escapeHtml(message.info.id)}"><div class="message-heading">You${timestamp ? `<time class="message-time">${escapeHtml(timestamp)}</time>` : ""}</div><div class="content">${body}${files ? `<div class="transcript-attachments">${files}</div>` : ""}${!body && !files ? "<span class=\"pending\">Message sent</span>" : ""}</div>${messageActions("user")}</article>`
+  const latest = snapshot.session?.messages.at(-1)?.info.id === message.info.id
+  const active = latest && (snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry")
+  const empty = !body && !files
+    ? active
+      ? "<span class=\"pending\">Saving message…</span>"
+      : `<span class="message-failure" title="${escapeHtml(snapshot.session?.status.type === "error" ? snapshot.session.status.message || "OpenCode failed before saving this message." : "OpenCode did not persist any content for this message.")}">Message failed before its content was saved</span>`
+    : ""
+  return `<article class="message user" data-message-id="${escapeHtml(message.info.id)}"><div class="message-heading">You${timestamp ? `<time class="message-time">${escapeHtml(timestamp)}</time>` : ""}</div><div class="content">${body}${files ? `<div class="transcript-attachments">${files}</div>` : ""}${empty}</div>${messageActions("user")}</article>`
 }
 
 function htmlNode(html: string): HTMLElement {
@@ -1043,9 +1053,9 @@ function renderQuestions(session: NonNullable<ChatSnapshot["session"]>): void {
   }).join("")
 }
 
-function renderSummaries(session: NonNullable<ChatSnapshot["session"]>): void {
+function renderSummaries(session: NonNullable<ChatSnapshot["session"]>, active: boolean): void {
   const goal = session.goal
-  const signature = JSON.stringify([session.id, goal, session.todos])
+  const signature = JSON.stringify([session.id, goal, session.todos, active])
   if (signature === summarySignature) return
   summarySignature = signature
   goalDock.hidden = !goal
@@ -1062,11 +1072,12 @@ function renderSummaries(session: NonNullable<ChatSnapshot["session"]>): void {
   todoDock.hidden = todos.length === 0
   todoDock.classList.toggle("collapsed", !todoExpanded)
   todoDock.innerHTML = todos.length ? `<button type="button" class="todo-dock-header" aria-expanded="${todoExpanded}" title="${todoExpanded ? "Collapse todos" : "Expand todos"}"><span class="todo-dock-title">Todos</span><span class="todo-dock-current" title="${escapeHtml(currentTodo)}">${escapeHtml(currentTodo)}</span><small>${completed}/${todos.length}</small><span class="todo-dock-chevron" aria-hidden="true">›</span></button><ol class="todo-dock-list"${todoExpanded ? "" : " hidden"}>${todos.map((todo) => {
-    const status = todo.status.toLowerCase()
+    const status = activityVisualState(todo.status, active)
     const kind = status === "completed" ? "completed" : ["in_progress", "in-progress", "active"].includes(status) ? "working" : ["cancelled", "canceled", "skipped"].includes(status) ? "cancelled" : "pending"
-    const label = kind === "completed" ? "Completed" : kind === "working" ? "In progress" : kind === "cancelled" ? "Cancelled" : "Pending"
-    const indicator = kind === "completed" ? SESSION_ICONS.completed : kind === "working" ? "" : kind === "cancelled" ? "−" : ""
-    return `<li class="todo-dock-item todo-${kind}"><span class="todo-state" role="img" aria-label="${label}" title="${label}">${indicator}</span><span>${escapeHtml(todo.content)}</span>${todo.priority ? `<small>${escapeHtml(todo.priority)}</small>` : ""}</li>`
+    const visualKind = status === "stopped" ? "stopped" : kind
+    const label = visualKind === "completed" ? "Completed" : visualKind === "working" ? "In progress" : visualKind === "cancelled" ? "Cancelled" : visualKind === "stopped" ? "Stopped" : "Pending"
+    const indicator = visualKind === "completed" ? SESSION_ICONS.completed : visualKind === "working" ? "" : visualKind === "cancelled" ? "−" : visualKind === "stopped" ? "·" : ""
+    return `<li class="todo-dock-item todo-${visualKind}"><span class="todo-state" role="img" aria-label="${label}" title="${label}">${indicator}</span><span>${escapeHtml(todo.content)}</span>${todo.priority ? `<small>${escapeHtml(todo.priority)}</small>` : ""}</li>`
   }).join("")}</ol>` : ""
 }
 
@@ -1712,7 +1723,9 @@ function render(): void {
   composer.setAttribute("aria-busy", String(Boolean(active)))
   messages.setAttribute("aria-busy", String(Boolean(active)))
   updatePrimaryAction()
-  status.innerHTML = session ? loading ? "Loading session…" : stoppingSessionID === session.id ? "Stopping…" : active ? activeThrobberHtml() : session.loadState === "error" ? "Transcript unavailable" : session.status.type === "error" ? "Error" : "" : connecting ? "Connecting…" : connectionUnavailable ? snapshot.connectionState === "reconnecting" ? "Reconnecting…" : "Offline" : ""
+  const statusError = session?.status.type === "error" ? session.status.message || "Session failed" : undefined
+  status.classList.toggle("error", Boolean(statusError))
+  status.innerHTML = session ? loading ? "Loading session…" : stoppingSessionID === session.id ? "Stopping…" : active ? activeThrobberHtml() : session.loadState === "error" ? "Transcript unavailable" : statusError ? `Error: ${escapeHtml(statusError)}` : "" : connecting ? "Connecting…" : connectionUnavailable ? snapshot.connectionState === "reconnecting" ? "Reconnecting…" : "Offline" : ""
   status.title = session?.status.type === "error" ? session.status.message || "Session error" : ""
   renderCatalogs(session)
   const selectedModel = snapshot.models.find((item) => `${item.providerID}/${item.id}` === session?.model)
@@ -1746,7 +1759,7 @@ function render(): void {
     renderQueue(session)
     renderPermissions(session)
     renderQuestions(session)
-    renderSummaries(session)
+    renderSummaries(session, Boolean(active))
   }
   renderSessionLists()
   renderWorkspaceStrip(session)

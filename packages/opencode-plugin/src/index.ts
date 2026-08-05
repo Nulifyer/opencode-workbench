@@ -11,7 +11,7 @@ import { NodeAtomicAdapter, dataDirectory } from "./node-storage.ts"
 import { LIMITS } from "./security.ts"
 import { appendEvidence, decideCandidate, listCandidates, listEvidence, proposeCandidate } from "./skills.ts"
 import { configureGoalCommand, configureNativeLsp } from "./config.ts"
-import { GOAL_COMMAND_TEMPLATE, GOAL_CONTINUATION_METADATA, GOAL_CONTINUATION_PROMPT, GOAL_SYSTEM_POLICY, goalCompactionContext } from "./goal-prompts.ts"
+import { GOAL_COMMAND_TEMPLATE, GOAL_CONTINUATION_METADATA, GOAL_CONTINUATION_PROMPT, GOAL_SYSTEM_POLICY, GOAL_UNLIMITED_COMMAND_TEMPLATE, goalCompactionContext } from "./goal-prompts.ts"
 import {
   accountGoalTokens,
   cancelGoalAutoContinueReservation,
@@ -38,6 +38,26 @@ const categorySchema = s.enum(PREFERENCE_CATEGORIES)
 const idSchema = s.string().min(1).max(128)
 const querySchema = s.string().max(LIMITS.search).optional()
 type ToolArguments = Parameters<typeof tool>[0]["args"]
+const PART_ID_RANDOM_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+let lastPartIDTimestamp = 0
+let partIDCounter = 0
+
+function createOpenCodePartID(timestamp = Date.now()): string {
+  let currentTimestamp = Math.max(Math.trunc(timestamp), lastPartIDTimestamp)
+  if (currentTimestamp !== lastPartIDTimestamp) {
+    lastPartIDTimestamp = currentTimestamp
+    partIDCounter = 0
+  } else if (partIDCounter >= 0xfff) {
+    currentTimestamp += 1
+    lastPartIDTimestamp = currentTimestamp
+    partIDCounter = 0
+  }
+  partIDCounter += 1
+  const encoded = (BigInt(currentTimestamp) * 0x1000n + BigInt(partIDCounter)) & 0xffffffffffffn
+  const bytes = crypto.getRandomValues(new Uint8Array(14))
+  const random = Array.from(bytes, (byte) => PART_ID_RANDOM_CHARS[byte % PART_ID_RANDOM_CHARS.length]).join("")
+  return `prt_${encoded.toString(16).padStart(12, "0")}${random}`
+}
 
 function provenance(context: ToolContext) {
   return { sessionID: context.sessionID, messageID: context.messageID, source: "explicit_tool" as const }
@@ -278,7 +298,7 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
     },
     config: async (config) => {
       configureNativeLsp(config)
-      configureGoalCommand(config, GOAL_COMMAND_TEMPLATE)
+      configureGoalCommand(config, GOAL_COMMAND_TEMPLATE, GOAL_UNLIMITED_COMMAND_TEMPLATE)
     },
     tool: {
       get_goal: tool({
@@ -545,7 +565,7 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
       const preferenceData = renderPreferenceData(await store.read(), project)
       if (!preferenceData) return
       output.parts.unshift({
-        id: crypto.randomUUID(),
+        id: createOpenCodePartID(),
         sessionID: input.sessionID,
         messageID: output.message.id,
         type: "text",

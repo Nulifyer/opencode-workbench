@@ -111,11 +111,13 @@ Launch in Terminal** or the `opencode` command.
 
 ### Continue an active goal automatically
 
-Create an active goal with `/goal <objective>` or the goal tools. When the model
-finishes a turn and OpenCode would otherwise wait for more user input, the
-bundled companion plugin submits the complete goal-continuation prompt. It keeps
-doing so while the goal is `active`, until the model verifies completion, records
-a concrete blocker, or reaches a goal limit.
+Create an active goal with `/goal <objective>` or the goal tools. Use
+`/goal-unlimited <objective>` to explicitly create one without token, duration,
+or auto-turn limits; typing `/goal` in the chat input surfaces both commands.
+When the model finishes a turn and OpenCode would otherwise wait for more user
+input, the bundled companion plugin submits the complete goal-continuation
+prompt. It keeps doing so while the goal is `active`, until the model verifies
+completion, records a concrete blocker, or reaches a configured goal limit.
 
 The plugin atomically persists each admitted continuation before prompting. It
 does not replace OpenCode's normal post-compaction continuation, approve
