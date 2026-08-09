@@ -16,7 +16,7 @@
     "npm:esbuild@0.28.1": "0.28.1",
     "npm:esbuild@~0.28.1": "0.28.1",
     "npm:jsonc-parser@3.3.1": "3.3.1",
-    "npm:markdown-it@14.1.0": "14.1.0",
+    "npm:markdown-it@14.2.0": "14.2.0",
     "npm:typescript@^6.0.3": "6.0.3",
     "npm:yauzl@3.4.0": "3.4.0"
   },
@@ -1343,8 +1343,8 @@
         "yallist"
       ]
     },
-    "markdown-it@14.1.0": {
-      "integrity": "sha512-a54IwgWPaeBCAAsv13YgmALOF1elABB08FxO9i+r4VFk5Vl4pKokRPeX8u5TCgSsPi6ec1otfLjdOpVcgbpshg==",
+    "markdown-it@14.2.0": {
+      "integrity": "sha512-1TGiQiJVRQ3NPmZH6sx5Cfnmg6GQm9jvC1ch4TK511NjSJvjzKLzn5pPfZRNZkRPZP0HqCioSndqH8v2nRaWVQ==",
       "dependencies": [
         "argparse",
         "entities@4.5.0",
@@ -2007,7 +2007,7 @@
   "workspace": {
     "dependencies": [
       "npm:jsonc-parser@3.3.1",
-      "npm:markdown-it@14.1.0"
+      "npm:markdown-it@14.2.0"
     ],
     "packageJson": {
       "dependencies": [
@@ -2018,7 +2018,7 @@
         "npm:@vscode/vsce@3.9.2",
         "npm:esbuild@0.28.1",
         "npm:jsonc-parser@3.3.1",
-        "npm:markdown-it@14.1.0",
+        "npm:markdown-it@14.2.0",
         "npm:typescript@^6.0.3"
       ]
     },

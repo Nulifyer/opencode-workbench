@@ -44,6 +44,8 @@
 
 ### Security
 
+- Updated the Markdown renderer to `markdown-it` 14.2.0 to remove the known
+  smartquotes complexity and regular-expression denial-of-service advisories.
 - Kept protocol, trace, evidence, worktree, browser/debug capture, and verifier
   inputs bounded and sanitized without persisting prompt or attachment bodies.
 - Shared only private, expiring receipt/evidence metadata through Git's common
