@@ -73,7 +73,7 @@ Deno.test("packages the override version, root README, and managed plugin", asyn
     const manifest = JSON.parse(new TextDecoder().decode(entries.get("extension/package.json"))) as { version?: string }
     if (manifest.version !== version) throw new Error(`Packaged version was ${manifest.version ?? "missing"}`)
     const readme = new TextDecoder().decode(entries.get("extension/readme.md"))
-    if (!readme.startsWith("# OpenCode Workbench") || !readme.includes("without introducing another agent runtime.")) {
+    if (!readme.startsWith("# OpenCode Workbench") || !readme.includes("OpenCode still owns the models, agents, tools, sessions, permissions, and")) {
       throw new Error("VSIX did not contain the repository README")
     }
     if (!entries.get("extension/dist/opencode-plugin.js")?.length) throw new Error("VSIX did not contain the managed OpenCode plugin")

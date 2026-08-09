@@ -1,0 +1,159 @@
+{
+  "accepted": [
+    {
+      "name": "hello overlap",
+      "value": {
+        "protocolRange": { "minimum": 1, "maximum": 2 },
+        "client": { "surfaceID": "sidebar-1", "extensionVersion": "0.4.6" }
+      }
+    },
+    {
+      "name": "ready managed",
+      "value": {
+        "protocol": 2,
+        "epoch": "epoch-1",
+        "capabilities": {
+          "session.create": true,
+          "session.resume": true,
+          "session.fork": true,
+          "session.delete": true,
+          "prompt.steer": true,
+          "prompt.followUp": true,
+          "prompt.replace": true,
+          "prompt.cancel": true,
+          "input.permissions.exact": true,
+          "input.questions": true,
+          "context.ledger": true,
+          "context.editorBridge": true,
+          "review.exactDiff": true,
+          "goal.lifecycle": true,
+          "preference.memory": true,
+          "skill.candidates": true,
+          "native.agentHost": false
+        },
+        "runtime": {
+          "mode": "managed",
+          "authority": "opencode",
+          "opencodeVersion": "1.18.15",
+          "companion": "connected",
+          "nativeAgentHost": "deferred"
+        },
+        "limits": {
+          "maxRequestBytes": 2000000,
+          "maxPendingRequests": 128,
+          "maxEventQueue": 2000,
+          "maxStringCharacters": 1000000,
+          "maxErrorDetailsBytes": 16384
+        }
+      }
+    },
+    {
+      "name": "correlated mutation request",
+      "value": {
+        "protocol": 2,
+        "kind": "request",
+        "id": "request-1",
+        "type": "session.create",
+        "expectedRevision": 4,
+        "mutationID": "mutation-1",
+        "payload": { "draft": "" }
+      }
+    },
+    {
+      "name": "ordered event",
+      "value": {
+        "protocol": 2,
+        "kind": "event",
+        "epoch": "epoch-1",
+        "sequence": 1,
+        "type": "session.patch",
+        "sessionID": "session-1",
+        "revision": 5,
+        "payload": { "baseRevision": 4, "nextRevision": 5 }
+      }
+    },
+    {
+      "name": "structured overload response",
+      "value": {
+        "protocol": 2,
+        "kind": "response",
+        "id": "request-2",
+        "ok": false,
+        "error": {
+          "code": "OVERLOADED",
+          "message": "Host request queue is full",
+          "retryable": true,
+          "details": { "retryAfterMilliseconds": 250 }
+        }
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "name": "unknown protocol",
+      "expectedCode": "CAPABILITY_UNAVAILABLE",
+      "expectedMessage": "Unsupported protocol",
+      "value": {
+        "protocol": 3,
+        "kind": "request",
+        "id": "r",
+        "type": "x",
+        "payload": {}
+      }
+    },
+    {
+      "name": "negative event sequence",
+      "expectedCode": "VALIDATION_FAILED",
+      "expectedMessage": "event.sequence",
+      "value": {
+        "protocol": 2,
+        "kind": "event",
+        "epoch": "e",
+        "sequence": -1,
+        "type": "x",
+        "payload": {}
+      }
+    },
+    {
+      "name": "unknown structured error",
+      "expectedCode": "VALIDATION_FAILED",
+      "expectedMessage": "error.code",
+      "value": {
+        "protocol": 2,
+        "kind": "response",
+        "id": "r",
+        "ok": false,
+        "error": { "code": "NOPE", "message": "x", "retryable": false }
+      }
+    },
+    {
+      "name": "missing request payload",
+      "expectedCode": "VALIDATION_FAILED",
+      "expectedMessage": "request.payload",
+      "value": { "protocol": 2, "kind": "request", "id": "r", "type": "x" }
+    },
+    {
+      "name": "ready missing capability",
+      "expectedCode": "VALIDATION_FAILED",
+      "expectedMessage": "capabilities.session.create",
+      "value": {
+        "protocol": 2,
+        "epoch": "e",
+        "capabilities": {},
+        "runtime": {
+          "mode": "external",
+          "authority": "opencode",
+          "companion": "missing",
+          "nativeAgentHost": "deferred"
+        },
+        "limits": {
+          "maxRequestBytes": 1,
+          "maxPendingRequests": 1,
+          "maxEventQueue": 1,
+          "maxStringCharacters": 1,
+          "maxErrorDetailsBytes": 1
+        }
+      }
+    }
+  ]
+}

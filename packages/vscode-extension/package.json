@@ -63,6 +63,30 @@
     "onCommand:opencodeWorkbench.openChat",
     "onCommand:opencodeWorkbench.openChatInEditor",
     "onCommand:opencodeWorkbench.newSession",
+    "onCommand:opencodeWorkbench.planTask",
+    "onCommand:opencodeWorkbench.handoffPlan",
+    "onCommand:opencodeWorkbench.handoffGitHub",
+    "onCommand:opencodeWorkbench.captureBrowserContext",
+    "onCommand:opencodeWorkbench.fuseRuns",
+    "onChatParticipant:opencodeWorkbench.opencode",
+    "onCommand:opencodeWorkbench.showHealth",
+    "onCommand:opencodeWorkbench.showTrace",
+    "onCommand:opencodeWorkbench.newIsolatedSession",
+    "onCommand:opencodeWorkbench.removeWorktree",
+    "onCommand:opencodeWorkbench.deleteWorktreeBranch",
+    "onCommand:opencodeWorkbench.compareModels",
+    "onCommand:opencodeWorkbench.refreshRunGroups",
+    "onCommand:opencodeWorkbench.cancelRunGroup",
+    "onCommand:opencodeWorkbench.openRun",
+    "onCommand:opencodeWorkbench.openRunDiff",
+    "onCommand:opencodeWorkbench.compareRunResults",
+    "onCommand:opencodeWorkbench.discardRun",
+    "onCommand:opencodeWorkbench.generateWalkthrough",
+    "onCommand:opencodeWorkbench.openWalkthroughStop",
+    "onCommand:opencodeWorkbench.reviewChanges",
+    "onCommand:opencodeWorkbench.openReviewFinding",
+    "onCommand:opencodeWorkbench.captureTaskEvidence",
+    "onCommand:opencodeWorkbench.verifyGoal",
     "onCommand:opencodeWorkbench.refresh",
     "onCommand:opencodeWorkbench.deleteSession",
     "onCommand:opencodeWorkbench.abortSession",
@@ -74,13 +98,36 @@
     "commands": [
       { "command": "opencodeWorkbench.openChat", "title": "OpenCode: Open Chat", "icon": "$(sparkle)" },
       { "command": "opencodeWorkbench.openChatInEditor", "title": "OpenCode: Open Chat in Editor", "icon": "$(open-preview)" },
-      { "command": "opencodeWorkbench.newSession", "title": "OpenCode: New Session", "icon": "$(add)" },
-      { "command": "opencodeWorkbench.refresh", "title": "OpenCode: Refresh", "icon": "$(refresh)" },
-      { "command": "opencodeWorkbench.deleteSession", "title": "OpenCode: Delete Session", "icon": "$(trash)" },
-      { "command": "opencodeWorkbench.abortSession", "title": "OpenCode: Abort Active Session", "icon": "$(debug-stop)" },
-      { "command": "opencodeWorkbench.launchTerminal", "title": "OpenCode: Launch in Terminal" },
-      { "command": "opencodeWorkbench.attachResource", "title": "OpenCode: Add to Chat", "icon": "$(attach)" },
-      { "command": "opencodeWorkbench.setServerPassword", "title": "OpenCode: Set External Server Password" }
+      { "command": "opencodeWorkbench.newSession", "title": "OpenCode: New Session", "icon": "$(add)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.planTask", "title": "OpenCode: Plan Task", "icon": "$(notebook)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.handoffPlan", "title": "OpenCode: Handoff Approved Plan", "icon": "$(run-all)", "enablement": "workspaceFolderCount > 0 && editorLangId == markdown" },
+      { "command": "opencodeWorkbench.handoffGitHub", "title": "OpenCode: Handoff GitHub Issue or Pull Request", "icon": "$(github)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.captureBrowserContext", "title": "OpenCode: Attach Browser/Debug Context", "icon": "$(browser)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.fuseRuns", "title": "OpenCode: Fuse Run Approaches", "icon": "$(combine)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.showHealth", "title": "OpenCode: Show Health Center", "icon": "$(pulse)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.showTrace", "title": "OpenCode: Show Sanitized Session Trace", "icon": "$(output)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.newIsolatedSession", "title": "OpenCode: New Isolated Session", "icon": "$(git-branch)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.removeWorktree", "title": "OpenCode: Remove Worktree", "icon": "$(trash)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.deleteWorktreeBranch", "title": "OpenCode: Delete Removed Worktree Branch", "icon": "$(git-branch)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.compareModels", "title": "OpenCode: Compare Models", "icon": "$(type-hierarchy-sub)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.refreshRunGroups", "title": "OpenCode: Refresh Run Groups", "icon": "$(refresh)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.cancelRunGroup", "title": "OpenCode: Cancel Run Group", "icon": "$(debug-stop)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.openRun", "title": "OpenCode: Open Run Result", "icon": "$(folder-opened)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.openRunDiff", "title": "OpenCode: Open Run Native Diff", "icon": "$(diff)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.compareRunResults", "title": "OpenCode: Compare Run Results", "icon": "$(graph)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.discardRun", "title": "OpenCode: Discard Run Safely", "icon": "$(trash)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.generateWalkthrough", "title": "OpenCode: Generate Changes Walkthrough", "icon": "$(list-ordered)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.openWalkthroughStop", "title": "OpenCode: Open Walkthrough Stop", "icon": "$(go-to-file)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.reviewChanges", "title": "OpenCode: Review Changes", "icon": "$(search)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.openReviewFinding", "title": "OpenCode: Open Review Finding", "icon": "$(go-to-file)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.captureTaskEvidence", "title": "OpenCode: Run Task and Capture Evidence", "icon": "$(testing-run-icon)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.verifyGoal", "title": "OpenCode: Verify Active Goal", "icon": "$(verified)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.refresh", "title": "OpenCode: Refresh", "icon": "$(refresh)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.deleteSession", "title": "OpenCode: Delete Session", "icon": "$(trash)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.abortSession", "title": "OpenCode: Abort Active Session", "icon": "$(debug-stop)", "enablement": "workspaceFolderCount > 0 && opencodeWorkbench.sessionBusy" },
+      { "command": "opencodeWorkbench.launchTerminal", "title": "OpenCode: Launch in Terminal", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.attachResource", "title": "OpenCode: Add to Chat", "icon": "$(attach)", "enablement": "workspaceFolderCount > 0" },
+      { "command": "opencodeWorkbench.setServerPassword", "title": "OpenCode: Set External Server Password", "enablement": "workspaceFolderCount > 0" }
     ],
     "menus": {
       "explorer/context": [
@@ -132,14 +179,35 @@
           "default": "~/.config/opencode-workbench/server.env",
           "scope": "machine",
           "description": "Optional owner-only credentials file for external server mode. Secret Storage takes precedence."
+        },
+        "opencodeWorkbench.enterBehavior": {
+          "type": "string",
+          "enum": ["send", "newline"],
+          "enumDescriptions": ["Enter sends and Shift+Enter inserts a newline.", "Enter inserts a newline and Ctrl/Cmd+Enter sends."],
+          "default": "send",
+          "description": "Controls how Enter behaves in the Workbench composer."
         }
       }
     },
+    "chatParticipants": [
+      {
+        "id": "opencodeWorkbench.opencode",
+        "name": "opencode",
+        "fullName": "OpenCode Workbench",
+        "description": "Hand off a task to a real OpenCode session without running another model loop.",
+        "isSticky": false,
+        "commands": [
+          { "name": "continue", "description": "Hand this task to the selected OpenCode session" },
+          { "name": "open", "description": "Open the current OpenCode session" }
+        ]
+      }
+    ],
     "keybindings": [
       {
         "command": "opencodeWorkbench.newSession",
         "key": "ctrl+alt+n",
-        "mac": "ctrl+alt+n"
+        "mac": "ctrl+alt+n",
+        "when": "workspaceFolderCount > 0 && (focusedView == opencodeWorkbench.chat || activeWebviewPanelId == opencodeWorkbench.chatEditor)"
       }
     ],
     "viewsContainers": {
@@ -158,7 +226,7 @@
     }
   },
   "scripts": {
-    "build": "node ./esbuild.mjs",
+    "build": "deno run -A ../../scripts/build.ts",
     "check": "tsc --noEmit",
     "test": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 --ignore=test/opencode_integration_test.ts test",
     "test:integration:synthetic": "deno task --cwd=../.. test:integration:synthetic",

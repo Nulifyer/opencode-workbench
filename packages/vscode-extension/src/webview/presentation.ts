@@ -147,8 +147,8 @@ export function stripTerminalSequences(value: string): string {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
 }
 
-export function shouldSubmitComposerKey(event: { key: string; shiftKey: boolean; isComposing: boolean; keyCode?: number }): boolean {
-  return event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229
+export function shouldSubmitComposerKey(event: { key: string; shiftKey: boolean; ctrlKey?: boolean; metaKey?: boolean; isComposing: boolean; keyCode?: number }, behavior: "send" | "newline" = "send"): boolean {
+  return event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && (behavior === "send" || Boolean(event.ctrlKey || event.metaKey))
 }
 
 export function shouldCollapsePaste(text: string): boolean {

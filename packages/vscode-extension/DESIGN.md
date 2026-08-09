@@ -40,6 +40,77 @@ provides edit, pause, resume, and cancel controls without running a competing
 continuation loop. A missing native goal store can import compatible state once
 from the former third-party goal store.
 
+Independent verification remains a separate bounded OpenCode session with
+tools disabled and auto-approval off. A verifier receives the objective,
+criteria, bounded deterministic evidence, diff/diagnostic summaries, progress,
+and remaining limits. Workbench retains bounded per-attempt session, model,
+usage, cost, and outcome metadata when OpenCode reports it. Verification is
+cancellable. Its structured verdict carries an expected settlement generation
+into the plugin tool, so it is rejected even if the goal changes after prompt
+admission but before tool execution; it remains advisory until the user applies
+it through the plugin-owned goal state.
+
+## Application boundaries
+
+`SessionController` coordinates application services rather than owning their
+state directly. `SessionRepository` owns reduced session state and
+subscriptions; `CatalogService` owns model/agent catalogs and validated
+preferences; `PromptDispatcher` owns admission generations, queued delivery,
+and in-flight prompts; `SettlementCoordinator` owns pending operations and
+settlement inputs; permission and question coordinators own their response
+generations; `TranscriptReconciler` owns live/snapshot merge history; and
+`SnapshotProjector` emits the bounded webview projection. Connection lifecycle
+and ordered events remain separate session/protocol services.
+
+The webview mirrors those boundaries with a capability-aware transport client
+and request registry, a v1 compatibility adapter, a single state store,
+composer/scroll/focus/overlay controllers, and focused conversation, queue,
+session-list, inspector, and composer views. The extension host remains the
+authority; a reloaded or hidden webview can only apply matching epochs and
+revisions.
+
+Stable mode intentionally remains HTTP/SSE. ADR 0003 defers native Agent Host
+integration because a stable third-party registration and lossless ACP mapping
+are not proven. The custom rail therefore progressively groups ordinary
+sessions and Workbench RunGroups while OpenCode remains the sole session and
+transcript authority.
+
+## Worktrees, runs, and review
+
+Workbench is the sole owner of fallback worktrees. A durable metadata journal
+records canonical repository identity, typed Git arguments, mutation ID, phase,
+branch, worktree path, and OpenCode session/prompt IDs. It never records prompt
+or attachment bodies. Recovery reconciles the journal with `git worktree list`;
+cleanup refuses dirty worktrees and keeps worktree, branch, and session deletion
+as independent user actions.
+
+Linked worktrees share a bounded continuity registry at
+`<git-common-dir>/opencode-workbench/handoff-continuity-v1.json`. The registry
+contains only sanitized context receipts, deterministic evidence references,
+target directory/session IDs, and source receipt IDs. It never contains prompt
+text, attachment bytes, task output, diagnostics text, screenshots, or
+credentials. Each real multi-run admission receives a receipt cloned onto its
+actual session and prompt IDs instead of reusing the synthetic RunGroup
+identity.
+
+Continuity writes are ordered in each extension host, serialized across hosts
+with an owner-only lock, fsynced, and atomically renamed. The metadata directory
+is mode `0700` and the file is mode `0600` where the platform exposes POSIX
+permissions. A write can be flushed before another workspace opens or before a
+comparison/Fusion read. The registry is limited to 128 records and 2 MiB; each
+record is limited to 20 receipts, 200 evidence references, 512 KiB, and a
+30-day lifetime. It is stored only in the repository's Git common directory,
+not in a checkout or sibling working-tree path.
+
+RunGroups store only references required to reconnect model sessions and
+worktrees. Multi-run isolates partial failure and cancellation, and never merges
+results. Fusion copies bounded exact diffs, diff manifests, objective comparison
+rows, deterministic evidence, assistant summaries, source-session links, and
+hashed provenance into a new isolated synthesis session; it never merges,
+cherry-picks, pushes, or publishes automatically. Walkthrough and review documents are keyed
+to an exact diff hash, and native navigation recaptures and validates that hash
+before opening an anchor.
+
 ## UI Boundaries
 
 The chat is the primary view in a Secondary Side Bar container. Its header has
@@ -59,6 +130,26 @@ collapsible text attachments with model-visible references. Pending payloads
 are synchronized between the sidebar and editor webviews but remain outside
 snapshots and persistent VS Code state. User-message snapshots continue to
 exclude attachment URLs and base64 data.
+
+Context receipts persist only bounded metadata: kind, label, contained URI or
+range where applicable, revision/hash, byte/token estimate, and explicit
+truncation. Browser/debug capture, editor selection, console text, inspected
+element metadata, screenshots, GitHub selection, and Fusion source files are
+one-shot in-memory prompt attachments. Workbench does not persist their bytes,
+does not proxy browser traffic, and does not own GitHub credentials.
+
+Deterministic evidence references are retained in workspace state so a goal's
+evidence IDs still resolve after an extension-host reload. Entries contain only
+bounded source/session/run identifiers and controlled summaries such as task
+exit codes, repository-scoped diagnostic count deltas, and exact diff hashes;
+task output and diagnostic message text are not persisted.
+
+When a task crosses into a linked worktree, the admitted receipt and controlled
+evidence metadata are explicitly exported to the Git-common-dir continuity
+registry and imported idempotently by ID. Obvious credential forms are redacted;
+unsafe or credential-bearing receipt URIs are omitted. Per-workspace state
+remains the local projection, while the private registry is the crash-safe
+cross-workspace handoff authority.
 
 ## Bridge
 
@@ -97,8 +188,11 @@ operation cannot restart OpenCode synchronously from its own tool call.
 
 ## Build Layout
 
-`node esbuild.mjs` produces `dist/extension.cjs` and `media/chat.js` without
-shipping source maps. The extension bundle excludes the host-provided `vscode`
-module. The webview bundle includes only the pure shared message validator.
+The root `deno task build` command is canonical. The package-local build command
+delegates to that same builder so a package build cannot omit the managed
+companion plugin. It produces `dist/extension.cjs`, `media/chat.js`, and the
+bundled `dist/opencode-plugin.js` without shipping source maps. The extension
+bundle excludes the host-provided `vscode` module. The webview bundle includes
+only the pure shared message validator.
 
 The package includes compiled output, media, README, design notes, and license files. Development sources are excluded from release packages through the package manifest's `files` list.

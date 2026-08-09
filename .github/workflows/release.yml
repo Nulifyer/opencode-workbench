@@ -17,7 +17,8 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with:
           deno-version: v2.9.4
-      - run: deno task release
+      - name: Verify, repeat stress tests, and build release assets
+        run: deno task release
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with:
           subject-path: |

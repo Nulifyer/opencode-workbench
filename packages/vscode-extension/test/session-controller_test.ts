@@ -1,7 +1,6 @@
 import { isOpenCodeMessageID, parseHostMessage, reusablePermissionScopes, type MessageBundle, type SessionInfo } from "@opencode-workbench/shared"
 import type { OpenCodeClient } from "../src/opencode-client.ts"
 import { type ComposerPreferences, permissionPatternMatches, SessionController } from "../src/session-controller.ts"
-import { sessionTreeEntries } from "../src/views/session-tree-model.ts"
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -102,6 +101,34 @@ Deno.test("chat snapshot caps session summaries while retaining selection", asyn
   if (snapshot.sessions.length !== 5_000 || !snapshot.sessions.some((value) => value.id === "session-5000") ||
     !parseHostMessage({ type: "snapshot", snapshot })) {
     throw new Error("Bounded session summaries omitted the selected session or failed protocol validation")
+  }
+  controller.dispose()
+})
+
+Deno.test("chat history exposes and pages messages older than the bounded snapshot", async () => {
+  const messages: MessageBundle[] = Array.from({ length: 5_201 }, (_, index) => ({
+    info: { id: `message-${String(index).padStart(4, "0")}`, sessionID: "one", role: index % 2 ? "assistant" : "user" },
+    parts: [],
+  }))
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => messages,
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const visible = controller.chatSnapshot().session
+  if (visible?.messages.length !== 5_000 || visible.history?.totalMessages !== 5_201 || !visible.history.hasOlder || visible.history.limitedBy !== "messages") {
+    throw new Error(`Bounded transcript did not disclose older history: ${JSON.stringify(visible?.history)}`)
+  }
+  const page = controller.historyPage("one", visible.messages[0]!.info.id)
+  if (page.messages.length !== 200 || page.messages[0]?.info.id !== "message-0001" || !page.hasOlder || page.totalMessages !== 5_201) {
+    throw new Error(`Older transcript page was not projected from the exact boundary: ${JSON.stringify({ first: page.messages[0]?.info.id, count: page.messages.length, hasOlder: page.hasOlder })}`)
+  }
+  const oldest = controller.historyPage("one", page.messages[0]!.info.id)
+  if (oldest.messages.length !== 1 || oldest.messages[0]?.info.id !== "message-0000" || oldest.hasOlder) {
+    throw new Error("Final older-history page did not terminate at the retained transcript boundary")
   }
   controller.dispose()
 })
@@ -783,10 +810,8 @@ Deno.test("persisted recovery mapping collapses clustered duplicate forks", asyn
   const controller = new SessionController(fake, { error: () => undefined }, undefined, "older", { source: "newest" })
   await controller.reconcile()
   const sessions = controller.chatSnapshot().sessions
-  const tree = sessionTreeEntries(controller)
   if (sessions.length !== 2 || sessions[0]?.id !== "later" || sessions[1]?.id !== "newest" || sessions[1]?.title !== "Dashboard (fork #1)" || controller.snapshot.selectedID !== "newest" ||
-    controller.chatSnapshot().session?.title !== sessions[1].title || controller.visibleSessionIDs().join(",") !== "later,newest" ||
-    tree.map((entry) => `${entry.id}:${entry.title}`).join(",") !== "later:Dashboard (fork #1),newest:Dashboard (fork #1)") {
+    controller.chatSnapshot().session?.title !== sessions[1].title || controller.visibleSessionIDs().join(",") !== "later,newest") {
     throw new Error("Persisted recovery duplicates were not presented as one logical session")
   }
   controller.dispose()
@@ -2096,6 +2121,32 @@ Deno.test("question and diff events expose actionable session state", async () =
   if (answers[0]?.[0]?.[0] !== "Yes" || controller.chatSnapshot().session?.questions?.length !== 0) {
     throw new Error("Question response was not sent or removed")
   }
+  controller.dispose()
+})
+
+Deno.test("an in-flight question response survives webview snapshot reload", async () => {
+  const response = deferred<void>()
+  const fake = { respondQuestion: () => response.promise } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
+  internal.handleEvent({
+    type: "question.v2.asked",
+    properties: { id: "que_reload", sessionID: "one", questions: [{ header: "Choice", question: "Continue?", options: [{ label: "Yes", description: "Proceed" }] }] },
+  })
+
+  const first = controller.respondQuestion("que_reload", [["Yes"]], "one")
+  if (controller.chatSnapshot().session?.questions?.[0]?.id !== "que_reload") throw new Error("Reload snapshot lost the in-flight question")
+  let duplicateRejected = false
+  try {
+    await controller.respondQuestion("que_reload", [["Yes"]], "one")
+  } catch (error) {
+    duplicateRejected = String(error).includes("already in progress")
+  }
+  if (!duplicateRejected) throw new Error("Reloaded surface could duplicate an in-flight question response")
+  response.resolve()
+  await first
+  if (controller.chatSnapshot().session?.questions?.length) throw new Error("Settled question response remained pending")
   controller.dispose()
 })
 

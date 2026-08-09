@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added Plan-first handoff, isolated worktrees, two-to-five-model Multi-run,
+  objective run comparison, and opt-in Fusion in a fresh worktree.
+- Added exact-diff walkthroughs, model-labeled code review, deterministic task
+  and diagnostics evidence, and native diff navigation.
+- Added independent bounded goal verification, configurable acceptance
+  criteria, repeated-block handling, and stale-verdict protection.
+- Added Needs Attention, the persistent inspector, Health Center, sanitized
+  lifecycle traces, admitted-context receipts, and long-session navigation.
+- Added bounded GitHub issue/PR handoff through VS Code sign-in and explicit
+  diagnostic, debug, terminal/task excerpt, screenshot, and approved-URL
+  context capture.
+
+### Changed
+
+- Reorganized controller and webview responsibilities around explicit session,
+  transport, lifecycle, context, worktree, run, review, and verifier services.
+- Made the README a task-oriented guide for installing and using Workbench;
+  contributor and architecture detail now lives in the dedicated documents.
+- Expanded accessibility for keyboard navigation, focus restoration, live
+  status, reduced motion, forced colors, and both sidebar and editor surfaces.
+- Made isolated run status, pending input, failures, receipts, and evidence
+  update across worktrees without requiring an unrelated chat refresh.
+
+### Fixed
+
+- Included untracked files in working-tree diff identity, review, run
+  comparison, and Fusion inputs instead of presenting an incomplete diff as
+  complete.
+- Preserved user edits made while a Plan-first result is still being generated.
+- Made worktree/run recovery journal transitions crash-safe and prevented
+  cancellation from being overwritten by an in-flight launch.
+- Rejected walkthrough and review anchors outside their exact Git hunk and
+  rejected false complete-coverage claims.
+- Scoped verifier evidence to its session and invalidated verdicts when goal
+  inputs change.
+- Surfaced Command Palette workflow failures as bounded, redacted VS Code error
+  messages instead of requiring users to discover them in Output.
+
+### Security
+
+- Kept protocol, trace, evidence, worktree, browser/debug capture, and verifier
+  inputs bounded and sanitized without persisting prompt or attachment bodies.
+- Shared only private, expiring receipt/evidence metadata through Git's common
+  directory and requested owner-only filesystem permissions where supported.
+
 ## 0.4.6 - 2026-08-05
 
 ### Changed

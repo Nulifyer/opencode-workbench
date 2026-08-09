@@ -1,227 +1,295 @@
 # OpenCode Workbench
 
-OpenCode Workbench is a VS Code interface for an installed
-[OpenCode](https://opencode.ai) runtime. It adds multi-session chat,
-editor-aware tools, permission prompts, approved preferences, and staged skill
-evidence without introducing another agent runtime.
+Bring your existing [OpenCode](https://opencode.ai) coding agent into VS Code.
+OpenCode Workbench gives you a native place to chat, review changes, answer
+permission requests, plan work, and compare approaches without replacing the
+OpenCode runtime you already use.
 
-OpenCode remains responsible for models, agents, tools, permissions, sessions,
-and transcripts. Workbench provides the editor experience around that runtime.
+OpenCode still owns the models, agents, tools, sessions, permissions, and
+transcripts. Workbench makes those capabilities comfortable to use alongside
+your editor, source control, terminal, and debugger.
 
-## What it provides
+## What you can do
 
-- A Copilot-style chat view in the VS Code Secondary Side Bar.
-- Searchable session history in the chat header and an editor-area Sessions rail.
-- Background session status and unread indicators.
-- Agent and model selection for each session, using OpenCode's resolved provider
-  catalog, model capabilities, variants, and token limits.
-- Streaming responses, reasoning sections, tool activity, and abort controls.
-- Anchored image and PDF attachments, collapsible large-paste context, previews,
-  and synchronized pending composer payloads across chat surfaces.
-- Per-message copy, edit, retry, undo, and message-scoped fork actions.
-- Plugin-owned auto-continuation for active goals, with persistent limits and controls.
-- Inline permission requests with exact scope details and explicit decisions.
-- Editor context tools for selections, unsaved buffers, notebooks, diagnostics,
-  files, debugging, terminals, tasks, MCP resources, and approved URLs.
-- Explicitly approved global and project preferences.
-- Staged skill candidates that never modify skill files automatically.
-- A terminal command that launches the normal OpenCode TUI.
+- Work with multiple OpenCode sessions without leaving VS Code.
+- Attach the file, selection, unsaved buffer, diagnostic, or other editor
+  context you choose.
+- See streaming answers, reasoning summaries, tool activity, changed files,
+  todos, questions, and permission requests in one conversation.
+- Plan first, edit the plan, and explicitly hand it off to an implementation
+  session, isolated worktree, model comparison, or goal.
+- Run the same task with two to five models in isolated worktrees and compare
+  their observable results without an automatic “winner.”
+- Review the exact current diff with walkthroughs, model-labeled findings, test
+  evidence, and native VS Code diff navigation.
+- Keep a bounded goal moving across turns, with limits and an independent,
+  tools-disabled verifier that you choose when to apply.
 
-The project does not implement its own model loop, provider configuration,
-prompt compiler, or transcript database.
+Workbench does not add another model loop, provider configuration, transcript
+database, terminal emulator, or browser. The normal OpenCode TUI remains
+available whenever you want it.
 
-## Components
+## Before you start
 
-- `packages/vscode-extension` contains the VS Code session and chat interface.
-- `packages/opencode-plugin` contains native goals, preferences, skill
-  candidates, and the authenticated VS Code bridge tools.
-- `packages/shared` contains the validated protocol and multi-session state.
+You need:
 
-Managed mode bundles and loads the companion plugin for preference,
-goal, skill-candidate, and editor bridge tools.
+- VS Code 1.106 or newer;
+- a supported OpenCode 1.18.x release (1.18.11 or newer);
+- a trusted workspace folder; and
+- at least one model provider configured in OpenCode.
 
-## Requirements
+If OpenCode is new to you, install and configure it from the
+[OpenCode website](https://opencode.ai), then confirm that `opencode` runs in a
+terminal before opening Workbench.
 
-- OpenCode 1.18.11 or newer within major version 1.
-- VS Code 1.106 or newer.
-- A trusted workspace folder.
-
-## Install the VS Code extension
+## Install
 
 Install **OpenCode Workbench** from the
 [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=nulifyer.opencode-workbench),
-or install the verified VSIX attached to the latest
+or install the VSIX from the latest
 [GitHub release](https://github.com/Nulifyer/opencode-workbench/releases/latest).
 
-The Marketplace extension ID is `nulifyer.opencode-workbench`.
+The extension ID is `nulifyer.opencode-workbench`.
 
-Managed mode is the default. The extension finds `opencode` on VS Code's
-`PATH`, validates its version, and starts a private authenticated loopback
-server for the current VS Code window. The bundled companion plugin is added to
-that process without modifying the user's OpenCode configuration.
+## Five-minute start
 
-## External server mode
+1. Open the folder you want OpenCode to work in.
+2. Open the OpenCode icon in VS Code's Secondary Side Bar, or run
+   **OpenCode: Open Chat** from the Command Palette.
+3. Choose **New session**.
+4. Select an agent and model at the bottom of the chat.
+5. Describe the task and press `Enter`. Use `Shift+Enter` for a new line.
 
-Set `opencodeWorkbench.serverMode` to `external` to use a separately managed or
-remote OpenCode server. Start the server with authentication:
+Workbench starts in **managed mode**. It finds your installed `opencode`
+executable, starts a private authenticated server for this VS Code window, and
+loads the companion features without changing your OpenCode configuration.
 
-Linux or macOS:
+Open **OpenCode: Open Chat in Editor** when you want a wider conversation with
+the session and run rail. Your sidebar and editor surfaces stay synchronized.
 
-```sh
-export OPENCODE_SERVER_USERNAME=opencode
-export OPENCODE_SERVER_PASSWORD="replace-with-a-long-random-secret"
-opencode serve --hostname 127.0.0.1 --port 4096
+The header switches sessions and opens **Needs Attention** or the Inspector.
+The conversation stays in the center, while the composer at the bottom owns
+the exact draft, model, agent, permission mode, and attachments for that
+session. Editor mode adds a rail for sessions and model runs; the Inspector is
+a separate panel for activity, changes, context receipts, goals, runs, and
+walkthroughs.
+
+## Everyday workflows
+
+### Ask, build, and follow up
+
+Start with ordinary prompts such as:
+
+```text
+Explain how authentication works in this project.
+Fix the failing parser test and show me what changed.
+Review the current changes for correctness and missing tests.
 ```
 
-Windows PowerShell:
+If a session is already working, the send menu lets you decide what the new
+instruction means:
 
-```powershell
-$env:OPENCODE_SERVER_USERNAME = "opencode"
-$env:OPENCODE_SERVER_PASSWORD = "replace-with-a-long-random-secret"
-opencode serve --hostname 127.0.0.1 --port 4096
-```
+- **Steer current work** delivers it at OpenCode's next safe boundary.
+- **Follow up after completion** queues it for the next turn.
+- **Replace queued instruction** stops the current work and admits the new
+  instruction next.
 
-Run **OpenCode: Set External Server Password** in VS Code and enter the same
-password. The password is stored in VS Code Secret Storage, not workspace
-settings.
+Workbench keeps each session's draft and pending context separate. Background
+status, unread indicators, and **Needs Attention** help you move between active
+sessions without losing your place.
 
-## Use Workbench
+### Give OpenCode the right context
 
-1. Open a workspace folder.
-2. Run **OpenCode: Open Chat** or open the OpenCode view from the Secondary Side
-   Bar.
-3. Create a session with the view title action or `Ctrl+Alt+N`.
-4. Select or search sessions from the chat header. Run **OpenCode: Open Chat in
-   Editor** for the Sessions, Changes, and Details rail.
-5. Choose an agent and model in the composer, enter a prompt, and press `Enter`
-   to send. Use `Shift+Enter` for a newline; `Ctrl+Enter` also sends.
+Use the paperclip, `@` file search, or **OpenCode: Add to Chat** from an editor
+or Explorer context menu for files, folders, selections, unsaved buffers,
+notebooks, MCP resources, images, PDFs, and pasted text.
 
-The model picker shows only providers and models resolved by the connected
-OpenCode instance. OpenCode reports how each provider was configured, model
-capabilities, variants, and advertised context/input/output limits. It does not
-report provider subscription tiers, so Workbench does not infer a plan from a
-provider ID or credential.
+Run **OpenCode: Attach Browser/Debug Context** when you explicitly want to add
+a repository diagnostic summary, bounded VS Code debug metadata, a screenshot,
+one approved HTTP(S) URL, or one clipboard excerpt that you identify as console
+output, element metadata, or terminal/task text. Workbench sends the full
+approved URL to OpenCode but does not fetch it; the durable receipt keeps only a
+sanitized URL identity, without credentials, query, or fragment.
 
-The chat view starts in the Secondary Side Bar so Explorer, Search, and source
-control remain available on the left. VS Code still allows moving the OpenCode
-container or individual views.
+The composer shows what will be sent. After admission, the conversation keeps
+a compact receipt describing the context—not a hidden copy of its contents.
 
-The terminal experience remains the normal OpenCode TUI through **OpenCode:
-Launch in Terminal** or the `opencode` command.
+When OpenCode asks for permission, read the exact operation and choose whether
+to allow it once, allow the shown scope, or reject it. Incomplete or truncated
+permission detail cannot be approved.
 
-### Continue an active goal automatically
+### Plan before implementation
 
-Create an active goal with `/goal <objective>` or the goal tools. Use
-`/goal-unlimited <objective>` to explicitly create one without token, duration,
-or auto-turn limits; typing `/goal` in the chat input surfaces both commands.
-When the model finishes a turn and OpenCode would otherwise wait for more user
-input, the bundled companion plugin submits the complete goal-continuation
-prompt. It keeps doing so while the goal is `active`, until the model verifies
-completion, records a concrete blocker, or reaches a configured goal limit.
+Run **OpenCode: Plan Task** or use the Plan-first action in Workbench. A
+read-only OpenCode session prepares an untitled Markdown plan that you can edit
+without writing it into the repository.
 
-The plugin atomically persists each admitted continuation before prompting. It
-does not replace OpenCode's normal post-compaction continuation, approve
-permissions, or bypass destructive-action safeguards. Prompt-admission failures
-pause the goal instead of retrying indefinitely. Automatic prompts appear as
-**Goal continued automatically** timeline markers rather than user messages.
+When it is ready, run **OpenCode: Handoff Approved Plan** and choose where the
+work should continue:
 
-Use the goal bar or `/goal edit`, `/goal pause`, `/goal resume`, and `/goal
-cancel` to control the goal. Token, duration, and auto-turn limits stored on the
-goal remain authoritative.
+- the current checkout;
+- a new isolated worktree;
+- a two-to-five-model comparison; or
+- the active session goal.
 
-Goal tools and `/goal` are provided by the bundled Workbench companion plugin;
-no third-party goal plugin is required. On first managed startup, Workbench
-imports compatible state from
-`$XDG_DATA_HOME/opencode-goal-plugin/goals.json` when its native goal store does
-not yet exist. Native state is stored in
-`$XDG_DATA_HOME/opencode-workbench/plugin/goals.json`.
+If you start editing while OpenCode is still preparing its answer, your draft
+is preserved and the generated plan opens separately for comparison.
 
-## VS Code settings
+### Start from a GitHub issue or pull request
 
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `opencodeWorkbench.serverMode` | `managed` | Starts a private server or connects to an external server. |
-| `opencodeWorkbench.executablePath` | Empty | Optional absolute OpenCode executable path for managed mode. |
-| `opencodeWorkbench.managedServerStartupTimeout` | `120` | Seconds to wait for managed-server version checks and startup. Increase this on systems slowed by antivirus scanning. |
-| `opencodeWorkbench.serverUrl` | `http://127.0.0.1:4096` | External server URL. |
-| `opencodeWorkbench.serverUsername` | Empty | External HTTP Basic username override. |
-| `opencodeWorkbench.serverEnvironmentFile` | `~/.config/opencode-workbench/server.env` | Optional external credentials file on Unix systems. |
+Run **OpenCode: Handoff GitHub Issue or Pull Request** and paste a canonical
+GitHub URL. Workbench uses VS Code's existing GitHub sign-in to read a bounded
+snapshot of the title, metadata, body, and—for pull requests—changed files and
+available patch excerpts. It does not ask for or store a separate token.
+
+The recommended choice starts the task in an isolated worktree. The attached
+context document states any body, file, or patch limits and any
+sensitive-looking values that were redacted; the context receipt marks a
+partial snapshot explicitly. If GitHub Pull Requests and Issues is installed,
+Workbench can offer its native view or PR-changes surface after the handoff.
+See [GitHub handoff](docs/guides/github-handoff.md) for the exact contents,
+limits, and privacy behavior.
+
+### Compare isolated approaches
+
+Use **OpenCode: Compare Models** to run one prompt in separate Git worktrees.
+Each run has its own OpenCode session, branch, status, and diff. The comparison
+shows elapsed time, changed files, diff totals, recorded tasks and diagnostics,
+goal/verifier state, and any reliable usage data. Missing evidence is labeled
+rather than guessed.
+
+Run **OpenCode: Fuse Run Approaches** when you want OpenCode to synthesize the
+recorded approaches. Fusion starts in a fresh isolated worktree with bounded
+source records; it does not merge, cherry-pick, push, or publish a result.
+
+If an isolated run opens in another VS Code window, its compact context receipt
+goes with it and recorded evidence can return to the original comparison. This
+continuity uses private, bounded metadata in the repository's Git data; it does
+not copy the prompt, attachments, task output, or source files.
+
+You decide which result to keep. Workbench never merges, cherry-picks, pushes,
+or publishes a run automatically. Dirty worktrees are retained until you deal
+with their changes explicitly.
+
+### Understand and review changes
+
+Use these commands from the Command Palette:
+
+- **OpenCode: Generate Changes Walkthrough** explains an exact diff as an
+  ordered tour.
+- **OpenCode: Review Changes** creates separately labeled model findings.
+- **OpenCode: Run Task and Capture Evidence** records a task exit result and
+  the current VS Code diagnostics for the selected session.
+- **OpenCode: Open Run Native Diff** opens an isolated result in VS Code's diff
+  editor.
+
+Walkthrough and review links are tied to an exact diff and hunk. Workbench asks
+you to regenerate them when the repository changes instead of navigating with
+stale locations. Untracked files are included in working-tree reviews.
+
+### Keep a goal moving
+
+Create a goal with `/goal <objective>`. The companion plugin can continue an
+active goal when a turn would otherwise stop, while respecting token, duration,
+and auto-turn limits. `/goal-unlimited <objective>` is an explicit choice to
+remove those limits.
+
+Use the Goal inspector or `/goal edit`, `/goal pause`, `/goal resume`, and
+`/goal cancel` to stay in control. **OpenCode: Verify Active Goal** runs a
+bounded independent verifier with no tools and no automatic approval. Its
+verdict is advisory until you apply it, and a result produced against an older
+goal revision is rejected.
+
+## Managed and external servers
+
+Managed mode is recommended for most people. Every VS Code window gets its own
+loopback server and temporary credentials, and the process stops with the
+window.
+
+Choose `external` for `opencodeWorkbench.serverMode` only when you already run
+an OpenCode server yourself. Start that server with authentication, set
+`opencodeWorkbench.serverUrl` and `opencodeWorkbench.serverUsername`, then run
+**OpenCode: Set External Server Password**. The password goes to VS Code Secret
+Storage, never workspace settings.
 
 Plain HTTP is accepted only for numeric loopback addresses. Remote servers must
-use HTTPS. Passwords cannot be stored in workspace settings.
+use HTTPS. Companion-plugin features are shown as unavailable when an external
+server does not advertise them.
 
-## Security model
+## Useful settings
 
-- Managed OpenCode servers bind to loopback, use ephemeral random credentials,
-  and stop with their VS Code window.
-- The VS Code bridge uses an ephemeral 256-bit token and an owner-only registry.
-- Bridge requests are allowlisted, size-limited, and workspace-contained.
-- The bridge does not accept shell command strings or arbitrary VS Code command
-  IDs.
-- The chat webview has no network access and uses a nonce-based content security
-  policy with escaping-first Markdown rendering.
-- Preferences require explicit approval, and inferred preferences remain
-  proposals until approved.
-- Skill candidates never modify skill files automatically.
+| Setting | Default | What it changes |
+| --- | --- | --- |
+| `opencodeWorkbench.serverMode` | `managed` | Use Workbench's private server or your external server. |
+| `opencodeWorkbench.executablePath` | Empty | Use a specific OpenCode executable instead of searching `PATH`. |
+| `opencodeWorkbench.managedServerStartupTimeout` | `120` | Allow more startup time on slower systems. |
+| `opencodeWorkbench.serverUrl` | `http://127.0.0.1:4096` | Address of an external OpenCode server. |
+| `opencodeWorkbench.enterBehavior` | `send` | Make Enter send or insert a new line. Ctrl/Cmd+Enter always sends. |
 
-See [`packages/vscode-extension/DESIGN.md`](packages/vscode-extension/DESIGN.md)
-for protocol and trust-boundary details. See
-[`SKILL-LIFECYCLE.md`](SKILL-LIFECYCLE.md) for the reviewed skill-development,
-activation, reload, session-continuity, and memory design.
+## Privacy and safety
 
-## Development
+- Managed servers listen only on loopback and use temporary random credentials.
+- The chat webview has no network access.
+- Workspace bridge operations are allowlisted, bounded, and contained to the
+  selected workspace root.
+- Workbench never stores complete prompts, attachment bytes, unsaved-buffer
+  contents, screenshots, provider secrets, or GitHub credentials in its
+  metadata.
+- Isolated windows exchange only bounded receipt and evidence metadata through
+  a private file in the repository's shared Git data, with owner-only
+  permissions where the OS supports them. The file expires old records and
+  never appears as an untracked worktree file.
+- Preferences require approval, skills remain staged candidates, and
+  destructive actions still use OpenCode's normal permission safeguards.
+- Worktree creation, cleanup, branch deletion, session deletion, and result
+  integration remain separate user actions.
 
-Development requires Deno 2.9 or newer.
+## Troubleshooting
 
-```sh
-deno task check
-deno task test:synthetic
-deno task package
-```
+**Workbench cannot find OpenCode**
 
-The test tasks are layered so feature work can select the smallest useful
-suite. See [`TESTING.md`](TESTING.md) for invariants and the feature checklist.
+Run `opencode --version` in a terminal opened from VS Code. If VS Code has a
+different `PATH`, set the absolute `opencodeWorkbench.executablePath` and reload
+the window.
 
-| Task | Coverage |
-| --- | --- |
-| `deno task test:synthetic` | All deterministic unit, protocol, mocked HTTP/SSE, controller, packaging, and stress tests. This is the default `test` task. |
-| `deno task test:integration:synthetic` | Goal-plugin hook and persistence, mocked HTTP/SSE, managed-process, and end-to-end event-pipeline integration tests. |
-| `deno task test:stress` | Ordered event-bus and parser-to-controller backpressure tests with 20,000-event bursts. |
-| `deno task test:stress:repeat` | Runs each stress test five times to detect timing-sensitive regressions. |
-| `deno task test:integration:real` | Starts an installed OpenCode server and validates live contracts plus bundled goal command/tool discovery without a model request. |
+**The server takes too long to start**
 
-Run the real integration suite against an installed `1.18.11` executable. The
-suite starts an authenticated server in a temporary workspace and exercises
-health, SSE, session, fork, history, and deletion contracts without sending a
-model prompt. Real integration is intentionally excluded from the deterministic
-default suite.
+Increase `opencodeWorkbench.managedServerStartupTimeout`, especially when
+antivirus or endpoint protection scans new processes.
 
-```sh
-OPENCODE_INTEGRATION_EXECUTABLE=/absolute/path/to/opencode deno task test:integration:real
-```
+**Models are missing**
 
-Set `OPENCODE_INTEGRATION_VERSION` when validating another explicitly supported
-version. `deno task test:opencode` remains an alias for the real integration
-suite.
+OpenCode supplies the model catalog. Confirm the provider works in the normal
+OpenCode TUI, then run **OpenCode: Refresh**. Workbench does not infer provider
+subscriptions or invent unavailable models.
 
-Install a local build:
+**A session or run needs input**
 
-```sh
-deno task install:local
-```
+Open **Needs Attention** and select the permission, question, failed run, or
+connection problem. **OpenCode: Show Health Center** reports the current server,
+plugin, protocol, event-stream, and queue state. The sanitized trace command is
+available when a bug report needs lifecycle detail without prompt contents.
 
-Local installs use a timestamped prerelease of the next patch, such as
-`0.3.1-dev.20260803.t040506`, so VS Code clearly distinguishes them from the
-current and next stable Marketplace versions.
+**An isolated worktree will not delete**
 
-Generated artifacts are written to `dist/`.
+Workbench retains dirty worktrees deliberately. Commit, move, or discard the
+changes yourself, then run **OpenCode: Remove Worktree**. After removal, run
+**OpenCode: Delete Removed Worktree Branch** if you also want to delete its
+branch.
 
-## Releases
+## More documentation
 
-Tags matching `v*` must match all package versions. Release CI checks, tests,
-builds, and packages from a clean checkout. It generates a compatibility
-manifest and checksums, records GitHub build provenance, uploads GitHub release
-assets, and can publish the same verified VSIX to the Visual Studio Marketplace.
+- [Changelog](CHANGELOG.md) — user-visible additions, fixes, and security work.
+- [Testing strategy](TESTING.md) — contributor commands and release gates.
+- [Extension design](packages/vscode-extension/DESIGN.md) — architecture,
+  protocol, persistence, and trust boundaries.
+- [GitHub handoff](docs/guides/github-handoff.md) — native sign-in, attached
+  context, explicit limits, and isolated implementation.
+- [Architecture decisions](docs/adr/) — native integration and contract
+  decisions.
+- [Skill lifecycle](SKILL-LIFECYCLE.md) — how skill candidates are reviewed and
+  activated.
 
-Build-time dependency updates do not raise the minimum supported OpenCode
-runtime unless Workbench uses a newer API.
+Development requires Deno 2.9 or newer. Contributors can start with
+`deno task check`, `deno task test:synthetic`, and `deno task package`; the full
+matrix and feature checklist live in [TESTING.md](TESTING.md).

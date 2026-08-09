@@ -1,6 +1,15 @@
 const css = await Deno.readTextFile(new URL("../media/chat.css", import.meta.url))
 const webview = await Deno.readTextFile(new URL("../src/webview/main.ts", import.meta.url))
+const focusController = await Deno.readTextFile(new URL("../src/webview/controllers/focus-controller.ts", import.meta.url))
+const conversationView = await Deno.readTextFile(new URL("../src/webview/views/conversation.ts", import.meta.url))
+const sessionList = await Deno.readTextFile(new URL("../src/webview/views/session-list.ts", import.meta.url))
+const inspectorPresentation = await Deno.readTextFile(new URL("../src/webview/views/inspector/presentation.ts", import.meta.url))
+const historyView = await Deno.readTextFile(new URL("../src/webview/views/history.ts", import.meta.url))
+const turnNavigationView = await Deno.readTextFile(new URL("../src/webview/views/turn-navigation.ts", import.meta.url))
 const chatView = await Deno.readTextFile(new URL("../src/views/chat-view.ts", import.meta.url))
+const manifest = JSON.parse(await Deno.readTextFile(new URL("../package.json", import.meta.url))) as {
+  contributes?: { commands?: Array<{ command: string; enablement?: string }>; keybindings?: Array<{ command: string; when?: string }> }
+}
 
 Deno.test("reduced motion preserves operational progress animations", () => {
   const reducedMotion = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"))
@@ -13,6 +22,119 @@ Deno.test("reduced motion preserves operational progress animations", () => {
   }
   if (!reducedMotion.includes(".turn.activity-expanding .assistant-process") || !reducedMotion.includes("animation: none !important")) {
     throw new Error("Reduced-motion styles did not suppress the decorative activity expansion")
+  }
+})
+
+Deno.test("webview exposes the screen-reader and keyboard interaction contract", () => {
+  for (const marker of [
+    'role="log" aria-label="OpenCode conversation"',
+    'role="status" aria-live="polite"',
+    'id="announcer" class="visually-hidden" aria-live="polite"',
+    'role="dialog" aria-modal="true"',
+    'role="tablist" aria-label="Inspector sections"',
+    'role="tabpanel" aria-labelledby="inspector-tab-activity" tabindex="0"',
+  ]) if (!chatView.includes(marker)) throw new Error(`Missing accessibility marker: ${marker}`)
+  for (const behavior of [
+    'tab.tabIndex = selected ? 0 : -1',
+    'if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return',
+    'announce("OpenCode response complete")',
+    'focusController.trapTab',
+  ]) if (!webview.includes(behavior)) throw new Error(`Missing keyboard or announcement behavior: ${behavior}`)
+  if (!sessionList.includes('role="list"') || !sessionList.includes('role="listitem"')) throw new Error("Session hierarchy lacks semantic list roles")
+  if (!webview.includes("Current checkout") || !webview.includes("Model worktree sessions")) throw new Error("Run groups lack the progressive stable-mode worktree hierarchy")
+  if (!css.includes("@media (forced-colors: active)") || !css.includes(".message:focus-within .message-actions")) {
+    throw new Error("High-contrast support or keyboard-visible message actions are missing")
+  }
+})
+
+Deno.test("model and session pickers expose roving keyboard focus", () => {
+  if (!chatView.includes('id="model-options" class="picker-options model-options" role="listbox" aria-label="Models"') ||
+    !webview.includes('role="option" data-model-value=') || !webview.includes('aria-selected="${model.value === value}" tabindex="${modelPickerActiveValue === value ? 0 : -1}"')) {
+    throw new Error("Model selection does not expose listbox options with one roving tab stop")
+  }
+  if (!webview.includes("focusController.trapTab(event, modelPicker") || !webview.includes("modelPickerReturnFocus") ||
+    !webview.includes('if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key))')) {
+    throw new Error("Model picker does not trap focus, restore its trigger, and support directional navigation")
+  }
+  if (!sessionList.includes('aria-current="true"') || !sessionList.includes('tabindex="${value.id === tabStop ? 0 : -1}"') ||
+    !webview.includes('if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return')) {
+    throw new Error("Session lists do not preserve current-session semantics and roving navigation")
+  }
+})
+
+Deno.test("attention and inspector routing preserve focus and actionable context", () => {
+  for (const surface of ['pending.surface === "goal"', 'pending.surface === "runs"', 'pending.surface === "health"']) {
+    if (!webview.includes(surface)) throw new Error(`Attention routing omits ${surface}`)
+  }
+  if (!webview.includes('attentionToggle.setAttribute("aria-label", count ?') || !webview.includes("lastAttentionCount") ||
+    !webview.includes("focusAttentionElement")) throw new Error("Attention count or focus feedback is missing")
+  if (!webview.includes('attentionOverlay.querySelector<HTMLElement>(".attention-panel [data-close-attention]")') ||
+    !focusController.includes("if (!root.contains(active)") || !focusController.includes(":not(.overlay-backdrop)")) {
+    throw new Error("Empty attention dialogs do not move and contain keyboard focus within the dialog")
+  }
+  if (!chatView.includes('aria-controls="inspector-panel"') || !webview.includes('inspectorPanel.setAttribute("aria-labelledby"') ||
+    !webview.includes("const scrollTop = previousTab === inspectorTab") || !webview.includes("focusedKey") ||
+    !inspectorPresentation.includes("stop.explanation")) throw new Error("Inspector tabs, scroll/focus retention, or walkthrough explanations are missing")
+  if (!inspectorPresentation.includes('class="run-pending-status" role="status"') || !inspectorPresentation.includes("Worktree unavailable; refresh this run group to recover.") || !webview.includes('class="rail-run-pending"')) {
+    throw new Error("Pending runs still expose an unusable Open action")
+  }
+})
+
+Deno.test("failed run and worktree launches become stable attention items", () => {
+  for (const marker of [
+    'run.phase !== "failed" || run.discarded',
+    'group.isolation === "worktree" && !run.worktreeID',
+    'id: `run-failure:${createHash("sha256")',
+    'kind: worktreeFailure ? "worktree-failure" : "run-failure"',
+    'target: { surface: "runs", itemID: run.id }',
+    '.slice(0, 500)',
+  ]) if (!chatView.includes(marker)) throw new Error(`Run attention derivation is missing: ${marker}`)
+})
+
+Deno.test("turn markers provide a usable pointer target", () => {
+  if (!/\.turn-navigation button\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;/.test(css) ||
+    !css.includes(".turn-navigation button::before")) throw new Error("Session markers still use an 8px hit target")
+  if (!turnNavigationView.includes("Forked or delegated session boundary") || !turnNavigationView.includes("Goal checkpoint recorded") ||
+    !turnNavigationView.includes('part.tool === "update_goal_checkpoint"')) throw new Error("Fork or goal-checkpoint navigation markers are missing")
+})
+
+Deno.test("older transcript paging is explicit and preserves the visual prepend anchor", () => {
+  if (!chatView.includes('id="history-boundary"') || !chatView.includes('id="history-load-older"') ||
+    !chatView.includes('role="status" aria-live="polite"')) throw new Error("Bounded-history status and action are missing")
+  for (const marker of [
+    'post({ type: "loadOlderHistory"',
+    "pendingHistoryAnchor = conversationView.capturePrependAnchor()",
+    "renderTranscript(merged, active, anchor)",
+  ]) if (!webview.includes(marker)) throw new Error(`Older-history scroll anchoring is missing: ${marker}`)
+  if (!conversationView.includes("this.scroll.restorePrependAnchor(prependAnchor)")) throw new Error("Conversation view does not restore the visual prepend anchor")
+  if (!chatView.includes('case "loadOlderHistory":') || !chatView.includes('type: "historyPage"')) {
+    throw new Error("Older-history request is not routed through the validated host path")
+  }
+  if (!historyView.includes("messages currently loaded from OpenCode") || !historyView.includes("older server history may exist") ||
+    historyView.includes("all messages from OpenCode")) throw new Error("History status overstates the bounded transcript")
+})
+
+Deno.test("plan-first entry point uses the validated host command route", () => {
+  if (!chatView.includes('id="plan-task"') || !webview.includes('post({ type: "planTask" })') ||
+    !chatView.includes('case "planTask":') || !chatView.includes('executeCommand("opencodeWorkbench.planTask")')) {
+    throw new Error("The empty state does not expose the validated Plan Task workflow")
+  }
+})
+
+Deno.test("workspace commands and shortcut have contextual enablement", () => {
+  const commands = new Map((manifest.contributes?.commands ?? []).map((entry) => [entry.command, entry.enablement]))
+  for (const command of ["opencodeWorkbench.newSession", "opencodeWorkbench.planTask", "opencodeWorkbench.compareModels"]) {
+    if (commands.get(command) !== "workspaceFolderCount > 0") throw new Error(`${command} is not scoped to a workspace`)
+  }
+  if (commands.get("opencodeWorkbench.handoffPlan") !== "workspaceFolderCount > 0 && editorLangId == markdown") {
+    throw new Error("Plan handoff is enabled without a Markdown plan")
+  }
+  if (commands.get("opencodeWorkbench.abortSession") !== "workspaceFolderCount > 0 && opencodeWorkbench.sessionBusy") {
+    throw new Error("Abort Session is enabled without active work")
+  }
+  const shortcut = manifest.contributes?.keybindings?.find((entry) => entry.command === "opencodeWorkbench.newSession")
+  if (!shortcut?.when?.includes("focusedView == opencodeWorkbench.chat") || !shortcut.when.includes("activeWebviewPanelId == opencodeWorkbench.chatEditor")) {
+    throw new Error("New Session shortcut is not scoped to Workbench chat surfaces")
   }
 })
 
@@ -77,6 +199,21 @@ Deno.test("offline notice uses a theme-safe muted warning surface", () => {
   }
 })
 
+Deno.test("bounded snapshot projection is visible and names preserved durable state", () => {
+  if (!webview.includes('showNotice("projection", "Some Workbench history is hidden"') ||
+    !webview.includes("projection.omitted") || !webview.includes("dismissedProjectionSignature")) {
+    throw new Error("Transport projection omissions are not exposed as a dismissible webview warning")
+  }
+  const rule = /\.notice\.projection\s*\{([^}]*)\}/.exec(css)?.[1] ?? ""
+  if (!rule.includes("warningBorder") || !rule.includes("color-mix")) {
+    throw new Error("Transport projection warning does not use the theme-safe warning surface")
+  }
+  if (!inspectorPresentation.includes("stored records were not deleted") || !inspectorPresentation.includes("contextReceipts") ||
+    !inspectorPresentation.includes("runGroups") || !inspectorPresentation.includes("walkthroughStops")) {
+    throw new Error("Inspector does not disclose bounded durable receipt, run, or walkthrough history")
+  }
+})
+
 Deno.test("connection warnings are driven by settled connection state rather than a timer", () => {
   if (webview.includes("offlineNoticeTimer") || webview.includes("offlineNoticeVisible")) {
     throw new Error("Connection warning still relies on a startup timeout")
@@ -90,7 +227,7 @@ Deno.test("connection warnings are driven by settled connection state rather tha
 })
 
 Deno.test("active inter-step activity keeps working timing", () => {
-  if (!webview.includes("timingHtml(entries, working)")) {
+  if (!webview.includes("renderTiming: timingHtml") || !conversationView.includes("this.options.renderTiming(projected.entries, projected.working)")) {
     throw new Error("Activity timing can fall back to Worked during an active inter-step gap")
   }
 })

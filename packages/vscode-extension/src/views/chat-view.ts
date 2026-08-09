@@ -1,14 +1,21 @@
-import { randomBytes, randomUUID } from "node:crypto"
+import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import * as vscode from "vscode"
-import type { ContextAttachmentSummary, EditorContextSummary, HostToWebviewMessage, InlineAttachment, PastedTextBlock, WebviewToHostMessage } from "@opencode-workbench/shared"
+import type { AttentionItem, ContextAttachmentSummary, ContextReceiptItem, EditorContextSummary, HostToWebviewMessage, InlineAttachment, PastedTextBlock, RuntimeDescriptor, WebviewToHostMessage, WorkbenchCapability } from "@opencode-workbench/shared"
 import { parseWebviewMessage, PROMPT_ATTACHMENT_CHARACTER_LIMIT, PROMPT_ATTACHMENT_COUNT_LIMIT } from "@opencode-workbench/shared"
 import type { PromptFilePart } from "../opencode-client.js"
 import type { ControllerUpdate, SessionController } from "../session-controller.js"
 import { prepareFzf, rankPreparedFzf, workspaceSearchPaths, type PreparedFzfIndex } from "../fuzzy.js"
 import { LatestUpdatePump } from "../latest-update-pump.js"
+import type { ContextReceiptService } from "../application/context-service.js"
+import type { MultiRunOrchestrator, RunGroupService } from "../application/run-group-service.js"
+import type { WalkthroughService } from "../application/walkthrough-service.js"
+import type { WorktreeService } from "../application/worktree-service.js"
+import { WebviewProtocolHost, type ProtocolObservation } from "../protocol/webview-protocol-host.js"
+import { dataUrlPayload, receiptHash } from "../application/context-receipt-builders.js"
+import { projectChatSnapshotForWebview } from "../application/webview-snapshot-projector.js"
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -50,6 +57,16 @@ interface StoredContextAttachment {
   file: PromptFilePart
   summary: ContextAttachmentSummary
   sourceUri?: string
+  receipt: Omit<ContextReceiptItem, "id" | "label">
+}
+
+function receiptRange(range: vscode.Range): NonNullable<ContextReceiptItem["range"]> {
+  return {
+    startLine: range.start.line + 1,
+    startColumn: range.start.character + 1,
+    endLine: range.end.line + 1,
+    endColumn: range.end.character + 1,
+  }
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -68,6 +85,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private workspaceFiles?: { expiresAt: number; index: PreparedFzfIndex }
   private fullUpdatePending = false
   private readonly draftRevisions = new Map<string, number>()
+  private readonly surfaceIDs = new Map<vscode.Webview, string>()
+  private readonly protocol: WebviewProtocolHost<HostToWebviewMessage[], WebviewToHostMessage, HostToWebviewMessage>
+  private lastConnected: boolean
   private knownSessionIDs = new Set<string>()
 
   constructor(
@@ -77,8 +97,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private connectionError?: string,
     private readonly showLogs?: () => void,
     private readonly reportError?: (message: string) => void,
+    private readonly contextReceipts?: ContextReceiptService,
+    private readonly runGroups?: RunGroupService,
+    private readonly multiRun?: MultiRunOrchestrator,
+    private readonly walkthroughs?: WalkthroughService,
+    private readonly worktrees?: WorktreeService,
+    private readonly protocolTrace?: (observation: ProtocolObservation) => void,
   ) {
     this.knownSessionIDs = new Set(Object.keys(controller?.snapshot.sessions ?? {}))
+    this.lastConnected = controller?.snapshot.connected ?? false
+    this.protocol = new WebviewProtocolHost({
+      state: () => this.initialMessages(),
+      runtime: () => this.runtimeDescriptor(),
+      parseInbound: parseWebviewMessage,
+      dispatch: async (surfaceID, message) => {
+        const source = [...this.surfaceIDs].find(([, id]) => id === surfaceID)?.[0]
+        if (!source) throw new Error("The Workbench surface was disposed")
+        await this.handleMessage(message, source, true)
+      },
+      requiredCapability: (message) => this.requiredCapability(message),
+      eventDisposition: (message) => ["error", "insertText", "fileSuggestions", "historyPage"].includes(message.type) ? "transient" : "patch",
+      snapshotFollowups: () => this.composerSnapshotFollowups(),
+      observe: (observation) => this.protocolTrace?.(observation),
+    })
     this.updates = new LatestUpdatePump(
       () => this.nextUpdate(),
       (message) => this.publishUpdate(message),
@@ -89,9 +130,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     )
     const subscription = controller?.subscribe((update) => {
       if (update.type === "connected" && update.connected) this.connectionError = undefined
+      if (update.type === "connected") {
+        if (this.lastConnected && !update.connected) void this.protocol.rotateEpoch()
+        this.lastConnected = update.connected
+      }
       this.queueUpdate(update)
     })
     if (subscription) this.disposables.push(subscription)
+    const runGroupSubscription = this.runGroups?.subscribe(() => this.queueFullUpdate())
+    if (runGroupSubscription) this.disposables.push(runGroupSubscription)
+    const worktreeSubscription = this.worktrees?.subscribe(() => this.queueFullUpdate())
+    if (worktreeSubscription) this.disposables.push(worktreeSubscription)
     this.disposables.push(
       vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor) {
@@ -122,12 +171,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
+    if (this.view) {
+      const previousID = this.surfaceIDs.get(this.view.webview)
+      if (previousID) this.protocol.detach(previousID)
+      this.surfaceIDs.delete(this.view.webview)
+    }
     this.disposeAll(this.viewDisposables)
     this.view = view
-    this.configure(view.webview, "sidebar")
+    const surfaceID = `sidebar-${randomUUID()}`
+    this.surfaceIDs.set(view.webview, surfaceID)
+    this.protocol.attach(surfaceID, view.webview, view.visible)
+    this.configure(view.webview, "sidebar", surfaceID)
     this.viewDisposables.push(
-      view.webview.onDidReceiveMessage((raw) => void this.handleMessage(raw, view.webview)),
+      view.webview.onDidReceiveMessage((raw) => void this.handleIncoming(raw, view.webview, surfaceID)),
       view.onDidChangeVisibility(() => {
+        void this.protocol.setVisible(surfaceID, view.visible)
         if (view.visible) {
           this.queueFullUpdate()
           void this.postEditorContext(view.webview)
@@ -135,6 +193,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }),
       view.onDidDispose(() => {
         if (this.view === view) this.view = undefined
+        this.protocol.detach(surfaceID)
+        this.surfaceIDs.delete(view.webview)
         this.disposeAll(this.viewDisposables)
       }),
     )
@@ -161,12 +221,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private attachEditorPanel(panel: vscode.WebviewPanel): void {
+    if (this.panel) {
+      const previousID = this.surfaceIDs.get(this.panel.webview)
+      if (previousID) this.protocol.detach(previousID)
+      this.surfaceIDs.delete(this.panel.webview)
+    }
     this.disposeAll(this.panelDisposables)
     this.panel = panel
-    this.configure(panel.webview, "editor")
+    const surfaceID = `editor-${randomUUID()}`
+    this.surfaceIDs.set(panel.webview, surfaceID)
+    this.protocol.attach(surfaceID, panel.webview, panel.visible)
+    this.configure(panel.webview, "editor", surfaceID)
     this.panelDisposables.push(
-      panel.webview.onDidReceiveMessage((raw) => void this.handleMessage(raw, panel.webview)),
+      panel.webview.onDidReceiveMessage((raw) => void this.handleIncoming(raw, panel.webview, surfaceID)),
       panel.onDidChangeViewState(() => {
+        void this.protocol.setVisible(surfaceID, panel.visible)
         if (panel.visible) {
           this.queueFullUpdate()
           void this.postEditorContext(panel.webview)
@@ -174,6 +243,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }),
       panel.onDidDispose(() => {
         if (this.panel === panel) this.panel = undefined
+        this.protocol.detach(surfaceID)
+        this.surfaceIDs.delete(panel.webview)
         this.disposeAll(this.panelDisposables)
       }),
     )
@@ -197,16 +268,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return root(sessionID) === root(this.controller.snapshot.selectedID)
   }
 
-  private configure(webview: vscode.Webview, mode: "sidebar" | "editor"): void {
-    const media = vscode.Uri.joinPath(this.extensionUri, "media")
-    webview.options = { enableScripts: true, localResourceRoots: [media] }
-    webview.html = this.html(webview, mode)
+  protocolHealth(): {
+    protocol: { version: 2; epoch: string }
+    runtime: RuntimeDescriptor
+    capabilities: WorkbenchCapability[]
+    requestQueueDepth: number
+  } {
+    return {
+      protocol: { version: 2, epoch: this.protocol.currentEpoch },
+      runtime: this.runtimeDescriptor(),
+      capabilities: (Object.entries(this.protocol.capabilities) as Array<[WorkbenchCapability, boolean]>)
+        .filter(([, available]) => available)
+        .map(([capability]) => capability),
+      requestQueueDepth: this.protocol.pendingRequests,
+    }
   }
 
-  private html(webview: vscode.Webview, mode: "sidebar" | "editor"): string {
+  private configure(webview: vscode.Webview, mode: "sidebar" | "editor", surfaceID: string): void {
+    const media = vscode.Uri.joinPath(this.extensionUri, "media")
+    webview.options = { enableScripts: true, localResourceRoots: [media] }
+    webview.html = this.html(webview, mode, surfaceID)
+  }
+
+  private html(webview: vscode.Webview, mode: "sidebar" | "editor", surfaceID: string): string {
     const nonce = randomBytes(18).toString("base64")
     const script = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "chat.js"))
     const style = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "chat.css"))
+    const extensionVersion = String(vscode.extensions.getExtension("nulifyer.opencode-workbench")?.packageJSON.version ?? "unknown")
+    const safeVersion = /^[A-Za-z0-9.+-]{1,64}$/.test(extensionVersion) ? extensionVersion : "unknown"
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -216,15 +305,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <link rel="stylesheet" href="${style}">
   <title>OpenCode Chat</title>
 </head>
-<body data-mode="${mode}">
+<body data-mode="${mode}" data-surface-id="${surfaceID}" data-extension-version="${safeVersion}">
   <div class="app-shell">
     <header class="chat-header">
       <button id="back-parent" class="icon-action" type="button" title="Back to parent session" aria-label="Back to parent session" hidden>${ICONS.back}</button>
       <button id="session-current" class="session-current" type="button" aria-haspopup="dialog" aria-expanded="false" title="Search session history">
         <span class="session-title" id="session-title">No session</span><span class="session-state" id="session-state"></span>${ICONS.chevron}
       </button>
-      <span id="connection" class="connection offline" role="status" hidden>Offline</span>
+      <span id="connection" class="connection offline" role="status" tabindex="-1" hidden>Offline</span>
       <div class="header-actions">
+        <button id="attention-toggle" class="icon-action attention-toggle" type="button" title="Needs Attention" aria-label="Needs Attention" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">!</span><small id="attention-count" hidden></small></button>
+        <button id="inspector-toggle" class="icon-action" type="button" title="Toggle OpenCode inspector" aria-label="Toggle OpenCode inspector" aria-expanded="false"><span aria-hidden="true">ⓘ</span></button>
         <button id="create-header" class="icon-action" type="button" title="New session" aria-label="New session">${ICONS.add}</button>
         <button id="surface-toggle" class="icon-action" type="button" title="${mode === "sidebar" ? "Switch chat to editor" : "Switch chat to sidebar"}" aria-label="${mode === "sidebar" ? "Switch chat to editor" : "Switch chat to sidebar"}">${ICONS.editor}</button>
         <button id="rail-toggle" class="icon-action" type="button" title="Toggle sessions" aria-label="Toggle sessions" aria-expanded="${mode === "editor"}">${ICONS.rail}</button>
@@ -290,11 +381,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       </section>
     </div>
 
+    <div id="attention-overlay" class="overlay" hidden>
+      <button class="overlay-backdrop" type="button" data-close-attention aria-label="Close Needs Attention"></button>
+      <section class="history-panel attention-panel" role="dialog" aria-modal="true" aria-labelledby="attention-title">
+        <div class="overlay-heading"><strong id="attention-title">Needs Attention</strong><button type="button" class="text-action" data-close-attention>Close</button></div>
+        <div id="attention-list" class="attention-list"></div>
+      </section>
+    </div>
+
     <div class="work-area">
       <section class="conversation-column">
-        <section id="notice" class="notice" role="alert" hidden>
+        <section id="notice" class="notice" role="alert" tabindex="-1" hidden>
           <div class="notice-copy"><strong id="notice-title"></strong><p id="notice-message"></p></div>
           <div class="notice-actions"><button id="notice-retry" type="button">Retry</button><button id="notice-logs" type="button">Open Logs</button><button id="notice-copy" type="button">Copy details</button><button id="notice-dismiss" type="button" aria-label="Dismiss message">×</button></div>
+        </section>
+        <nav id="turn-navigation" class="turn-navigation" aria-label="Session markers" hidden></nav>
+        <section id="history-boundary" class="history-boundary" role="status" aria-live="polite" hidden>
+          <span id="history-boundary-text"></span>
+          <button id="history-load-older" type="button">Load older messages</button>
         </section>
         <main id="messages" role="log" aria-label="OpenCode conversation"></main>
         <button id="jump-latest" class="jump-latest" type="button" hidden>↓ Latest <span id="jump-latest-count"></span></button>
@@ -309,7 +413,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             <button type="button" data-prompt="Review the current changes for bugs and missing tests.">Review current changes</button>
             <button type="button" data-prompt="Help me plan the next implementation step.">Plan next steps</button>
           </div>
-          <button id="create-empty" class="primary-action" type="button">New session</button>
+          <div class="empty-actions">
+            <button id="plan-task" class="primary-action" type="button">Plan a task first</button>
+            <button id="create-empty" type="button">New session</button>
+          </div>
         </section>
 
         <footer class="interaction-region">
@@ -322,10 +429,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <section id="queue-dock" class="dock queue-dock" aria-label="Queued prompts" hidden></section>
           <section id="command-suggestions" class="command-suggestions" role="listbox" aria-label="OpenCode commands" hidden></section>
           <section id="file-suggestions" class="command-suggestions" role="listbox" aria-label="Workspace files" hidden></section>
-          <section id="model-picker" class="model-picker" role="dialog" aria-labelledby="model-picker-title" hidden>
+          <section id="model-picker" class="model-picker" role="dialog" aria-modal="true" aria-labelledby="model-picker-title" hidden>
             <div class="model-picker-header"><strong id="model-picker-title">Model settings</strong><label><span class="visually-hidden">Search models</span><input id="model-search" type="search" placeholder="Search models" autocomplete="off"></label></div>
             <div id="reasoning-options" class="picker-options reasoning-options"></div>
-            <div id="model-options" class="picker-options model-options"></div>
+            <div id="model-options" class="picker-options model-options" role="listbox" aria-label="Models"></div>
             <div id="model-meta" class="model-picker-meta"></div>
           </section>
           <div class="composer" id="composer">
@@ -340,16 +447,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 <select id="variant" aria-label="Reasoning level" hidden><option value="">Default reasoning</option></select>
               </div>
               <div class="composer-actions">
-                <span id="status" role="status" aria-live="polite">Idle</span>
+                <span id="status" role="status" aria-live="polite" tabindex="-1">Idle</span>
                 <button id="attach-files" class="icon-action" type="button" title="Attach files or folders" aria-label="Attach files or folders">${ICONS.attach}</button>
                 <div id="send-group" class="send-group">
                   <button id="send" class="round-action send-action" type="button" title="Send (Enter)" aria-label="Send message">${ICONS.send}</button>
                   <details id="send-options" hidden>
                     <summary aria-label="More send options" title="More send options">⌄</summary>
                     <div role="menu">
-                      <button type="button" role="menuitem" data-send-delivery="replace"><strong>Stop and Send</strong><small>Cancel the current response and send immediately.</small></button>
-                      <button type="button" role="menuitem" data-send-delivery="queue"><strong>Add to Queue</strong><small>Let the current response finish first.</small></button>
-                      <button type="button" role="menuitem" data-send-delivery="steer"><strong>Steer with Message</strong><small>Ask the current response to yield at the next opportunity.</small></button>
+                      <button type="button" role="menuitem" data-send-delivery="steer"><strong>Steer current work</strong><small>Deliver at OpenCode's next safe boundary.</small></button>
+                      <button type="button" role="menuitem" data-send-delivery="queue"><strong>Follow up after completion</strong><small>Wait until the current work would otherwise stop.</small></button>
+                      <button type="button" role="menuitem" data-send-delivery="replace"><strong>Replace queued instruction</strong><small>Cancel current work and admit this instruction next.</small></button>
                     </div>
                   </details>
                 </div>
@@ -360,9 +467,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         </footer>
       </section>
 
+      <aside id="inspector" class="inspector" aria-label="OpenCode inspector" hidden>
+        <div class="inspector-header"><strong>OpenCode Inspector</strong><button id="inspector-close" class="icon-action" type="button" aria-label="Close inspector">${ICONS.close}</button></div>
+        <div id="inspector-tabs" class="inspector-tabs" role="tablist" aria-label="Inspector sections">
+          ${["Activity", "Changes", "Context", "Goal", "Runs", "Walkthrough"].map((tab, index) => `<button id="inspector-tab-${tab.toLowerCase()}" type="button" role="tab" data-inspector-tab="${tab.toLowerCase()}" aria-controls="inspector-panel" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}">${tab}</button>`).join("")}
+        </div>
+        <section id="inspector-panel" class="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-activity" tabindex="0"></section>
+      </aside>
+
       <aside id="right-rail" class="right-rail editor-only" aria-label="OpenCode sessions">
         <div class="rail-header sidebar-only"><strong>Sessions</strong><button id="rail-close" class="icon-action" type="button" title="Close sessions" aria-label="Close sessions">${ICONS.close}</button></div>
         <div id="rail-sessions" class="rail-panel">
+          <div id="rail-run-groups" class="rail-run-groups" hidden></div>
           <div class="rail-heading"><strong>Sessions</strong><span id="rail-session-count">0</span></div>
           <label class="rail-session-search"><span class="visually-hidden">Search sessions</span><input id="rail-session-search" type="search" placeholder="Search sessions" autocomplete="off"></label>
           <div id="rail-session-list"></div>
@@ -439,17 +555,90 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return undefined
   }
 
+  private runtimeDescriptor(): RuntimeDescriptor {
+    const mode = vscode.workspace.getConfiguration("opencodeWorkbench").get<"managed" | "external">("serverMode", "managed")
+    return {
+      mode,
+      authority: "opencode",
+      companion: mode === "external" ? "missing" : this.controller && !this.connectionError ? "connected" : "incompatible",
+      nativeAgentHost: "deferred",
+    }
+  }
+
+  private requiredCapability(message: WebviewToHostMessage): WorkbenchCapability | undefined {
+    if (message.type === "createSession") return "session.create"
+    if (message.type === "selectSession") return "session.resume"
+    if (message.type === "abort") return "prompt.cancel"
+    if (message.type === "send") {
+      return message.delivery === "steer"
+        ? "prompt.steer"
+        : message.delivery === "replace"
+        ? "prompt.replace"
+        : "prompt.followUp"
+    }
+    if (message.type === "sessionAction") {
+      if (message.action === "fork") return "session.fork"
+      if (message.action === "delete") return "session.delete"
+    }
+    if (message.type === "respondPermission") return "input.permissions.exact"
+    if (message.type === "respondQuestion" || message.type === "rejectQuestion") return "input.questions"
+    if (message.type === "goalAction") return "goal.lifecycle"
+    if (["pickFiles", "resolveDroppedUris", "removeContextAttachment", "openContextAttachment", "attachWorkspacePath", "attachResource"].includes(message.type)) return "context.ledger"
+    if (message.type === "attachCurrentEditor") return "context.editorBridge"
+    return undefined
+  }
+
+  private initialMessages(): HostToWebviewMessage[] {
+    const messages: HostToWebviewMessage[] = [
+      { type: "snapshot", snapshot: this.snapshot() },
+      { type: "editorContextChanged", context: this.editorContext() },
+    ]
+    const sessionID = this.controller?.snapshot.selectedID
+    if (sessionID) {
+      messages.push({ type: "contextAttachmentsChanged", sessionID, attachments: this.contextSummaries(sessionID) })
+    }
+    return messages
+  }
+
+  private composerSnapshotFollowups(): HostToWebviewMessage[] {
+    const sessionID = this.controller?.snapshot.selectedID
+    if (!sessionID) return []
+    const payload = this.composerPayloads.get(sessionID) ?? { revision: 0, attachments: [], pastedText: [] }
+    return [{ type: "composerPayloadChanged", sessionID, ...payload }]
+  }
+
+  private async handleIncoming(raw: unknown, source: vscode.Webview, surfaceID: string): Promise<void> {
+    try {
+      if (await this.protocol.receive(surfaceID, raw)) return
+      this.protocol.markLegacy(surfaceID)
+      await this.handleMessage(raw, source)
+    } catch (error) {
+      const message = errorText(error)
+      this.reportError?.(`Webview protocol failed: ${message}`)
+      await this.postTo(source, { type: "error", message })
+    }
+  }
+
+  private async postTo(source: vscode.Webview, message: HostToWebviewMessage): Promise<void> {
+    const surfaceID = this.surfaceIDs.get(source)
+    if (!surfaceID) {
+      await source.postMessage(message)
+      return
+    }
+    await this.protocol.publishTo(surfaceID, message)
+  }
+
   private contextSummaries(sessionID: string): ContextAttachmentSummary[] {
     return [...this.contextAttachments.values()].filter((attachment) => attachment.sessionID === sessionID).map((attachment) => attachment.summary)
   }
 
   private async postEditorContext(webview: vscode.Webview): Promise<void> {
-    await webview.postMessage({ type: "editorContextChanged", context: this.editorContext() } satisfies HostToWebviewMessage)
+    await this.postTo(webview, { type: "editorContextChanged", context: this.editorContext() })
     const sessionID = this.controller?.snapshot.selectedID
     if (sessionID) {
-      await webview.postMessage({ type: "contextAttachmentsChanged", sessionID, attachments: this.contextSummaries(sessionID) } satisfies HostToWebviewMessage)
+      await this.postTo(webview, { type: "contextAttachmentsChanged", sessionID, attachments: this.contextSummaries(sessionID) })
       const payload = this.composerPayloads.get(sessionID) ?? { revision: 0, attachments: [], pastedText: [] }
-      await webview.postMessage({ type: "composerPayloadChanged", sessionID, ...payload } satisfies HostToWebviewMessage)
+      await this.postTo(webview, { type: "composerPayloadChanged", sessionID, ...payload })
     }
   }
 
@@ -469,16 +658,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     await this.publishEditorContext()
   }
 
-  private async handleMessage(raw: unknown, source: vscode.Webview): Promise<void> {
+  private async handleMessage(raw: unknown, source: vscode.Webview, rethrow = false): Promise<void> {
     const message = parseWebviewMessage(raw)
     if (!message) {
-      await source.postMessage({ type: "error", message: "Ignored an invalid webview message" } satisfies HostToWebviewMessage)
+      await this.postTo(source, { type: "error", message: "Ignored an invalid webview message" })
       return
     }
     try {
       switch (message.type) {
         case "ready":
-          await source.postMessage({ type: "snapshot", snapshot: this.snapshot() } satisfies HostToWebviewMessage)
+          await this.postTo(source, { type: "snapshot", snapshot: this.snapshot() })
           await this.postEditorContext(source)
           break
         case "setDraft":
@@ -498,7 +687,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           {
             const current = this.composerPayloads.get(message.sessionID) ?? { revision: 0, attachments: [], pastedText: [] }
             if (message.revision !== current.revision) {
-              await source.postMessage({ type: "composerPayloadChanged", sessionID: message.sessionID, ...current, conflict: true, mutationID: message.mutationID } satisfies HostToWebviewMessage)
+              await this.postTo(source, { type: "composerPayloadChanged", sessionID: message.sessionID, ...current, conflict: true, mutationID: message.mutationID })
               break
             }
             const payload = { revision: current.revision + 1, attachments: message.attachments, pastedText: message.pastedText }
@@ -516,6 +705,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             const current = this.controller!.chatSnapshot().session?.goal?.objective
             const objective = await vscode.window.showInputBox({ title: "Edit goal", prompt: "Update the objective", value: current, validateInput: (value) => value.trim() ? undefined : "Enter a goal objective" })
             if (objective !== undefined) await this.controller!.send(`/goal edit ${objective.trim()}`)
+          } else if (message.action === "configure") {
+            const goal = this.controller!.chatSnapshot().session?.goal
+            if (!goal) throw new Error("This session has no goal")
+            const criteriaText = await vscode.window.showInputBox({ title: "Goal acceptance criteria", prompt: "JSON array of independently checkable criteria", value: JSON.stringify(goal.acceptanceCriteria?.length ? goal.acceptanceCriteria : [goal.objective ?? ""], null, 0), validateInput: (value) => {
+              try { const parsed = JSON.parse(value); return Array.isArray(parsed) && parsed.length <= 100 && parsed.every((item) => typeof item === "string" && item.trim() && item.length <= 2_000) ? undefined : "Enter a JSON array of 1-100 non-empty strings" } catch { return "Enter a valid JSON array" }
+            } })
+            if (criteriaText === undefined) break
+            const limit = async (title: string, current?: number) => await vscode.window.showInputBox({ title, prompt: "Enter a positive integer, or leave blank for unlimited", value: current === undefined ? "" : String(current), validateInput: (value) => !value.trim() || (/^[1-9]\d*$/.test(value.trim()) && Number.isSafeInteger(Number(value)) && Number(value) <= 1_000_000_000) ? undefined : "Enter a positive integer or leave blank" })
+            const tokenBudget = await limit("Goal token limit", goal.tokenBudget); if (tokenBudget === undefined) break
+            const maxAutoTurns = await limit("Goal auto-turn limit", goal.maxAutoTurns); if (maxAutoTurns === undefined) break
+            const maxDurationSeconds = await limit("Goal duration limit (seconds)", goal.maxDurationSeconds); if (maxDurationSeconds === undefined) break
+            const verifierEnabled = await vscode.window.showQuickPick([{ label: "Enabled", value: true }, { label: "Disabled", value: false }], { title: "Independent goal verifier", placeHolder: goal.verifier?.enabled ? "Enabled" : "Disabled" })
+            if (!verifierEnabled) break
+            let verifierModel: string | null = goal.verifier?.model ?? null
+            let verifierAgent: string | null = goal.verifier?.agent ?? null
+            let repeatedBlockThreshold = goal.verifier?.repeatedBlockThreshold ?? 3
+            if (verifierEnabled.value) {
+              const selectedModel = await vscode.window.showQuickPick([{ label: "Default model", value: null }, ...this.controller!.chatSnapshot().models.map((model) => ({ label: model.name, description: model.providerID, value: `${model.providerID}/${model.id}` }))], { title: "Verifier model", placeHolder: verifierModel ?? "Default model" })
+              if (!selectedModel) break
+              verifierModel = selectedModel.value
+              const selectedAgent = await vscode.window.showQuickPick([{ label: "Plan agent (default)", value: null }, ...this.controller!.chatSnapshot().agents.map((agent) => ({ label: agent.name, value: agent.name }))], { title: "Verifier agent", placeHolder: verifierAgent ?? "Plan agent" })
+              if (!selectedAgent) break
+              verifierAgent = selectedAgent.value
+              const threshold = await vscode.window.showInputBox({ title: "Repeated blocked-verdict threshold", value: String(repeatedBlockThreshold), validateInput: (value) => /^[1-9]$|^10$/.test(value.trim()) ? undefined : "Enter an integer from 1 to 10" })
+              if (threshold === undefined) break
+              repeatedBlockThreshold = Number(threshold)
+            }
+            if (this.controller!.chatSnapshot().session?.id !== message.sessionID) throw new Error("The selected session changed while configuring the goal")
+            await this.controller!.send(`/goal configure ${JSON.stringify({ acceptance_criteria: JSON.parse(criteriaText), token_budget: tokenBudget.trim() ? Number(tokenBudget) : null, max_auto_turns: maxAutoTurns.trim() ? Number(maxAutoTurns) : null, max_duration_seconds: maxDurationSeconds.trim() ? Number(maxDurationSeconds) : null, enabled: verifierEnabled.value, model: verifierModel, agent: verifierAgent, repeated_block_threshold: repeatedBlockThreshold })}`)
+          } else if (message.action === "verify") {
+            await vscode.commands.executeCommand("opencodeWorkbench.verifyGoal")
           } else if (message.action === "cancel") {
             const confirmed = await vscode.window.showWarningMessage("Cancel and clear this goal?", { modal: true }, "Cancel goal")
             if (confirmed === "Cancel goal") await this.controller!.send("/goal cancel")
@@ -523,11 +743,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             await this.controller!.send(`/goal ${message.action}`)
           }
           break
+        case "runAction": {
+          const group = this.runGroups?.get(message.groupID)
+          if (!group) throw new Error("Run group is no longer available")
+          if (message.action === "refresh") await vscode.commands.executeCommand("opencodeWorkbench.refreshRunGroups")
+          else if (message.action === "compare") await vscode.commands.executeCommand("opencodeWorkbench.compareRunResults", group.id)
+          else if (message.action === "fuse") await vscode.commands.executeCommand("opencodeWorkbench.fuseRuns", group.id)
+          else {
+            const run = group.runs.find((candidate) => candidate.id === message.runID)
+            if (!run) throw new Error("Run is no longer available")
+            if (message.action === "cancel") await this.multiRun?.cancel(group.id, run.id)
+            else if (message.action === "retry") {
+              const prompt = await vscode.window.showInputBox({ title: `Retry ${run.model}`, prompt: "Explicit retry instruction (source prompt bytes are not persisted)", value: "Continue the original task from the current worktree state. Diagnose the prior failure and complete the requested work.", validateInput: (value) => value.trim() ? undefined : "Enter a retry instruction" })
+              if (prompt) await this.multiRun?.retry(group.id, run.id, prompt)
+            }
+            else if (message.action === "diff") await vscode.commands.executeCommand("opencodeWorkbench.openRunDiff", group.id, run.id)
+            else if (message.action === "review") await vscode.commands.executeCommand("opencodeWorkbench.reviewChanges", run.session.directory, group.baseRef)
+            else if (message.action === "discard") await vscode.commands.executeCommand("opencodeWorkbench.discardRun", group.id, run.id)
+            else if (message.action === "keep") {
+              this.runGroups?.update(group.id, run.id, { retained: true })
+              await this.runGroups?.flush()
+              void vscode.window.showInformationMessage(`Kept ${run.model}; it is no longer offered as disposable in the Runs inspector.`)
+            }
+            else if (run.session.directory !== "pending") await vscode.commands.executeCommand("opencodeWorkbench.openRun", group.id, run.id)
+          }
+          this.queueFullUpdate()
+          break
+        }
+        case "walkthroughAction":
+          await vscode.commands.executeCommand("opencodeWorkbench.openWalkthroughStop", message.documentID, message.stopID)
+          break
         case "send":
           this.requireSelected(message.sessionID)
           const composerPayload = this.composerPayloads.get(message.sessionID) ?? { revision: 0, attachments: [], pastedText: [] }
           if ((message.composerRevision ?? 0) !== composerPayload.revision) {
-            await source.postMessage({ type: "composerPayloadChanged", sessionID: message.sessionID, ...composerPayload } satisfies HostToWebviewMessage)
+            await this.postTo(source, { type: "composerPayloadChanged", sessionID: message.sessionID, ...composerPayload })
             throw new Error("Composer attachments changed in another chat view; review them before sending")
           }
           const contextFiles = (message.contextIDs ?? []).map((id) => {
@@ -536,8 +786,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             return attachment.file
           })
           const contextUrls = new Set(contextFiles.map((file) => file.url))
+          const mentionedFiles = (await this.workspaceMentions(message.text)).filter((file) => !contextUrls.has(file.url))
           const files = [
-            ...(await this.workspaceMentions(message.text)).filter((file) => !contextUrls.has(file.url)),
+            ...mentionedFiles,
             ...contextFiles,
             ...composerPayload.attachments.map((attachment) => ({
               type: "file" as const,
@@ -563,7 +814,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           if (uniqueFiles.length > PROMPT_ATTACHMENT_COUNT_LIMIT || fileCharacters > PROMPT_ATTACHMENT_CHARACTER_LIMIT) {
             throw new Error(`Combined workspace, context, and composer attachments exceed the ${PROMPT_ATTACHMENT_COUNT_LIMIT}-file prompt limit`)
           }
-          await this.controller!.send(message.text, message.agent, message.model, message.variant, uniqueFiles, this.controller!.mentionedAgents(message.text), message.promptID, message.delivery)
+          const promptID = message.promptID!
+          const receiptItems: ContextReceiptItem[] = [
+            ...await Promise.all(mentionedFiles.map((file, index) => this.promptFileReceipt(file, `mention:${index}`))),
+            ...(message.contextIDs ?? []).map((id) => {
+              const attachment = this.contextAttachments.get(id)!
+              return { id, label: attachment.summary.name, ...attachment.receipt }
+            }),
+            ...composerPayload.attachments.map((attachment) => ({ id: attachment.id, kind: "attachment" as const, label: attachment.label, bytes: attachment.size, contentHash: `sha256:${createHash("sha256").update(attachment.data).digest("hex")}` })),
+            ...composerPayload.pastedText.map((block, index) => ({ id: `paste:${index}`, kind: "attachment" as const, label: block.label, bytes: Buffer.byteLength(block.text), contentHash: `sha256:${createHash("sha256").update(block.text).digest("hex")}` })),
+          ]
+          this.contextReceipts?.stage(message.sessionID, promptID, receiptItems, receiptItems.some((item) => item.truncated) ? "explicit" : "none")
+          try {
+            await this.controller!.send(message.text, message.agent, message.model, message.variant, uniqueFiles, this.controller!.mentionedAgents(message.text), promptID, message.delivery)
+          } catch (error) {
+            this.contextReceipts?.reject(promptID)
+            throw error
+          }
           if ((this.composerPayloads.get(message.sessionID)?.revision ?? 0) === composerPayload.revision) {
             const cleared = { revision: composerPayload.revision + 1, attachments: [] as InlineAttachment[], pastedText: [] as PastedTextBlock[] }
             this.composerPayloads.set(message.sessionID, cleared)
@@ -636,7 +903,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.requireSelected(message.sessionID)
           const file = this.controller!.resourceAttachment(message.uri)
           if (!file) throw new Error("MCP resource is no longer available")
-          this.storeContextAttachment(message.sessionID, `resource:${message.uri}`, file, { name: file.filename, detail: message.uri.slice(0, 255), kind: "resource" })
+          const payload = dataUrlPayload(file.url)
+          this.storeContextAttachment(
+            message.sessionID,
+            `resource:${message.uri}`,
+            file,
+            { name: file.filename, detail: message.uri.slice(0, 255), kind: "resource" },
+            message.uri,
+            { kind: "mcp-resource", uri: message.uri, bytes: payload?.byteLength, contentHash: payload && receiptHash(payload) },
+          )
           await this.publishContextAttachments(message.sessionID)
           break
         }
@@ -659,6 +934,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "abort":
           this.requireSelected(message.sessionID)
           await this.controller!.abortSelected()
+          break
+        case "planTask":
+          await vscode.commands.executeCommand("opencodeWorkbench.planTask")
           break
         case "createSession":
           if (!this.controller) throw new Error("Open a folder to create a session")
@@ -731,6 +1009,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "navigateBack":
           await vscode.commands.executeCommand("workbench.action.navigateBack")
           break
+        case "loadOlderHistory":
+          this.requireSelected(message.sessionID)
+          await this.postTo(source, { type: "historyPage", page: this.controller!.historyPage(message.sessionID, message.beforeMessageID) })
+          break
         case "refresh":
           if (!this.controller) throw new Error("Open a folder to refresh OpenCode")
           await this.controller.refresh()
@@ -758,13 +1040,58 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     } catch (error) {
       const message = errorText(error)
       this.reportError?.(`Webview request failed: ${message}`)
-      await source.postMessage({ type: "error", message } satisfies HostToWebviewMessage)
+      if (rethrow) throw error
+      await this.postTo(source, { type: "error", message })
     }
   }
 
   private snapshot() {
     const snapshot = this.controller?.chatSnapshot() ?? { connected: false, connectionState: this.connectionError ? "failed" as const : "connecting" as const, sessions: [], agents: [], models: [] }
-    return !snapshot.connected && this.connectionError ? { ...snapshot, connectionError: this.connectionError } : snapshot
+    const decorated = snapshot.session && this.contextReceipts
+      ? { ...snapshot, session: { ...snapshot.session, contextReceipts: this.contextReceipts.forSession(snapshot.session.id) } }
+      : snapshot
+    const runGroups = this.runGroups?.list() ?? []
+    const worktrees = this.worktrees?.journal().slice(-1_000) ?? []
+    const runAttention: AttentionItem[] = runGroups.flatMap((group) => group.runs.flatMap((run): AttentionItem[] => {
+      if (run.phase === "needs-input" && !run.discarded) return [{
+        id: `run-input:${createHash("sha256").update(`${group.id}\0${run.id}`).digest("hex").slice(0, 32)}`,
+        kind: "native-action",
+        title: `Run needs input: ${run.model}`.slice(0, 1_024),
+        detail: "Open the run worktree to answer its pending permission or question.",
+        createdAt: run.startedAt ?? group.createdAt,
+        target: { surface: "runs", itemID: run.id },
+      } satisfies AttentionItem]
+      if (run.phase !== "failed" || run.discarded) return []
+      const worktreeFailure = group.isolation === "worktree" && !run.worktreeID
+      const timestamp = run.completedAt ?? run.startedAt ?? group.createdAt
+      return [{
+        id: `run-failure:${createHash("sha256").update(`${group.id}\0${run.id}`).digest("hex").slice(0, 32)}`,
+        kind: worktreeFailure ? "worktree-failure" : "run-failure",
+        title: `${worktreeFailure ? "Worktree" : "Run"} failed: ${run.model}`.slice(0, 1_024),
+        detail: run.error?.message.slice(0, 2_000),
+        createdAt: Number.isSafeInteger(timestamp) && timestamp >= 0 ? timestamp : group.createdAt,
+        target: { surface: "runs", itemID: run.id },
+      } satisfies AttentionItem]
+    }))
+    const runWorktreeIDs = new Set(runGroups.flatMap((group) => group.runs.flatMap((run) => run.worktreeID ? [run.worktreeID] : [])))
+    const standaloneWorktreeAttention: AttentionItem[] = worktrees.flatMap((entry): AttentionItem[] => entry.phase === "failed" && !runWorktreeIDs.has(entry.id) ? [{
+      id: `worktree-failure:${createHash("sha256").update(entry.id).digest("hex").slice(0, 32)}`,
+      kind: "worktree-failure",
+      title: `Worktree failed: ${entry.branch}`.slice(0, 1_024),
+      detail: entry.error?.message.slice(0, 2_000),
+      createdAt: entry.updatedAt,
+      target: { surface: "runs", itemID: entry.id },
+    }] : [])
+    const baseAttention = decorated.attentionItems ?? []
+    const supplementalLimit = Math.max(0, 500 - baseAttention.length)
+    const attentionItems = [...baseAttention, ...[...runAttention, ...standaloneWorktreeAttention]
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+      .slice(0, supplementalLimit)]
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+      .slice(0, 500)
+    const configured = { ...decorated, attentionItems, runGroups, worktrees, walkthroughs: this.walkthroughs?.list(), composer: { enterBehavior: vscode.workspace.getConfiguration("opencodeWorkbench").get<"send" | "newline">("enterBehavior", "send") } }
+    const complete = !configured.connected && this.connectionError ? { ...configured, connectionError: this.connectionError } : configured
+    return projectChatSnapshotForWebview(complete)
   }
 
   private queueUpdate(update: ControllerUpdate): void {
@@ -792,9 +1119,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private async publishDirect(message: HostToWebviewMessage): Promise<void> {
-    const publications: Thenable<boolean>[] = []
-    if (this.view) publications.push(this.view.webview.postMessage(message))
-    if (this.panel) publications.push(this.panel.webview.postMessage(message))
+    const publications: Promise<void>[] = []
+    if (this.view) publications.push(this.postTo(this.view.webview, message))
+    if (this.panel) publications.push(this.postTo(this.panel.webview, message))
     await Promise.all(publications)
   }
 
@@ -839,7 +1166,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return vscode.Uri.file(resolved)
   }
 
-  private async workspaceAttachment(uri: vscode.Uri, range?: vscode.Range): Promise<{ key: string; file: PromptFilePart; summary: Omit<ContextAttachmentSummary, "id"> }> {
+  private async promptFileReceipt(file: PromptFilePart, id: string): Promise<ContextReceiptItem> {
+    const base: ContextReceiptItem = { id, kind: "file", label: file.filename }
+    if (file.url.startsWith("file:")) {
+      const uri = vscode.Uri.parse(file.url, true)
+      const source = uri.with({ query: "", fragment: "" })
+      const params = new URLSearchParams(uri.query)
+      const start = Number(params.get("start"))
+      const end = Number(params.get("end"))
+      try {
+        const info = await stat(source.fsPath)
+        return {
+          ...base,
+          kind: Number.isSafeInteger(start) && start >= 1 ? "selection" : "file",
+          uri: source.toString(),
+          range: Number.isSafeInteger(start) && start >= 1
+            ? { startLine: start, startColumn: 1, endLine: Number.isSafeInteger(end) && end >= start ? end : start, endColumn: 1 }
+            : undefined,
+          revision: `${Math.trunc(info.mtimeMs)}:${info.size}`,
+          bytes: info.isFile() ? info.size : undefined,
+        }
+      } catch {
+        return { ...base, uri: source.toString() }
+      }
+    }
+    const payload = dataUrlPayload(file.url)
+    return payload ? { ...base, kind: "attachment", bytes: payload.byteLength, contentHash: receiptHash(payload) } : base
+  }
+
+  private async workspaceAttachment(uri: vscode.Uri, range?: vscode.Range): Promise<{ key: string; file: PromptFilePart; summary: Omit<ContextAttachmentSummary, "id">; receipt: Omit<ContextReceiptItem, "id" | "label"> }> {
     if (!this.controller?.canAttachWorkspaceFiles()) throw new Error("Workspace attachments require a local OpenCode server")
     if (!this.workspaceRoot || uri.scheme !== "file") throw new Error("Only files from the current workspace can be attached")
     const root = await realpath(this.workspaceRoot)
@@ -860,6 +1215,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       key: `${resolved}\0${url.search}`,
       file: { type: "file", mime: info.isDirectory() ? "application/x-directory" : "text/plain", url: url.toString(), filename: path.basename(resolved) },
       summary: { name: path.basename(resolved), detail: lines ?? normalized, kind },
+      receipt: {
+        kind: range && !range.isEmpty ? "selection" : "file",
+        uri: uri.toString(),
+        range: range && !range.isEmpty ? receiptRange(range) : undefined,
+        revision: `${Math.trunc(info.mtimeMs)}:${info.size}`,
+        bytes: info.isFile() ? info.size : undefined,
+      },
     }
   }
 
@@ -891,28 +1253,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Notebook is outside the current workspace")
     } else if (notebook.uri.scheme !== "untitled") throw new Error("Only workspace and untitled notebooks can be attached")
     const selected = new Set<number>()
-    for (const range of editor.selections) for (let index = range.start; index < range.end && selected.size < 50; index += 1) selected.add(index)
+    let selectionTruncated = false
+    for (const range of editor.selections) {
+      for (let index = range.start; index < range.end; index += 1) {
+        if (selected.size < 50) selected.add(index)
+        else selectionTruncated = true
+      }
+    }
     const indexes = selected.size ? [...selected] : Array.from({ length: Math.min(20, notebook.cellCount) }, (_, index) => index)
     const chunks: string[] = []
-    let characters = 0
+    let bytesUsed = 0
+    let sizeTruncated = false
     for (const index of indexes) {
       const cell = notebook.cellAt(index)
       const source = cell.document.getText()
       const chunk = `Cell ${index + 1} (${cell.document.languageId})\n${source}`
-      if (characters + chunk.length > 750_000) break
+      const nextBytes = Buffer.byteLength(chunk, "utf8") + (chunks.length ? Buffer.byteLength("\n\n---\n\n") : 0)
+      if (bytesUsed + nextBytes > 750_000) {
+        sizeTruncated = true
+        break
+      }
       chunks.push(chunk)
-      characters += chunk.length
+      bytesUsed += nextBytes
     }
     if (!chunks.length) throw new Error("Notebook context is empty or exceeds Workbench limits")
     const text = chunks.join("\n\n---\n\n")
     const name = (path.basename(notebook.uri.fsPath) || "Untitled notebook").slice(0, 255)
     const bytes = Buffer.from(text, "utf8")
+    const truncated = selectionTruncated || (!selected.size && notebook.cellCount > indexes.length) || sizeTruncated
     this.storeContextAttachment(sessionID, `notebook:${notebook.uri}:${notebook.version}:${indexes.join(",")}`, {
       type: "file",
       mime: "text/plain",
       url: `data:text/plain;base64,${bytes.toString("base64")}`,
       filename: `${name}.txt`.slice(0, 255),
-    }, { name, detail: `${chunks.length} cell${chunks.length === 1 ? "" : "s"}`, kind: "notebook" }, notebook.uri.toString())
+    }, { name, detail: `${chunks.length} cell${chunks.length === 1 ? "" : "s"}${truncated ? " (truncated)" : ""}`, kind: "notebook" }, notebook.uri.toString(), {
+      kind: "notebook",
+      uri: notebook.uri.toString(),
+      revision: String(notebook.version),
+      contentHash: receiptHash(bytes),
+      bytes: bytes.byteLength,
+      truncated,
+    })
   }
 
   private async storeEditorAttachment(sessionID: string, editor: vscode.TextEditor, useSelection = true): Promise<void> {
@@ -940,11 +1321,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         mime: "text/plain",
         url: `data:text/plain;base64,${bytes.toString("base64")}`,
         filename: name,
-      }, { name, detail: selected ? this.selectionLines(selection!) ?? "Selection" : "Unsaved buffer", kind: selected ? "selection" : "buffer" }, document.uri.toString())
+      }, { name, detail: selected ? this.selectionLines(selection!) ?? "Selection" : "Unsaved buffer", kind: selected ? "selection" : "buffer" }, document.uri.toString(), {
+        kind: selected ? "selection" : "unsaved-buffer",
+        uri: document.uri.toString(),
+        range: selected ? receiptRange(selection!) : undefined,
+        revision: String(document.version),
+        contentHash: receiptHash(bytes),
+        bytes: bytes.byteLength,
+      })
       return
     }
     const attachment = await this.workspaceAttachment(document.uri, selection)
-    this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary, document.uri.toString())
+    this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary, document.uri.toString(), attachment.receipt)
   }
 
   private async resolveDroppedUris(sessionID: string, values: string[]): Promise<void> {
@@ -960,23 +1348,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (uris.length) {
       for (const uri of uris) {
         const attachment = await this.workspaceAttachment(uri)
-        this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary, uri.toString())
+        this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary, uri.toString(), attachment.receipt)
       }
     }
     await this.publishContextAttachments(sessionID)
   }
 
-  private storeContextAttachment(sessionID: string, key: string, file: PromptFilePart, summary: Omit<ContextAttachmentSummary, "id">, sourceUri?: string): void {
+  private storeContextAttachment(
+    sessionID: string,
+    key: string,
+    file: PromptFilePart,
+    summary: Omit<ContextAttachmentSummary, "id">,
+    sourceUri?: string,
+    receipt?: Omit<ContextReceiptItem, "id" | "label">,
+  ): void {
     if ([...this.contextAttachments.values()].some((attachment) => attachment.sessionID === sessionID && attachment.key === key)) return
     if (this.contextSummaries(sessionID).length >= 20) throw new Error("This prompt already has 20 context attachments")
     const id = randomUUID()
-    this.contextAttachments.set(id, { sessionID, key, file, summary: { id, ...summary }, sourceUri })
+    const payload = dataUrlPayload(file.url)
+    const kind = summary.kind === "selection" ? "selection" : summary.kind === "buffer" ? "unsaved-buffer" : summary.kind === "notebook" ? "notebook" : summary.kind === "resource" ? "mcp-resource" : "file"
+    this.contextAttachments.set(id, {
+      sessionID,
+      key,
+      file,
+      summary: { id, ...summary },
+      sourceUri,
+      receipt: receipt ?? { kind, uri: sourceUri, bytes: payload?.byteLength, contentHash: payload && receiptHash(payload) },
+    })
   }
 
   private async addWorkspaceAttachments(sessionID: string, uris: vscode.Uri[]): Promise<void> {
     for (const uri of uris) {
       const attachment = await this.workspaceAttachment(uri)
-      this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary, uri.toString())
+      this.storeContextAttachment(sessionID, attachment.key, attachment.file, attachment.summary, uri.toString(), attachment.receipt)
     }
     await this.publishContextAttachments(sessionID)
   }
@@ -1008,7 +1412,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }
     }
     const files = rankPreparedFzf(query, this.workspaceFiles.index)
-    await source.postMessage({ type: "fileSuggestions", sessionID, requestID, files } satisfies HostToWebviewMessage)
+    await this.postTo(source, { type: "fileSuggestions", sessionID, requestID, files })
   }
 
   private async workspaceMentions(text: string): Promise<PromptFilePart[]> {
@@ -1178,22 +1582,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (message.type === "snapshot" && this.view) {
       const snapshot = message.snapshot
       this.view.description = snapshot.session?.title
-      const attention = snapshot.sessions.reduce((total, session) => total + session.unread + (session.attention ?? 0), 0)
-      this.view.badge = attention ? { value: attention, tooltip: `${attention} OpenCode item${attention === 1 ? "" : "s"} need attention` } : undefined
+      const attention = snapshot.attentionItems?.length ?? 0
+      this.view.badge = attention ? { value: attention, tooltip: `${attention} OpenCode item${attention === 1 ? " needs" : "s need"} attention` } : undefined
     }
     if (message.type === "snapshot" && this.panel) this.panel.title = message.snapshot.session?.title || "OpenCode Chat"
     const publish = async (webview: vscode.Webview): Promise<void> => {
-      await webview.postMessage(message)
+      await this.postTo(webview, message)
       if (message.type === "snapshot") await this.postEditorContext(webview)
     }
+    const shouldPublish = (webview: vscode.Webview, visible: boolean): boolean => {
+      const surfaceID = this.surfaceIDs.get(webview)
+      return visible || Boolean(surfaceID && this.protocol.isV2(surfaceID))
+    }
     await Promise.all([
-      this.view?.visible ? publish(this.view.webview) : undefined,
-      this.panel?.visible ? publish(this.panel.webview) : undefined,
+      this.view && shouldPublish(this.view.webview, this.view.visible) ? publish(this.view.webview) : undefined,
+      this.panel && shouldPublish(this.panel.webview, this.panel.visible) ? publish(this.panel.webview) : undefined,
     ].filter(Boolean))
   }
 
   dispose(): void {
     this.updates.dispose()
+    for (const surfaceID of this.surfaceIDs.values()) this.protocol.detach(surfaceID)
+    this.surfaceIDs.clear()
     this.panel?.dispose()
     this.disposeAll(this.panelDisposables)
     this.disposeAll(this.viewDisposables)

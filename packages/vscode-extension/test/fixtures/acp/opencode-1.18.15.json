@@ -1,0 +1,264 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-08T20:05:36.996Z",
+  "providerRequestMode": "disabled",
+  "opencode": {
+    "version": "1.18.15",
+    "acpSdkVersion": "0.21.0",
+    "protocolVersion": 1
+  },
+  "initialization": {
+    "agentName": "OpenCode",
+    "authMethodIDs": [
+      "opencode-login"
+    ],
+    "capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    }
+  },
+  "session": {
+    "configOptionIDs": [
+      "mode",
+      "model"
+    ],
+    "modeIDs": [
+      "build",
+      "plan"
+    ],
+    "modelSelection": true,
+    "variantSelection": false,
+    "availableCommands": [
+      "customize-opencode",
+      "goal",
+      "goal-unlimited",
+      "init",
+      "review"
+    ],
+    "undoAdvertised": false,
+    "redoAdvertised": false,
+    "persistedAcrossRestart": true,
+    "forkReturnedDistinctID": true,
+    "listFilteredByWorkingDirectory": true
+  },
+  "protocol": {
+    "agentRequestMethods": [
+      "authenticate",
+      "initialize",
+      "session/close",
+      "session/fork",
+      "session/list",
+      "session/load",
+      "session/new",
+      "session/resume",
+      "session/set_config_option",
+      "session/set_mode",
+      "session/set_model",
+      "workbench/unknown"
+    ],
+    "agentNotificationMethods": [
+      "session/cancel"
+    ],
+    "clientRequestMethods": [],
+    "clientNotificationMethods": [
+      "session/update"
+    ],
+    "unknownMethodErrorCode": -32601,
+    "invalidParamsErrorCode": -32602,
+    "malformedInputSurvived": true,
+    "simultaneousProcesses": true,
+    "terminatedProcessObserved": true
+  },
+  "processes": [
+    {
+      "name": "primary",
+      "requestMethods": [
+        "authenticate",
+        "initialize",
+        "session/close",
+        "session/fork",
+        "session/list",
+        "session/load",
+        "session/new",
+        "session/resume",
+        "session/set_config_option",
+        "session/set_mode",
+        "session/set_model",
+        "workbench/unknown"
+      ],
+      "notificationMethods": [
+        "session/cancel"
+      ],
+      "agentRequestMethods": [],
+      "agentNotificationMethods": [
+        "session/update"
+      ],
+      "malformedInputSurvived": true,
+      "cleanExit": true
+    },
+    {
+      "name": "secondary",
+      "requestMethods": [
+        "initialize",
+        "session/list",
+        "session/new"
+      ],
+      "notificationMethods": [],
+      "agentRequestMethods": [],
+      "agentNotificationMethods": [
+        "session/update"
+      ],
+      "malformedInputSurvived": false,
+      "cleanExit": true
+    },
+    {
+      "name": "restart",
+      "requestMethods": [
+        "initialize",
+        "session/close",
+        "session/list",
+        "session/resume"
+      ],
+      "notificationMethods": [],
+      "agentRequestMethods": [],
+      "agentNotificationMethods": [
+        "session/update"
+      ],
+      "malformedInputSurvived": false,
+      "cleanExit": true
+    },
+    {
+      "name": "terminated",
+      "requestMethods": [
+        "initialize"
+      ],
+      "notificationMethods": [],
+      "agentRequestMethods": [],
+      "agentNotificationMethods": [],
+      "malformedInputSurvived": false,
+      "cleanExit": false
+    }
+  ],
+  "modelPromptProbe": {
+    "enabled": false,
+    "updateKinds": [
+      "available_commands_update"
+    ]
+  },
+  "classifications": [
+    {
+      "capability": "initialize and capability negotiation",
+      "classification": "supported",
+      "evidence": "initialize response, protocolVersion 1"
+    },
+    {
+      "capability": "session create/list/load/resume/fork/close",
+      "classification": "supported",
+      "evidence": "provider-free JSON-RPC probes and restart probe"
+    },
+    {
+      "capability": "working-directory isolation",
+      "classification": "supported",
+      "evidence": "two simultaneous subprocesses with filtered session/list results"
+    },
+    {
+      "capability": "agent/mode selection",
+      "classification": "supported",
+      "evidence": "mode config option and session/set_mode"
+    },
+    {
+      "capability": "model selection",
+      "classification": "supported",
+      "evidence": "model config option and session/set_model"
+    },
+    {
+      "capability": "variant selection",
+      "classification": "unknown",
+      "evidence": "no effort option for the provider-free default model"
+    },
+    {
+      "capability": "slash-command discovery",
+      "classification": "supported",
+      "evidence": "session/update available_commands_update"
+    },
+    {
+      "capability": "companion-plugin commands",
+      "classification": "supported",
+      "evidence": "goal and goal-unlimited in available_commands_update"
+    },
+    {
+      "capability": "tool and companion-tool schema discovery",
+      "classification": "missing",
+      "evidence": "no ACP tool-list method or provider-free tool-schema update",
+      "limitation": "Tool calls are observable only during a model turn."
+    },
+    {
+      "capability": "MCP registration",
+      "classification": "supported",
+      "evidence": "initialize mcpCapabilities advertises HTTP and SSE; session setup accepts mcpServers"
+    },
+    {
+      "capability": "MCP tool discovery",
+      "classification": "unknown",
+      "evidence": "no provider-free MCP tool-list update observed",
+      "limitation": "Requires an MCP fixture plus a model turn to observe tool use."
+    },
+    {
+      "capability": "permission request and response choices",
+      "classification": "unknown",
+      "evidence": "session/request_permission requires an opt-in model/tool turn",
+      "limitation": "Not exercised by default."
+    },
+    {
+      "capability": "questions and durable user input",
+      "classification": "unknown",
+      "evidence": "no provider-free question request can be triggered",
+      "limitation": "Not exercised by default."
+    },
+    {
+      "capability": "prompt/message/reasoning/tool/diff/usage lifecycle",
+      "classification": "unknown",
+      "evidence": "session/prompt disabled by default",
+      "limitation": "Use --allow-model-prompt explicitly."
+    },
+    {
+      "capability": "cancellation",
+      "classification": "mapped",
+      "evidence": "session/cancel is a notification accepted for an idle session",
+      "limitation": "Active-turn cancellation needs the opt-in prompt seam."
+    },
+    {
+      "capability": "queue/steer/follow-up/replace",
+      "classification": "missing",
+      "evidence": "no distinct ACP 0.21.0 methods or advertised capabilities"
+    },
+    {
+      "capability": "/undo and /redo",
+      "classification": "missing",
+      "evidence": "not present in available_commands_update"
+    },
+    {
+      "capability": "malformed input recovery",
+      "classification": "supported",
+      "evidence": "invalid NDJSON line followed by successful session/list"
+    },
+    {
+      "capability": "process crash recovery",
+      "classification": "mapped",
+      "evidence": "SIGTERM observed and sessions remained server-persisted"
+    }
+  ]
+}

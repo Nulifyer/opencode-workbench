@@ -1,19 +1,53 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
-import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type WebviewToHostMessage } from "@opencode-workbench/shared"
-import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, toolKind, turnContent, workspaceMentionReference } from "./presentation.js"
+import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type TranscriptHistoryPage, type WebviewToHostMessage, type WorkbenchCapabilities, type WorkbenchCapability } from "@opencode-workbench/shared"
+import { activityVisualState, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionLoadPhase, shouldCollapsePaste, stripTerminalSequences, toolKind, workspaceMentionReference } from "./presentation.js"
 import { renderMarkdown } from "./markdown.js"
+import { WorkbenchProtocolClient } from "./transport/protocol-v2-client.js"
+import { parseWithProtocolV1Adapter } from "./transport/protocol-v1-adapter.js"
+import { WorkbenchWebviewStore } from "./state/store.js"
+import { ComposerState, type ComposerPayloadState, type PendingComposerPayload } from "./state/composer.js"
+import type { ScrollAnchor } from "./controllers/scroll-controller.js"
+import { FocusController } from "./controllers/focus-controller.js"
+import { OverlayController } from "./controllers/overlay-controller.js"
+import { nextMenuIndex, type MenuNavigationKey } from "./controllers/menu-navigation.js"
+import { ConversationView } from "./views/conversation.js"
+import { deliveryLabel, queueProjection } from "./views/queue.js"
+import { SESSION_COMPLETED_ICON, sessionListMarkup, sessionStatusLabel } from "./views/session-list.js"
+import { InspectorShellController } from "./views/inspector/shell.js"
+import { inspectorPresentation, type InspectorTab } from "./views/inspector/presentation.js"
+import { composerSubmitIntent } from "./views/composer.js"
+import { historyPresentation, mergeHistoryPage } from "./views/history.js"
+import { turnNavigationMarkers } from "./views/turn-navigation.js"
 
 interface WebviewState {
   todoExpanded?: boolean
+  inspectorOpen?: boolean
+  inspectorTab?: string
 }
 
-declare function acquireVsCodeApi(): { postMessage(message: WebviewToHostMessage): void; getState(): WebviewState | undefined; setState(state: WebviewState): void }
+declare function acquireVsCodeApi(): { postMessage(message: unknown): void; getState(): WebviewState | undefined; setState(state: WebviewState): void }
 
 const vscode = acquireVsCodeApi()
+let negotiatedCapabilities: WorkbenchCapabilities | undefined
+const transport = new WorkbenchProtocolClient<WebviewToHostMessage, NonNullable<ReturnType<typeof parseHostMessage>>, WebviewState>(vscode, window, {
+  surfaceID: document.body.dataset.surfaceId ?? "unknown-surface",
+  extensionVersion: document.body.dataset.extensionVersion ?? "unknown",
+  legacyReady: { type: "ready" },
+  parseInbound: (value) => parseWithProtocolV1Adapter(value, parseHostMessage),
+  protocolError: (message) => ({ type: "error", message }),
+  onReady: (ready) => {
+    negotiatedCapabilities = ready.capabilities
+    applyCapabilityControls()
+  },
+})
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const messages = element<HTMLElement>("messages")
+const turnNavigation = element<HTMLElement>("turn-navigation")
 const jumpLatest = element<HTMLButtonElement>("jump-latest")
 const jumpLatestCount = element<HTMLElement>("jump-latest-count")
+const historyBoundary = element<HTMLElement>("history-boundary")
+const historyBoundaryText = element<HTMLElement>("history-boundary-text")
+const historyLoadOlder = element<HTMLButtonElement>("history-load-older")
 const sessionLoading = element<HTMLElement>("session-loading")
 const notice = element<HTMLElement>("notice")
 const noticeTitle = element<HTMLElement>("notice-title")
@@ -30,6 +64,7 @@ const sendGroup = element<HTMLElement>("send-group")
 const sendOptions = element<HTMLDetailsElement>("send-options")
 const createHeader = element<HTMLButtonElement>("create-header")
 const createEmpty = element<HTMLButtonElement>("create-empty")
+const planTask = element<HTMLButtonElement>("plan-task")
 const surfaceToggle = element<HTMLButtonElement>("surface-toggle")
 const backParent = element<HTMLButtonElement>("back-parent")
 const sessionCurrent = element<HTMLButtonElement>("session-current")
@@ -37,6 +72,15 @@ const sessionTitle = element<HTMLElement>("session-title")
 const sessionState = element<HTMLElement>("session-state")
 const status = element<HTMLElement>("status")
 const connection = element<HTMLElement>("connection")
+const attentionToggle = element<HTMLButtonElement>("attention-toggle")
+const attentionCount = element<HTMLElement>("attention-count")
+const attentionOverlay = element<HTMLElement>("attention-overlay")
+const attentionList = element<HTMLElement>("attention-list")
+const inspector = element<HTMLElement>("inspector")
+const inspectorToggle = element<HTMLButtonElement>("inspector-toggle")
+const inspectorClose = element<HTMLButtonElement>("inspector-close")
+const inspectorTabs = element<HTMLElement>("inspector-tabs")
+const inspectorPanel = element<HTMLElement>("inspector-panel")
 const agent = element<HTMLSelectElement>("agent")
 const model = element<HTMLSelectElement>("model")
 const variant = element<HTMLSelectElement>("variant")
@@ -75,24 +119,32 @@ const sessionMenu = element<HTMLElement>("session-menu")
 const sessionMenuSearch = element<HTMLInputElement>("session-menu-search")
 const sessionContextMenu = element<HTMLElement>("session-context-menu")
 const railSessions = element<HTMLElement>("rail-sessions")
+const railRunGroups = element<HTMLElement>("rail-run-groups")
 const railSessionCount = element<HTMLElement>("rail-session-count")
 const railSessionSearch = element<HTMLInputElement>("rail-session-search")
 const railSessionList = element<HTMLElement>("rail-session-list")
-let snapshot: ChatSnapshot = { connected: false, connectionState: "connecting", sessions: [], agents: [], models: [] }
+const store = new WorkbenchWebviewStore()
+let snapshot: ChatSnapshot = store.snapshot
 const storedState = vscode.getState()
 let todoExpanded = storedState?.todoExpanded ?? true
+const inspectorShell = new InspectorShellController(storedState)
+const INSPECTOR_TABS = new Set<InspectorTab>(["activity", "changes", "context", "goal", "runs", "walkthrough"])
+let inspectorOpen = inspectorShell.open
+let inspectorTab: InspectorTab = INSPECTOR_TABS.has(inspectorShell.tab as InspectorTab) ? inspectorShell.tab as InspectorTab : "activity"
+inspectorShell.select(inspectorTab)
 let overlayReturnFocus: HTMLElement | undefined
 let railReturnFocus: HTMLElement | undefined
 let contextSessionID: string | undefined
 let contextReturnSessionID: string | undefined
 let contextReturnList: HTMLElement | undefined
-let renderedTranscriptSessionID: string | undefined
 let queueSignature = ""
 let permissionSignature = ""
 let questionSignature = ""
 let sessionListSignature = ""
 let catalogSignature = ""
 let modelPickerSignature = ""
+let attentionSignature = ""
+let inspectorSignature = ""
 let summarySignature = ""
 let workspaceSignature = ""
 let commandSignature = ""
@@ -110,34 +162,46 @@ let editorContext: EditorContextSummary | undefined
 let pendingSessionID: string | undefined
 let stoppingSessionID: string | undefined
 let creatingSession = false
-let unseenMessages = 0
 let attachmentPreviewReturnFocus: HTMLElement | undefined
+let modelPickerReturnFocus: HTMLElement | undefined
+let modelPickerActiveValue: string | undefined
 let reasoningExpanded = false
-let noticeKind: "error" | "offline" | undefined
+let noticeKind: "error" | "offline" | "projection" | undefined
 let noticeDetail = ""
-const localDrafts = new Map<string, string>()
-const draftRevisions = new Map<string, number>()
-const submittedDrafts = new Map<string, string>()
-const attachments = new Map<string, InlineAttachment[]>()
-const attachmentThumbnails = new Map<string, string>()
-const composerPayloadRevisions = new Map<string, number>()
-type ComposerPayloadState = { attachments: InlineAttachment[]; pastedText: PastedTextBlock[] }
-type PendingComposerPayload = ComposerPayloadState & { revision: number; mutationID: string; base: ComposerPayloadState }
-const acknowledgedComposerPayloads = new Map<string, ComposerPayloadState>()
-const pendingComposerPayloads = new Map<string, PendingComposerPayload>()
+let dismissedProjectionSignature = ""
+let lastAttentionCount: number | undefined
+let pendingAttentionTarget: { sessionID?: string; itemID?: string; surface: "conversation" | "goal" | "runs" | "health" } | undefined
+let historyLoadingSessionID: string | undefined
+let pendingHistoryAnchor: ScrollAnchor | undefined
+const expandedHistory = new Map<string, TranscriptHistoryPage>()
+const composerState = new ComposerState()
+const localDrafts = composerState.localDrafts
+const draftRevisions = composerState.draftRevisions
+const submittedDrafts = composerState.submittedDrafts
+const attachments = composerState.attachments
+const attachmentThumbnails = composerState.attachmentThumbnails
+const composerPayloadRevisions = composerState.composerPayloadRevisions
+const acknowledgedComposerPayloads = composerState.acknowledgedComposerPayloads
+const pendingComposerPayloads = composerState.pendingComposerPayloads
 type SentAttachmentPreview = { label: string; name: string; mime: string; thumbnail?: string }
 const sentAttachmentPreviews = new Map<string, { sessionID: string; attachments: SentAttachmentPreview[] }>()
-const pastedText = new Map<string, PastedTextBlock[]>()
-const contextAttachments = new Map<string, ContextAttachmentSummary[]>()
-const stashedDrafts = new Map<string, string>()
+const pastedText = composerState.pastedText
+const contextAttachments = composerState.contextAttachments
+const stashedDrafts = composerState.stashedDrafts
 const INLINE_ATTACHMENT_COUNT_LIMIT = 10
-const renderedTurns = new Map<string, HTMLElement>()
-const renderedMessages = new Map<string, { node: HTMLElement; signature: string }>()
-const turnClassifications = new Map<string, { signature: string; hasActivity: boolean; finalTextPartKeys: string[] }>()
-const activityCollapsePreferences = new Map<string, boolean>()
 const announcedAssistantText = new Map<string, string>()
 let announcementTimer: number | undefined
 let pendingAnnouncement = ""
+const conversationView = new ConversationView({
+  container: messages,
+  jumpLatest,
+  jumpLatestCount,
+  renderUser: userHtml,
+  renderAssistant: assistantHtml,
+  renderTiming: timingHtml,
+})
+const focusController = new FocusController()
+const attentionOverlayController = new OverlayController(attentionOverlay, attentionToggle)
 const PRIMARY_ICONS = {
   send: send.innerHTML,
   queue: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 2.4 11.5 7 1.8 11.6 2.9 8 7.4 7 2.9 6 1.8 2.4Zm10.7 7.1h1.2v1.8h1.8v1.2h-1.8v1.8h-1.2v-1.8h-1.8v-1.2h1.8V9.5Z"/></svg>`,
@@ -151,19 +215,9 @@ const COPY_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2h8v9
 const EDIT_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m11.7 1.8 2.5 2.5-8.1 8.1-3.3.8.8-3.3 8.1-8.1Zm0 1.7-7 7-.3 1.1 1.1-.3 7-7-.8-.8Z"/></svg>`
 const OPEN_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5h-1.3V4.2L7.4 9.5l-.9-.9 5.3-5.3H9V2ZM3.2 3.2h4.1v1.3H4.5v7h7V8.7h1.3v4.1H3.2V3.2Z"/></svg>`
 const CHEVRON_DOWN_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.2 5.2 4.8 4.7 4.8-4.7.9.9L8 11.8 2.3 6.1l.9-.9Z"/></svg>`
-const SESSION_ICONS = {
-  question: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM8 13A5 5 0 1 1 8 3a5 5 0 0 1 0 10Zm-.7-3h1.4v1.4H7.3V10Zm.8-5.7c1.4 0 2.4.8 2.4 2 0 .9-.5 1.4-1.3 1.9-.6.3-.7.5-.7 1H7.2c0-1.1.3-1.5 1.2-2 .6-.4.8-.6.8-1 0-.5-.4-.8-1.1-.8-.6 0-1 .3-1.4.8l-1-.8c.6-.7 1.3-1.1 2.4-1.1Z"/></svg>`,
-  permission: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.3 13 3v3.8c0 3.2-2 5.9-5 7.5-3-1.6-5-4.3-5-7.5V3l5-1.7Zm0 1.5L4.3 4v2.8c0 2.5 1.4 4.6 3.7 6 2.3-1.4 3.7-3.5 3.7-6V4L8 2.8Zm-.7 2h1.4v4H7.3v-4Zm0 5.1h1.4v1.4H7.3V9.9Z"/></svg>`,
-  error: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM8 13A5 5 0 1 1 8 3a5 5 0 0 1 0 10ZM7.3 4.7h1.4v4.2H7.3V4.7Zm0 5.3h1.4v1.4H7.3V10Z"/></svg>`,
-  retry: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.3 4V1.8h1.3v4.4H9.2V4.9h2.1A4.7 4.7 0 1 0 12.5 9h1.4A6.1 6.1 0 1 1 12.3 4Z"/></svg>`,
-  completed: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM8 13A5 5 0 1 1 8 3a5 5 0 0 1 0 10Zm2.7-7.6 1 1-4.3 4.2-2.2-2.2 1-1 1.2 1.2 3.3-3.3Z"/></svg>`,
-  queued: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h8v1.3H2V3Zm0 4h8v1.3H2V7Zm0 4h8v1.3H2V11Zm10-5h1.3v2H15v1.3h-1.7V11H12V9.3h-1.7V8H12V6Z"/></svg>`,
-}
-
 type UnknownRecord = Record<string, unknown>
 type Delegation = NonNullable<NonNullable<ChatSnapshot["session"]>["delegations"]>[number]
 type Change = NonNullable<NonNullable<ChatSnapshot["session"]>["changes"]>[number]
-type SessionOption = ChatSnapshot["sessions"][number]
 
 function record(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -173,22 +227,60 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character)
 }
 
-function showNotice(kind: "error" | "offline", title: string, message: string, retryLabel?: string): void {
+function showNotice(kind: "error" | "offline" | "projection", title: string, message: string, retryLabel?: string): void {
   noticeKind = kind
   noticeDetail = message
   notice.classList.toggle("offline", kind === "offline")
+  notice.classList.toggle("projection", kind === "projection")
   noticeTitle.textContent = title
   noticeMessage.textContent = message
   noticeRetry.textContent = retryLabel ?? ""
   noticeRetry.hidden = !retryLabel
+  noticeLogs.hidden = kind === "projection"
   notice.hidden = false
 }
 
-function clearNotice(kind?: "error" | "offline"): void {
+function clearNotice(kind?: "error" | "offline" | "projection"): void {
   if (kind && noticeKind !== kind) return
   noticeKind = undefined
   noticeDetail = ""
   notice.hidden = true
+}
+
+function projectionSignature(): string {
+  return snapshot.projection ? JSON.stringify([snapshot.projection.limitBytes, snapshot.projection.omitted]) : ""
+}
+
+function syncProjectionNotice(connectionUnavailable: boolean): void {
+  const projection = snapshot.projection
+  if (!projection) {
+    dismissedProjectionSignature = ""
+    clearNotice("projection")
+    return
+  }
+  if (connectionUnavailable || noticeKind === "error" || dismissedProjectionSignature === projectionSignature()) return
+  const labels: Record<keyof typeof projection.omitted, string> = {
+    sessions: "sessions",
+    messages: "messages",
+    delegations: "delegated tasks",
+    queuedPrompts: "queued prompts",
+    permissions: "permission requests",
+    questions: "questions",
+    todos: "todos",
+    changes: "changes",
+    contextReceipts: "context receipts",
+    catalogItems: "catalog entries",
+    runtimeServices: "runtime services",
+    attentionItems: "attention items",
+    runGroups: "run groups",
+    worktrees: "worktrees",
+    walkthroughs: "walkthroughs",
+    walkthroughStops: "walkthrough steps",
+  }
+  const hidden = Object.entries(projection.omitted).map(([key, count]) => `${count} ${labels[key as keyof typeof projection.omitted]}`).join(", ")
+  const size = (projection.encodedBytes / (1024 * 1024)).toFixed(1)
+  const limit = (projection.limitBytes / (1024 * 1024)).toFixed(0)
+  showNotice("projection", "Some Workbench history is hidden", `${projection.message} Hidden: ${hidden}. This view uses ${size} MiB of its ${limit} MiB budget.`)
 }
 
 function fileTooltip(reference: string | NonNullable<ReturnType<typeof fileReference>>): string {
@@ -615,6 +707,10 @@ function userHtml(message: MessageBundle): string {
     return `<span class="attachment-chip transcript-attachment" title="${escapeHtml(typeof part.mime === "string" ? part.mime : "Attachment")}">${thumbnail}<span>${escapeHtml(display.name)}</span></span>`
   }).join("")
   const timestamp = message.info.time?.created ? new Date(message.info.time.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
+  const receipt = snapshot.session?.contextReceipts?.find((candidate) => candidate.promptID === message.info.id)
+  const receiptHtml = receipt && receipt.items.length
+    ? `<details class="context-receipt"><summary>Sent with ${receipt.items.length} context item${receipt.items.length === 1 ? "" : "s"}${receipt.estimatedTokens === undefined ? "" : ` · ~${receipt.estimatedTokens} tokens`}</summary><ul>${receipt.items.map((item) => `<li><span>${escapeHtml(item.label)}</span><small>${escapeHtml(item.kind)}${item.truncated ? " · truncated" : ""}</small></li>`).join("")}</ul>${receipt.truncation === "none" ? "" : `<p>Coverage: ${escapeHtml(receipt.truncation)}</p>`}</details>`
+    : ""
   const latest = snapshot.session?.messages.at(-1)?.info.id === message.info.id
   const active = latest && (snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry")
   const empty = !body && !files
@@ -622,216 +718,41 @@ function userHtml(message: MessageBundle): string {
       ? "<span class=\"pending\">Saving message…</span>"
       : `<span class="message-failure" title="${escapeHtml(snapshot.session?.status.type === "error" ? snapshot.session.status.message || "OpenCode failed before saving this message." : "OpenCode did not persist any content for this message.")}">Message failed before its content was saved</span>`
     : ""
-  return `<article class="message user" data-message-id="${escapeHtml(message.info.id)}"><div class="message-heading">You${timestamp ? `<time class="message-time">${escapeHtml(timestamp)}</time>` : ""}</div><div class="content">${body}${files ? `<div class="transcript-attachments">${files}</div>` : ""}${empty}</div>${messageActions("user")}</article>`
-}
-
-function htmlNode(html: string): HTMLElement {
-  const template = document.createElement("template")
-  template.innerHTML = html
-  const node = template.content.firstElementChild
-  if (!(node instanceof HTMLElement)) throw new Error("Could not render OpenCode message")
-  return node
-}
-
-function replaceMessage(node: HTMLElement, html: string): HTMLElement {
-  const detailStates = new Map(Array.from(node.querySelectorAll<HTMLDetailsElement>("details[data-detail-key]"), (detail) => [detail.dataset.detailKey || "", detail.open]))
-  const active = document.activeElement instanceof HTMLElement && node.contains(document.activeElement) ? document.activeElement : undefined
-  const focusedDetail = active?.closest<HTMLDetailsElement>("details[data-detail-key]")?.dataset.detailKey
-  const focusedUrl = active?.closest<HTMLElement>("[data-url]")?.dataset.url
-  const replacement = htmlNode(html)
-  for (const detail of replacement.querySelectorAll<HTMLDetailsElement>("details[data-detail-key]")) {
-    const open = detailStates.get(detail.dataset.detailKey || "")
-    if (open !== undefined) detail.open = open
-  }
-  node.replaceWith(replacement)
-  if (focusedDetail) replacement.querySelector<HTMLDetailsElement>(`details[data-detail-key="${CSS.escape(focusedDetail)}"]`)?.querySelector("summary")?.focus()
-  else if (focusedUrl) Array.from(replacement.querySelectorAll<HTMLElement>("[data-url]")).find((candidate) => candidate.dataset.url === focusedUrl)?.focus()
-  return replacement
+  return `<article class="message user" data-message-id="${escapeHtml(message.info.id)}"><div class="message-heading">You${timestamp ? `<time class="message-time">${escapeHtml(timestamp)}</time>` : ""}</div><div class="content">${body}${files ? `<div class="transcript-attachments">${files}</div>` : ""}${receiptHtml}${empty}</div>${messageActions("user")}</article>`
 }
 
 function clearTranscript(): void {
-  messages.replaceChildren()
-  renderedTurns.clear()
-  renderedMessages.clear()
-  turnClassifications.clear()
-  renderedTranscriptSessionID = undefined
-  unseenMessages = 0
-  updateJumpLatest()
+  conversationView.clear()
 }
 
 function transcriptNearBottom(): boolean {
-  return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80
+  return conversationView.nearBottom()
 }
 
-function updateJumpLatest(): void {
-  const show = !messages.hidden && !transcriptNearBottom()
-  jumpLatest.hidden = !show
-  jumpLatestCount.textContent = show && unseenMessages ? String(unseenMessages) : ""
-  jumpLatest.setAttribute("aria-label", unseenMessages ? `Jump to latest message, ${unseenMessages} new` : "Jump to latest message")
+function renderTranscript(session: NonNullable<ChatSnapshot["session"]>, active: boolean, forcedPrependAnchor?: ScrollAnchor): void {
+  conversationView.render(session, active, forcedPrependAnchor)
 }
 
-function renderTranscript(session: NonNullable<ChatSnapshot["session"]>, active: boolean): void {
-  if (renderedTranscriptSessionID !== session.id) {
-    clearTranscript()
-    renderedTranscriptSessionID = session.id
+function renderTurnNavigation(session?: NonNullable<ChatSnapshot["session"]>): void {
+  if (!session) {
+    turnNavigation.hidden = true
+    turnNavigation.replaceChildren()
+    return
   }
-  const nearBottom = transcriptNearBottom()
-  const expectedMessages = new Set<string>()
-  const expectedTurns = new Set<string>()
-  const changeRevision = JSON.stringify(session.changes ?? [])
-  const turnMessages = new Map<string, Array<{ message: MessageBundle; live: boolean }>>()
-  const turnOrder: string[] = []
-  let lastAssistantID: string | undefined
-  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
-    if (session.messages[index]?.info.role !== "assistant") continue
-    lastAssistantID = session.messages[index]!.info.id
-    break
-  }
-  let turnKey: string | undefined
-  session.messages.forEach((message) => {
-    if (message.info.role === "user") {
-      turnKey = `user:${message.info.id}`
-      turnOrder.push(turnKey)
-      turnMessages.set(turnKey, [])
-    } else if (!turnKey) {
-      turnKey = `assistant:${message.info.id}`
-      turnOrder.push(turnKey)
-      turnMessages.set(turnKey, [])
-    }
-    const live = message.info.role === "assistant" && active && !message.info.time?.completed && message.info.id === lastAssistantID
-    turnMessages.get(turnKey!)!.push({ message, live })
-  })
+  const markers = turnNavigationMarkers(session)
+  turnNavigation.hidden = markers.length < 2
+  turnNavigation.innerHTML = markers.map((marker, index) => `<button type="button" data-marker-target="${escapeHtml(marker.target)}" title="${escapeHtml(marker.label)}" aria-label="${escapeHtml(marker.label)}"${marker.current ? ` aria-current="true"` : ""} tabindex="${index === markers.length - 1 ? 0 : -1}"></button>`).join("")
+}
 
-  turnOrder.forEach((key, turnIndex) => {
-    expectedTurns.add(key)
-    let turn = renderedTurns.get(key)
-    if (!turn) {
-      turn = document.createElement("section")
-      turn.className = `turn${key.startsWith("assistant:") ? " assistant-only" : ""}`
-      renderedTurns.set(key, turn)
-    }
-    const expectedPosition = messages.children.item(turnIndex)
-    if (expectedPosition !== turn) messages.insertBefore(turn, expectedPosition)
-    const entries = turnMessages.get(key)!
-    const displayEntries: Array<{ message: MessageBundle; live: boolean; revisionKey: string }> = []
-    for (let index = 0; index < entries.length; index += 1) {
-      const entry = entries[index]!
-      const visible = entry.message.parts.filter((part) => !part.synthetic && part.type !== "step-start" && part.type !== "step-finish")
-      if (entry.message.info.role !== "assistant" || !visible.length || !visible.every((part) => part.type === "reasoning")) {
-        displayEntries.push({ ...entry, revisionKey: `${entry.message.info.id}:${session.messageRevisions[entry.message.info.id] ?? 0}` })
-        continue
-      }
-      const run = [entry]
-      while (index + 1 < entries.length) {
-        const next = entries[index + 1]!
-        const nextVisible = next.message.parts.filter((part) => !part.synthetic && part.type !== "step-start" && part.type !== "step-finish")
-        if (next.message.info.role !== "assistant" || !nextVisible.length || !nextVisible.every((part) => part.type === "reasoning")) break
-        run.push(next)
-        index += 1
-      }
-      if (run.length === 1) {
-        displayEntries.push({ ...entry, revisionKey: `${entry.message.info.id}:${session.messageRevisions[entry.message.info.id] ?? 0}` })
-        continue
-      }
-      const first = run[0]!.message
-      const last = run.at(-1)!.message
-      displayEntries.push({
-        message: {
-          info: {
-            id: `thoughts:${first.info.id}:${last.info.id}:${run.length}`,
-            sessionID: first.info.sessionID,
-            role: "assistant",
-            time: { created: first.info.time?.created, completed: last.info.time?.completed },
-          },
-          parts: run.flatMap((item) => item.message.parts.filter((part) => !part.synthetic && part.type === "reasoning")),
-        },
-        live: run.some((item) => item.live),
-        revisionKey: run.map((item) => `${item.message.info.id}:${session.messageRevisions[item.message.info.id] ?? 0}`).join(","),
-      })
-    }
-    const firstAssistant = displayEntries.findIndex((entry) => entry.message.info.role === "assistant")
-    const contentSignature = displayEntries.map((entry) => entry.revisionKey).join("|")
-    const cachedContent = turnClassifications.get(key)
-    const content = cachedContent?.signature === contentSignature
-      ? cachedContent
-      : { signature: contentSignature, ...turnContent(displayEntries.map((entry) => entry.message)) }
-    if (cachedContent !== content) turnClassifications.set(key, content)
-    const finalTextParts = new Set(content.finalTextPartKeys)
-    const hasActivity = content.hasActivity
-    const working = activityWorking(active, lastAssistantID, entries.filter((entry) => entry.message.info.role === "assistant").map((entry) => entry.message.info.id))
-    const turnTiming = timingHtml(entries, working)
-    const activityKey = `${session.id}:${key}`
-    let activityHeader = turn.querySelector<HTMLElement>(":scope > .turn-activity-header")
-    let activityToggle = activityHeader?.querySelector<HTMLButtonElement>(".turn-activity-toggle") ?? null
-    if (hasActivity) {
-      const wasWorking = activityToggle?.dataset.working === "true"
-      const existingCollapse = activityToggle ? turn.classList.contains("activity-collapsed") : undefined
-      if (working) activityCollapsePreferences.delete(activityKey)
-      if (!activityToggle) {
-        activityHeader = document.createElement("div")
-        activityHeader.className = "turn-activity-header"
-        activityToggle = document.createElement("button")
-        activityToggle.type = "button"
-        activityToggle.className = "turn-activity-toggle"
-        activityToggle.dataset.turnActivity = "true"
-        const divider = document.createElement("div")
-        divider.className = "turn-activity-divider"
-        activityHeader.append(activityToggle, divider)
-      }
-      turn.classList.toggle("activity-collapsed", activityCollapsed(working, wasWorking, activityCollapsePreferences.get(activityKey), existingCollapse))
-      activityToggle.dataset.activityKey = activityKey
-      activityToggle.dataset.working = String(working)
-      activityToggle.setAttribute("aria-disabled", String(working))
-      activityToggle.classList.toggle("working", working)
-      activityToggle.innerHTML = turnTiming || `<span>Activity</span><span class="activity-chevron" aria-hidden="true">›</span>`
-      activityToggle.setAttribute("aria-expanded", String(!turn.classList.contains("activity-collapsed")))
-      activityToggle.title = working ? "Work activity stays expanded while OpenCode is working" : turn.classList.contains("activity-collapsed") ? "Show work activity" : "Hide work activity"
-      const expectedHeader = turn.children.item(firstAssistant)
-      if (expectedHeader !== activityHeader) turn.insertBefore(activityHeader!, expectedHeader)
-    } else {
-      activityHeader?.remove()
-      turn.classList.remove("activity-collapsed")
-      activityToggle = null
-    }
-    const classificationSignature = `${hasActivity}:${Array.from(finalTextParts).join(",")}`
-    displayEntries.forEach(({ message, live, revisionKey }, messageIndex) => {
-      expectedMessages.add(message.info.id)
-      const delegationSignature = message.parts.flatMap((part) => {
-        const delegation = session.delegations?.find((item) => item.partID === part.id)
-        return delegation ? [`${part.id}:${delegation.revision}:${delegation.status.type}`] : []
-      }).join(",")
-      const signature = `${revisionKey}:${message.info.time?.completed ?? ""}:${live}:${classificationSignature}:${delegationSignature}:${changeRevision}`
-      let rendered = renderedMessages.get(message.info.id)
-      if (!rendered) {
-        const html = message.info.role === "user" ? userHtml(message) : assistantHtml(message, live, finalTextParts)
-        rendered = { node: htmlNode(html), signature }
-        renderedMessages.set(message.info.id, rendered)
-      } else if (rendered.signature !== signature) {
-        const html = message.info.role === "user" ? userHtml(message) : assistantHtml(message, live, finalTextParts)
-        rendered = { node: replaceMessage(rendered.node, html), signature }
-        renderedMessages.set(message.info.id, rendered)
-      }
-      const offset = hasActivity && messageIndex >= firstAssistant ? 1 : 0
-      const expectedMessage = turn.children.item(messageIndex + offset)
-      if (expectedMessage !== rendered.node) turn.insertBefore(rendered.node, expectedMessage)
-    })
-  })
-  for (const [messageID, rendered] of renderedMessages) {
-    if (expectedMessages.has(messageID)) continue
-    rendered.node.remove()
-    renderedMessages.delete(messageID)
-  }
-  for (const [key, turn] of renderedTurns) {
-    if (expectedTurns.has(key)) continue
-    turn.remove()
-    renderedTurns.delete(key)
-    turnClassifications.delete(key)
-  }
-  if (nearBottom) {
-    messages.scrollTop = messages.scrollHeight
-    unseenMessages = 0
-  }
-  updateJumpLatest()
+function renderHistoryBoundary(session?: NonNullable<ChatSnapshot["session"]>): void {
+  const presentation = historyPresentation(session?.history)
+  const loading = Boolean(session && historyLoadingSessionID === session.id)
+  historyBoundary.hidden = !presentation.visible
+  historyBoundary.setAttribute("aria-busy", String(loading))
+  historyBoundaryText.textContent = loading ? `${presentation.text} Loading the next older page…` : presentation.text
+  historyLoadOlder.hidden = !presentation.actionLabel || !session?.messages.length
+  historyLoadOlder.disabled = loading
+  historyLoadOlder.textContent = loading ? "Loading…" : presentation.actionLabel ?? "Load older messages"
 }
 
 function fillSelect(select: HTMLSelectElement, defaultLabel: string, options: Array<{ value: string; label: string }>, selected?: string): void {
@@ -860,6 +781,12 @@ function renderModelPicker(): void {
     ? `${selected.name} · ${snapshot.providers?.find((provider) => provider.id === selected.providerID)?.name ?? selected.providerID}${variant.value ? ` · ${variantLabel(variant.value)}` : ""}`
     : "Model and reasoning"
   if (modelPicker.hidden) return
+  const focusedModelValue = document.activeElement instanceof HTMLElement && modelOptions.contains(document.activeElement)
+    ? document.activeElement.closest<HTMLButtonElement>("[data-model-value]")?.dataset.modelValue
+    : undefined
+  const focusedVariant = document.activeElement instanceof HTMLElement && reasoningOptions.contains(document.activeElement)
+    ? document.activeElement.closest<HTMLButtonElement>("[data-variant-value]")
+    : undefined
   const signature = JSON.stringify([snapshot.models, model.value, variant.value, modelSearch.value])
   if (signature === modelPickerSignature) return
   modelPickerSignature = signature
@@ -872,22 +799,44 @@ function renderModelPicker(): void {
     .sort((left, right) => left.providerID.localeCompare(right.providerID, undefined, { numeric: true }) || left.name.localeCompare(right.name, undefined, { numeric: true }))
   const selectedMatch = matchingModels.find((item) => `${item.providerID}/${item.id}` === model.value)
   const models = [selectedMatch, ...matchingModels.filter((item) => item !== selectedMatch)].filter((item): item is typeof matchingModels[number] => Boolean(item)).slice(0, 120)
+  const availableValues = new Set(models.map((item) => `${item.providerID}/${item.id}`))
+  modelPickerActiveValue = modelPickerActiveValue && availableValues.has(modelPickerActiveValue)
+    ? modelPickerActiveValue
+    : model.value && availableValues.has(model.value)
+    ? model.value
+    : models[0] ? `${models[0].providerID}/${models[0].id}` : undefined
   const selectedModels = models.filter((item) => `${item.providerID}/${item.id}` === model.value)
   const groupedModels = models.filter((item) => `${item.providerID}/${item.id}` !== model.value)
+  let modelIndex = 0
   const modelButton = (item: typeof models[number]) => {
     const value = `${item.providerID}/${item.id}`
-    return `<button type="button" data-model-value="${escapeHtml(value)}" aria-pressed="${model.value === value}"><span>${escapeHtml(item.name)}</span><small>${item.contextLimit ? `${Math.round(item.contextLimit / 1_000)}k` : ""}</small></button>`
+    const index = modelIndex++
+    return `<button id="model-option-${index}" type="button" role="option" data-model-value="${escapeHtml(value)}" aria-selected="${model.value === value}" tabindex="${modelPickerActiveValue === value ? 0 : -1}"><span>${escapeHtml(item.name)}</span><small>${item.contextLimit ? `${Math.round(item.contextLimit / 1_000)}k` : ""}</small></button>`
   }
-  let provider = ""
-  const grouped = groupedModels.map((item) => {
-    const providerInfo = snapshot.providers?.find((candidate) => candidate.id === item.providerID)
-    const heading = provider === item.providerID ? "" : `<div class="picker-heading picker-provider">${escapeHtml(providerInfo?.name ?? item.providerID)}</div>`
-    provider = item.providerID
-    return `${heading}${modelButton(item)}`
+  const providerGroups = new Map<string, typeof groupedModels>()
+  for (const item of groupedModels) providerGroups.set(item.providerID, [...(providerGroups.get(item.providerID) ?? []), item])
+  const selectedGroup = selectedModels.length
+    ? `<div class="model-option-group" role="group" aria-label="Selected model"><div class="picker-heading picker-provider" aria-hidden="true">Selected</div>${selectedModels.map(modelButton).join("")}</div>`
+    : ""
+  const grouped = [...providerGroups].map(([providerID, items]) => {
+    const label = snapshot.providers?.find((candidate) => candidate.id === providerID)?.name ?? providerID
+    return `<div class="model-option-group" role="group" aria-label="${escapeHtml(label)}"><div class="picker-heading picker-provider" aria-hidden="true">${escapeHtml(label)}</div>${items.map(modelButton).join("")}</div>`
   }).join("")
   modelOptions.innerHTML = models.length
-    ? `${selectedModels.length ? `<div class="picker-heading picker-provider">Selected</div>${selectedModels.map(modelButton).join("")}` : ""}${grouped}`
-    : `<p class="placeholder">No matching models.</p>`
+    ? `${selectedGroup}${grouped}`
+    : `<p class="placeholder" role="status">No matching models.</p>`
+  if (focusedModelValue) {
+    const replacement = modelOptionButtons().find((button) => button.dataset.modelValue === focusedModelValue)
+    if (replacement) {
+      modelOptionButtons().forEach((button) => button.tabIndex = button === replacement ? 0 : -1)
+      modelPickerActiveValue = focusedModelValue
+      replacement.focus()
+    } else modelSearch.focus()
+  } else if (focusedVariant) {
+    const replacement = [...reasoningOptions.querySelectorAll<HTMLButtonElement>("[data-variant-value]")]
+      .find((button) => button.dataset.variantValue === focusedVariant.dataset.variantValue)
+    ;(replacement ?? modelSearch).focus()
+  }
   const limits = selected
     ? [selected.contextLimit ? `context ${selected.contextLimit.toLocaleString()}` : "context unknown", selected.inputLimit ? `input ${selected.inputLimit.toLocaleString()}` : "", selected.outputLimit ? `output ${selected.outputLimit.toLocaleString()}` : ""].filter(Boolean).join(" · ")
     : "Context limit unavailable"
@@ -900,6 +849,9 @@ function renderModelPicker(): void {
 
 function openModelPicker(focusReasoning = false): void {
   commandSuggestions.hidden = true
+  if (modelPicker.hidden) modelPickerReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : modelToggle
+  modelPickerActiveValue = model.value || undefined
+  modelPickerSignature = ""
   modelPicker.hidden = false
   modelToggle.setAttribute("aria-expanded", "true")
   renderModelPicker()
@@ -908,111 +860,83 @@ function openModelPicker(focusReasoning = false): void {
     : modelSearch.focus())
 }
 
-function closeModelPicker(): void {
+function closeModelPicker(restoreFocus = true): void {
   modelPicker.hidden = true
   modelToggle.setAttribute("aria-expanded", "false")
   modelSearch.value = ""
   modelPickerSignature = ""
+  const target = modelPickerReturnFocus
+  modelPickerReturnFocus = undefined
+  if (restoreFocus) (target?.isConnected ? target : modelToggle).focus()
 }
 
-const SESSION_GROUPS = ["Needs input", "Working", "Completed", "Today", "Yesterday", "Previous 7 days", "Older"] as const
-
-function statusLabel(value: SessionOption): string {
-  if (value.status.type === "error") return "Error"
-  if ((value.questionCount ?? 0) > 0) return value.questionCount === 1 ? "Question pending" : `${value.questionCount} questions pending`
-  if ((value.permissionCount ?? 0) > 0) return value.permissionCount === 1 ? "Permission pending" : `${value.permissionCount} permissions pending`
-  if ((value.attention ?? 0) > 0) return "Input needed"
-  if (value.status.type === "retry") return "Retrying"
-  if (value.status.type === "busy") return "Working"
-  if (value.unread > 0) return "Completed"
-  if ((value.queued ?? 0) > 0) return `${value.queued} queued`
-  return ""
+function modelOptionButtons(): HTMLButtonElement[] {
+  return [...modelOptions.querySelectorAll<HTMLButtonElement>("[data-model-value]")]
 }
 
-function sessionIndicator(value: SessionOption): string {
-  let kind = ""
-  let label = ""
-  let icon = ""
-  if (value.status.type === "error") [kind, label, icon] = ["error", "Session error", SESSION_ICONS.error]
-  else if ((value.questionCount ?? 0) > 0) [kind, label, icon] = ["question", statusLabel(value), SESSION_ICONS.question]
-  else if ((value.permissionCount ?? 0) > 0 || (value.attention ?? 0) > 0) [kind, label, icon] = ["permission", statusLabel(value), SESSION_ICONS.permission]
-  else if (value.status.type === "retry") [kind, label, icon] = ["retry", "Retrying", SESSION_ICONS.retry]
-  else if (value.status.type === "busy") [kind, label] = ["working", "Working"]
-  else if (value.unread > 0) [kind, label, icon] = ["completed", "Completed; not reviewed", SESSION_ICONS.completed]
-  else if ((value.queued ?? 0) > 0) [kind, label, icon] = ["queued", `${value.queued} queued`, SESSION_ICONS.queued]
-  return kind
-    ? `<span class="session-row-icon state-${kind}" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${icon}</span>`
-    : `<span class="session-row-icon state-idle" aria-hidden="true"></span>`
+function navigateMenu(root: HTMLElement, event: KeyboardEvent, selector = 'button:not([disabled])'): boolean {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return false
+  const buttons = [...root.querySelectorAll<HTMLButtonElement>(selector)].filter((button) => !button.hidden && !button.closest("[hidden]"))
+  const next = nextMenuIndex(event.key as MenuNavigationKey, buttons.indexOf(document.activeElement as HTMLButtonElement), buttons.length)
+  if (next === undefined) return false
+  event.preventDefault()
+  buttons.forEach((button, index) => button.tabIndex = index === next ? 0 : -1)
+  buttons[next]?.focus()
+  return true
 }
 
-function relativeSessionTime(updatedAt = 0): string {
-  const elapsed = Math.max(0, Date.now() - updatedAt)
-  if (elapsed < 60_000) return "now"
-  if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)}m`
-  if (elapsed < 24 * 60 * 60_000) return `${Math.floor(elapsed / (60 * 60_000))}h`
-  return `${Math.floor(elapsed / (24 * 60 * 60_000))}d`
+function focusModelOption(index: number): void {
+  const buttons = modelOptionButtons()
+  if (!buttons.length) return
+  const bounded = Math.max(0, Math.min(index, buttons.length - 1))
+  buttons.forEach((button, buttonIndex) => button.tabIndex = buttonIndex === bounded ? 0 : -1)
+  modelPickerActiveValue = buttons[bounded]?.dataset.modelValue
+  buttons[bounded]?.focus()
 }
 
-function workspaceName(directory?: string): string {
-  return directory?.replace(/[\\/]$/, "").split(/[\\/]/).at(-1) || ""
-}
-
-function sessionButton(value: SessionOption, selected?: string): string {
-  const detail = [workspaceName(value.directory), value.changeCount ? `${value.changeCount} changed` : "", value.todo?.total ? `${value.todo.completed}/${value.todo.total} todos` : "", value.queued ? `${value.queued} queued` : ""].filter(Boolean).join(" · ")
-  const status = statusLabel(value)
-  return `<button type="button" class="session-row ${value.id === selected ? "selected" : ""}" data-session-id="${escapeHtml(value.id)}"${status ? ` title="${escapeHtml(status)}"` : ""}>${sessionIndicator(value)}<span class="session-row-copy"><span class="session-row-heading"><span class="session-row-title">${escapeHtml(value.title)}</span><time>${escapeHtml(relativeSessionTime(value.updatedAt))}</time></span>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</span></button>`
-}
-
-function sortedSessions(values: SessionOption[], group?: typeof SESSION_GROUPS[number]): SessionOption[] {
-  return [...values].sort((left, right) => {
-    if (!group) {
-      const priority = SESSION_GROUPS.indexOf(sessionGroup(left)) - SESSION_GROUPS.indexOf(sessionGroup(right))
-      if (priority) return priority
-    }
-    if (!group || ["Needs input", "Working", "Completed", "Today", "Yesterday"].includes(group)) return left.title.localeCompare(right.title)
-    return (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || left.title.localeCompare(right.title)
-  })
-}
-
-function sessionSearchText(value: SessionOption): string {
-  const group = sessionGroup(value)
-  const aliases = value.unread > 0 ? "done unread" : ""
-  return `${value.title}\n${value.directory ?? ""}\n${statusLabel(value)}\n${group}\n${aliases}`.toLowerCase()
-}
-
-function sessionListMarkup(values: SessionOption[], query: string, empty: string): string {
-  const filtered = values.filter((value) => !query || sessionSearchText(value).includes(query))
-  if (!filtered.length) return `<p class="placeholder">${escapeHtml(empty)}</p>`
-  const ordered = query ? sortedSessions(filtered) : SESSION_GROUPS.flatMap((group) => sortedSessions(filtered.filter((value) => sessionGroup(value) === group), group))
-  const visible = ordered.slice(0, sessionRenderLimit)
-  const more = ordered.length > visible.length ? `<button type="button" class="text-action" data-session-more>Show ${Math.min(200, ordered.length - visible.length)} more</button>` : ""
-  if (query) return `<section class="history-group"><h2>Results</h2>${visible.map((value) => sessionButton(value, snapshot.session?.id)).join("")}${more}</section>`
-  return SESSION_GROUPS.map((group) => {
-    const grouped = visible.filter((value) => sessionGroup(value) === group)
-    return grouped.length ? `<section class="history-group"><h2>${group} <span>${grouped.length}</span></h2>${grouped.map((value) => sessionButton(value, snapshot.session?.id)).join("")}</section>` : ""
-  }).join("") + more
+function moveModelOptionFocus(key: string): void {
+  const buttons = modelOptionButtons()
+  if (!buttons.length) return
+  const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+  const next = key === "Home" ? 0 : key === "End" ? buttons.length - 1 : key === "ArrowDown"
+    ? (Math.max(0, current) + 1) % buttons.length
+    : (current <= 0 ? buttons.length : current) - 1
+  focusModelOption(next)
 }
 
 function renderSessionLists(): void {
-  const signature = JSON.stringify([snapshot.sessions, snapshot.session?.id, historySearch.value, railSessionSearch.value])
+  const signature = JSON.stringify([snapshot.sessions, snapshot.runGroups, snapshot.session?.id, historySearch.value, railSessionSearch.value])
   if (signature === sessionListSignature) return
+  const focusedSession = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLButtonElement>("[data-session-id]") : undefined
+  const focusedList = focusedSession && historyList.contains(focusedSession) ? historyList : focusedSession && railSessionList.contains(focusedSession) ? railSessionList : undefined
+  const focusedSessionID = focusedSession?.dataset.sessionId
   sessionListSignature = signature
-  historyList.innerHTML = sessionListMarkup(snapshot.sessions, historySearch.value.trim().toLowerCase(), "No matching sessions.")
+  historyList.innerHTML = sessionListMarkup(snapshot.sessions, { query: historySearch.value, empty: "No matching sessions.", selectedSessionID: snapshot.session?.id, renderLimit: sessionRenderLimit })
   railSessionCount.textContent = String(snapshot.sessions.length)
-  railSessionList.innerHTML = sessionListMarkup(snapshot.sessions, railSessionSearch.value.trim().toLowerCase(), railSessionSearch.value ? "No matching sessions." : "No sessions yet.")
+  railSessionList.innerHTML = sessionListMarkup(snapshot.sessions, { query: railSessionSearch.value, empty: railSessionSearch.value ? "No matching sessions." : "No sessions yet.", selectedSessionID: snapshot.session?.id, renderLimit: sessionRenderLimit })
+  const groups = snapshot.runGroups ?? []
+  railRunGroups.hidden = groups.length === 0
+  railRunGroups.innerHTML = groups.map((group) => `<details class="rail-run-group"><summary>${escapeHtml(group.title)} <small>${group.runs.length} runs</small></summary><ul><li class="rail-run-context"><span>Current checkout</span><small>${escapeHtml(group.repository)} · ${escapeHtml(group.baseRef)}</small></li><li><details open><summary>Model worktree sessions</summary><ul>${group.runs.map((run) => run.session.directory === "pending"
+    ? `<li class="rail-run-pending" data-run-id="${escapeHtml(run.id)}"><span>${escapeHtml(run.model)}</span><small>${escapeHtml(run.phase)} · ${run.phase === "failed" ? "Worktree unavailable" : "Preparing worktree…"}</small></li>`
+    : `<li><button type="button" data-run-group="${escapeHtml(group.id)}" data-run-id="${escapeHtml(run.id)}" data-run-action="open"><span>${escapeHtml(run.model)}</span><small>${escapeHtml(run.phase)} · ${escapeHtml(run.session.directory)}</small></button></li>`).join("")}</ul></details></li></ul></details>`).join("")
+  if (focusedList && focusedSessionID) {
+    const replacement = [...focusedList.querySelectorAll<HTMLButtonElement>("[data-session-id]")].find((button) => button.dataset.sessionId === focusedSessionID)
+    if (replacement) {
+      focusedList.querySelectorAll<HTMLButtonElement>("[data-session-id]").forEach((button) => button.tabIndex = button === replacement ? 0 : -1)
+      replacement.focus()
+    } else (focusedList === historyList ? historySearch : railSessionSearch).focus()
+  }
 }
 
 function renderQueue(session: NonNullable<ChatSnapshot["session"]>): void {
-  const queue = session.queue ?? []
-  const running = queue.find((prompt) => prompt.id === session.inFlightPromptID)
-  const pending = queue.filter((prompt) => prompt.id !== session.inFlightPromptID)
-  const signature = JSON.stringify([session.id, queue, session.inFlightPromptID, session.status.type])
+  const { queue, running, pending, signature } = queueProjection(session)
   if (signature === queueSignature) return
   queueSignature = signature
   queueDock.hidden = queue.length === 0
   const preview = (prompt: typeof queue[number]) => escapeHtml(prompt.text.replace(/\s+/g, " ").trim() || prompt.attachments?.map((attachment) => attachment.name).join(", ") || "Attachment")
+  const delivery = (prompt: typeof queue[number]) => deliveryLabel(prompt.delivery)
   const active = session.status.type === "busy" || session.status.type === "retry"
-  queueDock.innerHTML = queue.length ? `${running ? `<div class="dock-heading"><strong>Running</strong></div><ol><li class="queue-running"><span class="queue-preview">${preview(running)}</span><small>Command is executing</small></li></ol>` : ""}${pending.length ? `<div class="dock-heading"><strong>Queue</strong><span>${pending.length}</span></div><ol>${pending.map((prompt, index) => `<li><span class="queue-preview">${preview(prompt)}</span><span class="queue-actions"><button type="button" data-queue-action="now" data-prompt-id="${escapeHtml(prompt.id)}" title="${active ? "Cancel the current response and send this message" : "Send this message now"}" ${running ? "disabled" : ""}>${active ? "Stop and send" : "Send now"}</button><button type="button" data-queue-action="edit" data-prompt-id="${escapeHtml(prompt.id)}">Edit</button><button type="button" data-queue-action="up" data-prompt-id="${escapeHtml(prompt.id)}" ${index === 0 ? "disabled" : ""}>Up</button><button type="button" data-queue-action="down" data-prompt-id="${escapeHtml(prompt.id)}" ${index === pending.length - 1 ? "disabled" : ""}>Down</button><button type="button" data-queue-action="remove" data-prompt-id="${escapeHtml(prompt.id)}">Remove from queue</button></span></li>`).join("")}</ol>` : ""}` : ""
+  queueDock.innerHTML = queue.length ? `${running ? `<div class="dock-heading"><strong>Running</strong></div><ol><li class="queue-running"><span class="queue-preview">${preview(running)}</span><small>${delivery(running)}</small></li></ol>` : ""}${pending.length ? `<div class="dock-heading"><strong>Queue</strong><span>${pending.length}</span></div><ol>${pending.map((prompt, index) => `<li><span class="queue-preview">${preview(prompt)}</span><small>${delivery(prompt)}</small><span class="queue-actions"><button type="button" data-queue-action="now" data-prompt-id="${escapeHtml(prompt.id)}" title="${active ? "Cancel the current response and send this message" : "Send this message now"}" ${running ? "disabled" : ""}>${active ? "Stop and send" : "Send now"}</button><button type="button" data-queue-action="edit" data-prompt-id="${escapeHtml(prompt.id)}">Edit</button><button type="button" data-queue-action="up" data-prompt-id="${escapeHtml(prompt.id)}" ${index === 0 ? "disabled" : ""}>Up</button><button type="button" data-queue-action="down" data-prompt-id="${escapeHtml(prompt.id)}" ${index === pending.length - 1 ? "disabled" : ""}>Down</button><button type="button" data-queue-action="remove" data-prompt-id="${escapeHtml(prompt.id)}">Remove from queue</button></span></li>`).join("")}</ol>` : ""}` : ""
 }
 
 function incompletePermissionDetails(request: PermissionRequest): string {
@@ -1081,7 +1005,10 @@ function renderSummaries(session: NonNullable<ChatSnapshot["session"]>, active: 
     const elapsed = goal.timeUsedSeconds === undefined ? "" : formatDuration(goal.timeUsedSeconds * 1_000)
     const turns = goal.autoTurns === undefined ? "" : goal.maxAutoTurns === undefined ? `Auto ${goal.autoTurns}` : `Auto ${goal.autoTurns}/${goal.maxAutoTurns}`
     const toggle = goal.status === "active" ? "pause" : goal.status === "paused" ? "resume" : undefined
-    goalDock.innerHTML = `<button type="button" class="goal-open" data-goal-action="edit" title="Edit goal"><span class="goal-icon" aria-hidden="true">◎</span><span class="goal-state">${escapeHtml(state)}</span><strong>${escapeHtml(goal.objective || "Goal active")}</strong>${elapsed ? `<small>${escapeHtml(elapsed)}</small>` : ""}${turns ? `<small>${escapeHtml(turns)}</small>` : ""}</button><div class="goal-actions">${toggle ? `<button type="button" class="goal-action" data-goal-action="${toggle}">${toggle === "pause" ? "Pause" : "Resume"}</button>` : ""}<button type="button" class="goal-action" data-goal-action="cancel">Cancel</button></div>`
+    const limits = [`Tokens ${goal.tokensUsed ?? 0}${goal.tokenBudget === undefined ? "" : `/${goal.tokenBudget}`}`, `Turns ${goal.autoTurns ?? 0}${goal.maxAutoTurns === undefined ? "" : `/${goal.maxAutoTurns}`}`, `Time ${elapsed || "0s"}${goal.maxDurationSeconds === undefined ? "" : `/${formatDuration(goal.maxDurationSeconds * 1_000)}`}`]
+    const criteria = goal.acceptanceCriteria?.length ? `<ol>${goal.acceptanceCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ol>` : `<p>No explicit acceptance criteria.</p>`
+    const verdict = goal.latestVerdict ? `<p><strong>Latest verdict: ${escapeHtml(goal.latestVerdict.verdict)}</strong> · ${escapeHtml(goal.latestVerdict.confidence)} confidence</p><p>${escapeHtml(goal.latestVerdict.reason)}</p>${goal.latestVerdict.missingCriteria.length ? `<p>Missing: ${goal.latestVerdict.missingCriteria.map(escapeHtml).join("; ")}</p>` : ""}` : `<p>No independent verdict recorded.</p>`
+    goalDock.innerHTML = `<button type="button" class="goal-open" data-goal-action="edit" title="Edit goal"><span class="goal-icon" aria-hidden="true">◎</span><span class="goal-state">${escapeHtml(state)}</span><strong>${escapeHtml(goal.objective || "Goal active")}</strong>${elapsed ? `<small>${escapeHtml(elapsed)}</small>` : ""}${turns ? `<small>${escapeHtml(turns)}</small>` : ""}</button><details class="goal-details"><summary>Criteria and evidence</summary><p>${limits.map(escapeHtml).join(" · ")}</p>${criteria}${verdict}<p>Evidence references: ${goal.evidenceReferences?.length ?? 0}${goal.verifier?.enabled ? ` · Verifier enabled · blocked ${goal.consecutiveBlockedVerdicts ?? 0}/${goal.verifier.repeatedBlockThreshold}` : " · Verifier disabled"}</p>${goal.status === "unmet" && goal.blocker ? `<p>Needs user: ${escapeHtml(goal.blocker)}</p>` : ""}</details><div class="goal-actions"><button type="button" class="goal-action" data-goal-action="configure">Configure</button><button type="button" class="goal-action" data-goal-action="verify"${goal.verifier?.enabled === false ? ` title="Verifier is disabled in goal configuration"` : ""}>Verify</button>${toggle ? `<button type="button" class="goal-action" data-goal-action="${toggle}">${toggle === "pause" ? "Pause" : "Resume"}</button>` : ""}<button type="button" class="goal-action" data-goal-action="cancel">Cancel</button></div>`
   } else goalDock.innerHTML = ""
   const todos = session.todos ?? []
   const completed = todos.filter((todo) => todo.status === "completed").length
@@ -1093,7 +1020,7 @@ function renderSummaries(session: NonNullable<ChatSnapshot["session"]>, active: 
     const kind = status === "completed" ? "completed" : ["in_progress", "in-progress", "active"].includes(status) ? "working" : ["cancelled", "canceled", "skipped"].includes(status) ? "cancelled" : "pending"
     const visualKind = status === "stopped" ? "stopped" : kind
     const label = visualKind === "completed" ? "Completed" : visualKind === "working" ? "In progress" : visualKind === "cancelled" ? "Cancelled" : visualKind === "stopped" ? "Stopped" : "Pending"
-    const indicator = visualKind === "completed" ? SESSION_ICONS.completed : visualKind === "working" ? "" : visualKind === "cancelled" ? "−" : visualKind === "stopped" ? "·" : ""
+    const indicator = visualKind === "completed" ? SESSION_COMPLETED_ICON : visualKind === "working" ? "" : visualKind === "cancelled" ? "−" : visualKind === "stopped" ? "·" : ""
     return `<li class="todo-dock-item todo-${visualKind}"><span class="todo-state" role="img" aria-label="${label}" title="${label}">${indicator}</span><span>${escapeHtml(todo.content)}</span>${todo.priority ? `<small>${escapeHtml(todo.priority)}</small>` : ""}</li>`
   }).join("")}</ol>` : ""
 }
@@ -1460,7 +1387,7 @@ function updatePrimaryAction(): void {
   const hasDraft = Boolean(draft.value.trim() || sessionAttachments(session?.id).length || sessionPastedText(session?.id).length || sessionContextAttachments(session?.id).length)
   if (!session) {
     send.dataset.action = hasDraft ? "send" : "idle"
-    send.disabled = !snapshot.connected || !hasDraft
+    send.disabled = !snapshot.connected || !hasDraft || !capabilityAvailable("session.create") || !capabilityAvailable("prompt.followUp")
     send.classList.remove("stop-action", "queue-action")
     send.innerHTML = PRIMARY_ICONS.send
     send.title = hasDraft ? "Start new session" : "Send message"
@@ -1472,7 +1399,12 @@ function updatePrimaryAction(): void {
   const stopping = stoppingSessionID === session?.id
   const action = stopping ? "stopping" : active ? hasDraft ? "queue" : "stop" : hasDraft ? "send" : "idle"
   send.dataset.action = action
-  send.disabled = !session || !snapshot.connected || action === "idle" || action === "stopping"
+  const requiredCapability = action === "stop" || action === "stopping"
+    ? "prompt.cancel"
+    : action === "queue" || action === "send"
+    ? "prompt.followUp"
+    : undefined
+  send.disabled = !session || !snapshot.connected || action === "idle" || action === "stopping" || (requiredCapability !== undefined && !capabilityAvailable(requiredCapability))
   send.classList.toggle("stop-action", action === "stop" || action === "stopping")
   send.classList.toggle("queue-action", action === "queue")
   sendOptions.hidden = action !== "queue"
@@ -1481,6 +1413,42 @@ function updatePrimaryAction(): void {
   const label = action === "stopping" ? "Stopping response…" : action === "stop" ? "Stop response (Esc)" : action === "queue" ? "Add to Queue (Enter)" : "Send message"
   send.title = label
   send.setAttribute("aria-label", label)
+}
+
+function capabilityAvailable(capability: WorkbenchCapability): boolean {
+  return negotiatedCapabilities?.[capability] ?? true
+}
+
+function applyCapabilityControls(): void {
+  if (!negotiatedCapabilities) return
+  createHeader.disabled ||= !capabilityAvailable("session.create")
+  createEmpty.disabled ||= !capabilityAvailable("session.create")
+  const createMenu = sessionMenu.querySelector<HTMLButtonElement>('[data-menu-command="create"]')
+  if (createMenu) createMenu.disabled = !capabilityAvailable("session.create")
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-session-action="fork"], [data-message-action="fork"]')) {
+    button.disabled = !capabilityAvailable("session.fork")
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-session-action="delete"]')) {
+    button.disabled = !capabilityAvailable("session.delete")
+  }
+  for (const button of sendOptions.querySelectorAll<HTMLButtonElement>("[data-send-delivery]")) {
+    const capability = button.dataset.sendDelivery === "steer"
+      ? "prompt.steer"
+      : button.dataset.sendDelivery === "replace"
+      ? "prompt.replace"
+      : "prompt.followUp"
+    button.disabled = !capabilityAvailable(capability)
+  }
+  for (const button of permissionDock.querySelectorAll<HTMLButtonElement>("button")) {
+    button.disabled = !capabilityAvailable("input.permissions.exact")
+  }
+  for (const control of questionDock.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input")) {
+    control.disabled = !capabilityAvailable("input.questions")
+  }
+  for (const button of goalDock.querySelectorAll<HTMLButtonElement>("[data-goal-action]")) {
+    button.disabled = !capabilityAvailable("goal.lifecycle")
+  }
+  updatePrimaryAction()
 }
 
 function matchingCommands(): NonNullable<ChatSnapshot["commands"]> {
@@ -1708,6 +1676,117 @@ function syncConnectionNotice(): boolean {
   return presentation.showNotice
 }
 
+function selectInspectorTab(tab: string, focusTab = true): void {
+  if (!INSPECTOR_TABS.has(tab as InspectorTab)) return
+  if (!inspectorOpen) inspectorShell.toggle()
+  inspectorOpen = inspectorShell.open
+  inspectorShell.select(tab)
+  inspectorTab = inspectorShell.tab as InspectorTab
+  persistInspector()
+  renderInspector()
+  if (focusTab) inspectorTabs.querySelector<HTMLButtonElement>(`[data-inspector-tab="${CSS.escape(inspectorTab)}"]`)?.focus()
+}
+
+function focusAttentionElement(target?: HTMLElement): boolean {
+  if (!target || target.closest("[hidden]")) return false
+  target.scrollIntoView({ block: "center" })
+  const focusTarget = target.matches("button, input, summary, [tabindex]")
+    ? target
+    : target.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), summary, [tabindex]:not([tabindex='-1'])")
+  if (focusTarget) focusTarget.focus()
+  else {
+    target.tabIndex = -1
+    target.focus()
+  }
+  return document.activeElement === focusTarget || document.activeElement === target
+}
+
+function routePendingAttention(): void {
+  const pending = pendingAttentionTarget
+  if (!pending || (pending.sessionID && snapshot.session?.id !== pending.sessionID)) return
+  let target: HTMLElement | undefined
+  if (pending.surface === "goal") {
+    selectInspectorTab("goal", false)
+    target = inspectorPanel
+  } else if (pending.surface === "runs") {
+    selectInspectorTab("runs", false)
+    target = pending.itemID
+      ? inspectorPanel.querySelector<HTMLElement>(`[data-run-id="${CSS.escape(pending.itemID)}"], [data-worktree-id="${CSS.escape(pending.itemID)}"]`) ?? undefined
+      : inspectorPanel
+  } else if (pending.surface === "health") {
+    target = !notice.hidden ? notice : !connection.hidden ? connection : status
+  } else if (pending.itemID) {
+    const id = CSS.escape(pending.itemID)
+    target = document.querySelector<HTMLElement>(`[data-request-id="${id}"], [data-question-request="${id}"], [data-message-id="${id}"]`) ?? undefined
+  } else {
+    target = !notice.hidden ? notice : status
+  }
+  pendingAttentionTarget = undefined
+  if (!focusAttentionElement(target)) {
+    attentionToggle.focus()
+    announce("The attention item is no longer available")
+  }
+}
+
+function renderAttention(): void {
+  const items = snapshot.attentionItems ?? []
+  const count = items.length
+  attentionCount.hidden = count === 0
+  attentionCount.textContent = count > 99 ? "99+" : String(count)
+  attentionToggle.classList.toggle("has-attention", count > 0)
+  attentionToggle.title = count ? `Needs Attention (${count})` : "No items need attention"
+  attentionToggle.setAttribute("aria-label", count ? `Needs Attention, ${count} item${count === 1 ? "" : "s"}` : "Needs Attention, no items")
+  const nextSignature = JSON.stringify(items.map((item) => [item.id, item.kind, item.sessionID, item.title, item.detail, item.target]))
+  if (nextSignature !== attentionSignature) {
+    const focusedID = !attentionOverlay.hidden && document.activeElement instanceof HTMLElement
+      ? document.activeElement.closest<HTMLElement>("[data-attention-id]")?.dataset.attentionId
+      : undefined
+    attentionSignature = nextSignature
+    attentionList.innerHTML = count
+      ? items.map((item) => `<button type="button" data-attention-id="${escapeHtml(item.id)}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.kind.replaceAll("-", " "))}</small>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ""}</button>`).join("")
+      : `<p class="placeholder">Nothing needs attention.</p>`
+    if (focusedID) {
+      const replacement = attentionList.querySelector<HTMLButtonElement>(`[data-attention-id="${CSS.escape(focusedID)}"]`) ?? attentionList.querySelector<HTMLButtonElement>("[data-attention-id]")
+      ;(replacement ?? attentionOverlay.querySelector<HTMLButtonElement>("[data-close-attention]"))?.focus()
+    }
+  }
+  if (lastAttentionCount !== undefined && count > lastAttentionCount) {
+    const added = count - lastAttentionCount
+    announce(`${added} new attention item${added === 1 ? "" : "s"}; ${count} total`)
+  }
+  lastAttentionCount = count
+  routePendingAttention()
+}
+
+function renderInspector(): void {
+  inspector.hidden = !inspectorOpen
+  inspectorToggle.setAttribute("aria-expanded", String(inspectorOpen))
+  const tabs = [...inspectorTabs.querySelectorAll<HTMLButtonElement>("[data-inspector-tab]")]
+  for (const tab of tabs) {
+    const selected = tab.dataset.inspectorTab === inspectorTab
+    tab.setAttribute("aria-selected", String(selected))
+    tab.tabIndex = selected ? 0 : -1
+  }
+  inspectorPanel.setAttribute("aria-labelledby", `inspector-tab-${inspectorTab}`)
+  if (!inspectorOpen) return
+  const presentation = inspectorPresentation(snapshot, inspectorTab)
+  if (presentation.signature === inspectorSignature) return
+  const previousTab = inspectorPanel.dataset.tab
+  const scrollTop = previousTab === inspectorTab ? inspectorPanel.scrollTop : 0
+  const hadFocus = inspectorPanel.contains(document.activeElement)
+  const focusedKey = hadFocus && document.activeElement instanceof HTMLElement
+    ? document.activeElement.closest<HTMLElement>("[data-inspector-key]")?.dataset.inspectorKey
+    : undefined
+  inspectorSignature = presentation.signature
+  inspectorPanel.dataset.tab = inspectorTab
+  inspectorPanel.innerHTML = presentation.markup
+  inspectorPanel.scrollTop = scrollTop
+  if (hadFocus) {
+    const replacement = focusedKey ? inspectorPanel.querySelector<HTMLElement>(`[data-inspector-key="${CSS.escape(focusedKey)}"]`) : undefined
+    ;(replacement ?? inspectorPanel).focus()
+  }
+}
+
 function render(): void {
   const session = snapshot.session
   const active = session?.status.type === "busy" || session?.status.type === "retry"
@@ -1715,6 +1794,7 @@ function render(): void {
   const loading = loadPhase === "initial"
   const refreshing = loadPhase === "refreshing"
   const connectionUnavailable = syncConnectionNotice()
+  syncProjectionNotice(connectionUnavailable)
   const connecting = snapshot.connectionState === "connecting"
   sessionTitle.textContent = session?.title || "No session"
   backParent.hidden = !session?.parentID && document.body.dataset.mode !== "editor"
@@ -1726,11 +1806,12 @@ function render(): void {
     ? `<span class="header-active-indicator" title="Connecting to OpenCode" aria-label="Connecting to OpenCode"></span>`
     : sessionOption && (sessionOption.status.type === "busy" || sessionOption.status.type === "retry" || refreshing)
     ? `<span class="header-active-indicator" title="${refreshing && !active ? "Refreshing session" : "Working"}" aria-label="${refreshing && !active ? "Refreshing session" : "Working"}"></span>`
-    : sessionOption ? escapeHtml(statusLabel(sessionOption)) : ""
+    : sessionOption ? escapeHtml(sessionStatusLabel(sessionOption)) : ""
   sessionCurrent.disabled = snapshot.sessions.length === 0
   sessionMenuToggle.disabled = !session
   createHeader.disabled = !snapshot.connected
   createEmpty.disabled = !snapshot.connected
+  planTask.disabled = !snapshot.connected
   const emptyConversation = Boolean(session && session.messages.length === 0)
   empty.hidden = loading || Boolean(session && !emptyConversation)
   sessionLoading.hidden = !loading
@@ -1771,6 +1852,8 @@ function render(): void {
     queueDock.hidden = permissionDock.hidden = questionDock.hidden = goalDock.hidden = todoDock.hidden = true
   } else {
     renderTranscript(session, Boolean(active))
+    renderTurnNavigation(session)
+    renderHistoryBoundary(session)
     syncDraft(session)
     renderAttachments()
     renderQueue(session)
@@ -1778,16 +1861,23 @@ function render(): void {
     renderQuestions(session)
     renderSummaries(session, Boolean(active))
   }
+  if (!session) {
+    renderTurnNavigation()
+    renderHistoryBoundary()
+  }
   renderSessionLists()
+  renderAttention()
+  renderInspector()
   renderWorkspaceStrip(session)
   renderCommandSuggestions()
   resizeDraft()
   updatePrimaryAction()
+  applyCapabilityControls()
   syncAnimationTimers(Boolean(active))
 }
 
 function post(message: WebviewToHostMessage): void {
-  vscode.postMessage(message)
+  transport.post(message)
 }
 
 function closeHistory(): void {
@@ -1903,10 +1993,10 @@ draft.addEventListener("keydown", (event) => {
     commandSuggestions.hidden = true
     return
   }
-  if (shouldSubmitComposerKey(event)) {
+  const submitIntent = composerSubmitIntent(event, snapshot.composer?.enterBehavior, snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry")
+  if (submitIntent !== "none") {
     event.preventDefault()
-    const active = snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry"
-    if (active && event.altKey) submitMessage("steer")
+    if (submitIntent === "steer") submitMessage("steer")
     else send.click()
   }
 })
@@ -1924,6 +2014,22 @@ fileSuggestionList.addEventListener("click", (event) => {
 })
 modelToggle.addEventListener("click", () => modelPicker.hidden ? openModelPicker() : closeModelPicker())
 modelSearch.addEventListener("input", renderModelPicker)
+modelSearch.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown") return
+  event.preventDefault()
+  const buttons = modelOptionButtons()
+  const active = buttons.findIndex((button) => button.dataset.modelValue === modelPickerActiveValue)
+  focusModelOption(active >= 0 ? active : 0)
+})
+modelOptions.addEventListener("keydown", (event) => {
+  if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+    event.preventDefault()
+    moveModelOptionFocus(event.key)
+  } else if ((event.key === "Enter" || event.key === " ") && document.activeElement instanceof HTMLButtonElement) {
+    event.preventDefault()
+    document.activeElement.click()
+  }
+})
 modelPicker.addEventListener("click", (event) => {
   const modelButton = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-model-value]") : undefined
   const variantButton = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-variant-value]") : undefined
@@ -1931,13 +2037,16 @@ modelPicker.addEventListener("click", (event) => {
   if (!sessionID) return
   if (modelButton?.dataset.modelValue) {
     model.value = modelButton.dataset.modelValue
+    modelPickerActiveValue = model.value
     variant.value = ""
     const selected = selectedModelOption()
     const variants = selected?.variants ?? []
     fillSelect(variant, "Default reasoning", variants.map((value) => ({ value, label: variantLabel(value) })))
     post({ type: "setPreference", sessionID, agent: agent.value, model: model.value })
+    modelPickerSignature = ""
     renderModelPicker()
     if (!variants.length) closeModelPicker()
+    else requestAnimationFrame(() => reasoningOptions.querySelector<HTMLButtonElement>("button[aria-pressed='true']")?.focus())
     return
   }
   if (variantButton) {
@@ -2015,6 +2124,17 @@ sendOptions.addEventListener("click", (event) => {
   const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-send-delivery]") : undefined
   const delivery = button?.dataset.sendDelivery
   if (delivery === "queue" || delivery === "steer" || delivery === "replace") submitMessage(delivery)
+})
+sendOptions.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && sendOptions.open) {
+    event.preventDefault()
+    event.stopPropagation()
+    sendOptions.open = false
+    sendOptions.querySelector<HTMLElement>("summary")?.focus()
+    return
+  }
+  if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && !sendOptions.open) sendOptions.open = true
+  navigateMenu(sendOptions, event, "[data-send-delivery]:not([disabled])")
 })
 attachFiles.addEventListener("click", () => {
   const sessionID = snapshot.session?.id
@@ -2095,7 +2215,10 @@ noticeLogs.addEventListener("click", () => post({ type: "openLogs" }))
 noticeCopy.addEventListener("click", () => {
   if (noticeDetail) post({ type: "copyText", text: noticeDetail })
 })
-noticeDismiss.addEventListener("click", () => clearNotice())
+noticeDismiss.addEventListener("click", () => {
+  if (noticeKind === "projection") dismissedProjectionSignature = projectionSignature()
+  clearNotice()
+})
 composer.addEventListener("dragover", (event) => {
   if (!event.dataTransfer) return
   const types = Array.from(event.dataTransfer.types, (type) => type.toLowerCase())
@@ -2141,7 +2264,101 @@ createHeader.addEventListener("click", () => {
   flushPendingDraft()
   post({ type: "createSession" })
 })
+attentionToggle.addEventListener("click", () => {
+  const initialFocus = attentionList.querySelector<HTMLElement>("button") ?? attentionOverlay.querySelector<HTMLElement>(".attention-panel [data-close-attention]") ?? undefined
+  attentionOverlayController.open(initialFocus)
+})
+attentionOverlay.addEventListener("click", (event) => {
+  const close = event.target instanceof Element && event.target.closest("[data-close-attention]")
+  if (close) {
+    attentionOverlayController.close()
+    return
+  }
+  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-attention-id]") : undefined
+  const item = snapshot.attentionItems?.find((candidate) => candidate.id === button?.dataset.attentionId)
+  if (!item) return
+  pendingAttentionTarget = { sessionID: item.sessionID, itemID: item.target.itemID, surface: item.target.surface }
+  attentionOverlayController.close(false)
+  if (item.sessionID && snapshot.session?.id !== item.sessionID) {
+    focusAttentionElement(status)
+    post({ type: "selectSession", sessionID: item.sessionID })
+  }
+  else renderAttention()
+})
+function persistInspector(): void {
+  vscode.setState({ ...(vscode.getState() ?? {}), todoExpanded, ...inspectorShell.persisted() })
+}
+inspectorToggle.addEventListener("click", () => {
+  inspectorShell.toggle()
+  inspectorOpen = inspectorShell.open
+  persistInspector()
+  renderInspector()
+  if (inspectorOpen) inspectorTabs.querySelector<HTMLButtonElement>(`[data-inspector-tab="${inspectorTab}"]`)?.focus()
+})
+inspectorClose.addEventListener("click", () => {
+  inspectorShell.close()
+  inspectorOpen = inspectorShell.open
+  persistInspector()
+  renderInspector()
+  inspectorToggle.focus()
+})
+inspectorTabs.addEventListener("click", (event) => {
+  const tab = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-inspector-tab]") : undefined
+  if (!tab?.dataset.inspectorTab) return
+  selectInspectorTab(tab.dataset.inspectorTab, false)
+})
+inspectorTabs.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
+  const tabs = [...inspectorTabs.querySelectorAll<HTMLButtonElement>("[data-inspector-tab]")]
+  const current = tabs.findIndex((tab) => tab.dataset.inspectorTab === inspectorTab)
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length
+  event.preventDefault()
+  selectInspectorTab(tabs[next]!.dataset.inspectorTab!)
+})
+inspectorPanel.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : undefined
+  const file = target?.closest<HTMLButtonElement>("[data-inspector-file]")?.dataset.inspectorFile
+  if (file && snapshot.session) post({ type: "openFile", sessionID: snapshot.session.id, file })
+  const walkthrough = target?.closest<HTMLButtonElement>("[data-walkthrough-document][data-walkthrough-stop]")
+  if (walkthrough?.dataset.walkthroughDocument && walkthrough.dataset.walkthroughStop) post({ type: "walkthroughAction", documentID: walkthrough.dataset.walkthroughDocument, stopID: walkthrough.dataset.walkthroughStop })
+  const run = target?.closest<HTMLButtonElement>("[data-run-action]")
+  const action = run?.dataset.runAction
+  if (run?.dataset.runGroup && action && ["open", "cancel", "retry", "refresh", "compare", "fuse", "diff", "review", "keep", "discard"].includes(action)) post({ type: "runAction", groupID: run.dataset.runGroup, runID: run.dataset.runId, action: action as "open" | "cancel" | "retry" | "refresh" | "compare" | "fuse" | "diff" | "review" | "keep" | "discard" })
+})
+railRunGroups.addEventListener("click", (event) => {
+  const run = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-run-action]") : undefined
+  if (run?.dataset.runGroup && run.dataset.runId) post({ type: "runAction", groupID: run.dataset.runGroup, runID: run.dataset.runId, action: "open" })
+})
+turnNavigation.addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-marker-target]") : undefined
+  const [kind, ...idParts] = button?.dataset.markerTarget?.split(":") ?? []
+  const id = idParts.join(":")
+  const selector = kind === "message" ? `[data-message-id="${CSS.escape(id)}"]` : kind === "permission" ? `[data-request-id="${CSS.escape(id)}"]` : kind === "question" ? `[data-question-request="${CSS.escape(id)}"]` : ""
+  const target = selector ? document.querySelector<HTMLElement>(selector) : undefined
+  if (!target) return
+  target.scrollIntoView({ block: "center" })
+  target.querySelector<HTMLElement>("button, input, summary")?.focus()
+})
+turnNavigation.addEventListener("keydown", (event) => {
+  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return
+  const buttons = [...turnNavigation.querySelectorAll<HTMLButtonElement>("button")]
+  const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+  const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (current + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length
+  event.preventDefault()
+  buttons.forEach((button, index) => button.tabIndex = index === next ? 0 : -1)
+  buttons[next]?.focus()
+})
+historyLoadOlder.addEventListener("click", () => {
+  const session = snapshot.session
+  const beforeMessageID = session?.messages[0]?.info.id
+  if (!session?.history?.hasOlder || !beforeMessageID || historyLoadingSessionID) return
+  pendingHistoryAnchor = conversationView.capturePrependAnchor()
+  historyLoadingSessionID = session.id
+  renderHistoryBoundary(session)
+  post({ type: "loadOlderHistory", sessionID: session.id, beforeMessageID })
+})
 createEmpty.addEventListener("click", () => post({ type: "createSession" }))
+planTask.addEventListener("click", () => post({ type: "planTask" }))
 surfaceToggle.addEventListener("click", () => {
   flushPendingDraft()
   post({ type: document.body.dataset.mode === "editor" ? "openInSidebar" : "openInEditor" })
@@ -2168,6 +2385,16 @@ sessionMenuSearch.addEventListener("input", () => {
     button.hidden = Boolean(query) && !button.textContent?.toLowerCase().includes(query)
   })
   sessionMenu.querySelectorAll<HTMLHRElement>("hr").forEach((separator) => separator.hidden = Boolean(query))
+})
+sessionMenu.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault()
+    event.stopPropagation()
+    closeSessionMenu()
+    sessionMenuToggle.focus()
+    return
+  }
+  navigateMenu(sessionMenu, event, 'button[role="menuitem"]:not([disabled])')
 })
 sessionMenu.addEventListener("click", (event) => {
   const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-session-action]") : undefined
@@ -2232,7 +2459,7 @@ historySearch.addEventListener("input", renderSessionLists)
 railSessionSearch.addEventListener("input", renderSessionLists)
 for (const [input, list] of [[historySearch, historyList], [railSessionSearch, railSessionList]] as const) {
   input.addEventListener("keydown", (event) => {
-    const first = list.querySelector<HTMLButtonElement>("[data-session-id]")
+    const first = list.querySelector<HTMLButtonElement>("[data-session-id][tabindex='0']") ?? list.querySelector<HTMLButtonElement>("[data-session-id]")
     if (event.key === "ArrowDown" && first) {
       event.preventDefault()
       first.focus()
@@ -2242,12 +2469,14 @@ for (const [input, list] of [[historySearch, historyList], [railSessionSearch, r
     }
   })
   list.addEventListener("keydown", (event) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return
     const rows = Array.from(list.querySelectorAll<HTMLButtonElement>("[data-session-id]"))
     const index = rows.indexOf(document.activeElement as HTMLButtonElement)
     if (index < 0) return
     event.preventDefault()
-    rows[(index + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length]?.focus()
+    const next = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : (index + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length
+    rows.forEach((row, rowIndex) => row.tabIndex = rowIndex === next ? 0 : -1)
+    rows[next]?.focus()
   })
 }
 document.querySelectorAll<HTMLElement>("[data-close-overlay]").forEach((button) => button.addEventListener("click", closeHistory))
@@ -2418,7 +2647,7 @@ goalDock.addEventListener("click", (event) => {
   if (!sessionID) return
   const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : undefined
   const action = target?.dataset.goalAction
-  if (["edit", "pause", "resume", "cancel"].includes(action ?? "")) post({ type: "goalAction", sessionID, action: action as "edit" | "pause" | "resume" | "cancel" })
+  if (["edit", "configure", "verify", "pause", "resume", "cancel"].includes(action ?? "")) post({ type: "goalAction", sessionID, action: action as "edit" | "configure" | "verify" | "pause" | "resume" | "cancel" })
 })
 todoDock.addEventListener("click", (event) => {
   const header = event.target instanceof Element ? event.target.closest<HTMLButtonElement>(".todo-dock-header") : undefined
@@ -2507,7 +2736,7 @@ messages.addEventListener("click", (event) => {
     if (!turn) return
     turn.classList.toggle("activity-collapsed")
     const expanded = !turn.classList.contains("activity-collapsed")
-    if (activityToggle.dataset.activityKey) activityCollapsePreferences.set(activityToggle.dataset.activityKey, !expanded)
+    if (activityToggle.dataset.activityKey) conversationView.rememberActivityCollapsed(activityToggle.dataset.activityKey, !expanded)
     if (expanded) {
       turn.classList.add("activity-expanding")
       window.setTimeout(() => turn.classList.remove("activity-expanding"), 220)
@@ -2544,44 +2773,31 @@ messages.addEventListener("click", (event) => {
   }
 })
 jumpLatest.addEventListener("click", () => {
-  messages.scrollTop = messages.scrollHeight
-  unseenMessages = 0
-  updateJumpLatest()
+  conversationView.jumpToLatest()
 })
 messages.addEventListener("scroll", () => {
-  if (transcriptNearBottom()) unseenMessages = 0
-  updateJumpLatest()
+  conversationView.handleScroll()
 }, { passive: true })
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Tab" && !attachmentPreview.hidden) {
-    const focusable = Array.from(attachmentPreview.querySelectorAll<HTMLElement>("button:not([disabled]), [tabindex]:not([tabindex='-1'])"))
-    const first = focusable[0]
-    const last = focusable.at(-1)
-    if (first && last && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
-      event.preventDefault()
-      ;(event.shiftKey ? last : first).focus()
-    }
-    return
-  }
-  if (event.key === "Tab" && !historyOverlay.hidden) {
-    const focusable = Array.from(historyOverlay.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])"))
-    const first = focusable[0]
-    const last = focusable.at(-1)
-    if (first && last && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
-      event.preventDefault()
-      ;(event.shiftKey ? last : first).focus()
-    }
-    return
-  }
+  if (focusController.trapTab(event, attentionOverlay) || focusController.trapTab(event, attachmentPreview, "button:not([disabled]), [tabindex]:not([tabindex='-1'])") || focusController.trapTab(event, historyOverlay) || focusController.trapTab(event, modelPicker, "input:not([disabled]), button:not([disabled]):not([tabindex='-1']), [tabindex]:not([tabindex='-1'])")) return
   if (event.key === "Escape") {
-    if (!attachmentPreview.hidden) {
+    if (!attentionOverlay.hidden) {
+      attentionOverlayController.close()
+    }
+    else if (!attachmentPreview.hidden) {
       closeAttachmentPreview()
     }
     else if (!sessionContextMenu.hidden) closeSessionContextMenu(true)
     else if (!historyOverlay.hidden) closeHistory()
     else if (!modelPicker.hidden) {
       closeModelPicker()
-      modelToggle.focus()
+    }
+    else if (inspectorOpen) {
+      inspectorShell.close()
+      inspectorOpen = inspectorShell.open
+      persistInspector()
+      renderInspector()
+      inspectorToggle.focus()
     }
     else if (!sessionMenu.hidden) {
       closeSessionMenu()
@@ -2617,14 +2833,12 @@ window.addEventListener("popstate", () => {
 document.addEventListener("pointerdown", (event) => {
   if (!sessionContextMenu.hidden && event.target instanceof Node && !sessionContextMenu.contains(event.target)) closeSessionContextMenu()
   if (!sessionMenu.hidden && event.target instanceof Node && !sessionMenu.contains(event.target) && !sessionMenuToggle.contains(event.target)) closeSessionMenu()
-  if (!modelPicker.hidden && event.target instanceof Node && !modelPicker.contains(event.target) && !modelToggle.contains(event.target)) closeModelPicker()
+  if (!modelPicker.hidden && event.target instanceof Node && !modelPicker.contains(event.target) && !modelToggle.contains(event.target)) closeModelPicker(false)
   if (event.target instanceof Node && !workspaceStrip.contains(event.target)) {
     for (const detail of workspaceStrip.querySelectorAll<HTMLDetailsElement>(".workspace-detail[open]")) detail.open = false
   }
 })
-window.addEventListener("message", (event) => {
-  const message = parseHostMessage(event.data)
-  if (!message) return
+transport.listen((message) => {
   if (message.type === "error") {
     if (creatingSession) {
       creatingSession = false
@@ -2637,6 +2851,11 @@ window.addEventListener("message", (event) => {
     if (pendingSessionID) {
       pendingSessionID = undefined
       render()
+    }
+    if (historyLoadingSessionID) {
+      historyLoadingSessionID = undefined
+      pendingHistoryAnchor = undefined
+      renderHistoryBoundary(snapshot.session)
     }
     status.textContent = message.message
     status.title = message.message
@@ -2751,7 +2970,40 @@ window.addEventListener("message", (event) => {
     acknowledgedComposerPayloads.delete(message.sessionID)
     pendingComposerPayloads.delete(message.sessionID)
     stashedDrafts.delete(message.sessionID)
+    expandedHistory.delete(message.sessionID)
+    if (historyLoadingSessionID === message.sessionID) {
+      historyLoadingSessionID = undefined
+      pendingHistoryAnchor = undefined
+    }
     if (pendingDraft?.sessionID === message.sessionID) cancelPendingDraft()
+    return
+  }
+  if (message.type === "historyPage") {
+    const session = snapshot.session
+    if (historyLoadingSessionID === message.page.sessionID) historyLoadingSessionID = undefined
+    if (!session || session.id !== message.page.sessionID) {
+      pendingHistoryAnchor = undefined
+      return
+    }
+    const anchor = pendingHistoryAnchor
+    pendingHistoryAnchor = undefined
+    const merged = mergeHistoryPage(session, message.page)
+    snapshot = store.replace({ ...snapshot, session: merged })
+    const previousPage = expandedHistory.get(merged.id)
+    const newPageIDs = new Set(message.page.messages.map((entry) => entry.info.id))
+    expandedHistory.set(merged.id, {
+      ...message.page,
+      messages: [...message.page.messages, ...(previousPage?.messages ?? []).filter((entry) => !newPageIDs.has(entry.info.id))],
+      messageRevisions: { ...previousPage?.messageRevisions, ...message.page.messageRevisions },
+      hasOlder: merged.history?.hasOlder ?? false,
+      totalMessages: merged.history?.totalMessages ?? message.page.totalMessages,
+      sourceMayBeTruncated: merged.history?.sourceMayBeTruncated,
+    })
+    const active = merged.status.type === "busy" || merged.status.type === "retry"
+    renderTranscript(merged, active, anchor)
+    renderTurnNavigation(merged)
+    renderHistoryBoundary(merged)
+    announce(message.page.messages.length ? `${message.page.messages.length} older messages loaded` : "No additional older messages are available")
     return
   }
   if (message.type === "messagePatches") {
@@ -2762,6 +3014,7 @@ window.addEventListener("message", (event) => {
     const wasNearBottom = transcriptNearBottom()
     let changed = false
     let addedMessages = 0
+    let historyDelta = 0
     for (const patch of message.patches) {
       if (patch.sessionID !== session.id) continue
       const currentRevision = session.messageRevisions[patch.messageID] ?? -1
@@ -2781,31 +3034,64 @@ window.addEventListener("message", (event) => {
           else if (patch.append) session.messages.push(patch.message)
           else continue
           addedMessages += 1
+          historyDelta += 1
         } else session.messages[index] = patch.message
         session.messageRevisions[patch.messageID] = patch.revision
       } else if (index >= 0) {
         session.messages.splice(index, 1)
         delete session.messageRevisions[patch.messageID]
+        historyDelta -= 1
       }
       changed = true
     }
     if (changed) {
-      if (!wasNearBottom) unseenMessages += addedMessages
+      if (session.history) session.history = {
+        ...session.history,
+        totalMessages: Math.max(session.messages.length, session.history.totalMessages + historyDelta),
+        visibleMessages: session.messages.length,
+      }
+      const cached = expandedHistory.get(session.id)
+      if (cached) {
+        const currentMessages = new Map(session.messages.map((entry) => [entry.info.id, entry]))
+        const retained = cached.messages.flatMap((entry) => currentMessages.get(entry.info.id) ?? [])
+        expandedHistory.set(session.id, {
+          ...cached,
+          messages: retained,
+          messageRevisions: Object.fromEntries(retained.map((entry) => [entry.info.id, session.messageRevisions[entry.info.id] ?? cached.messageRevisions[entry.info.id] ?? 0])),
+          totalMessages: session.history?.totalMessages ?? cached.totalMessages,
+        })
+      }
+      if (!wasNearBottom) conversationView.addUnseen(addedMessages)
       renderTranscript(session, active)
+      renderHistoryBoundary(session)
       updatePrimaryAction()
       syncAnimationTimers(active)
     }
     return
   }
-  if (pendingSessionID && message.snapshot.session?.id !== pendingSessionID) return
-  if (pendingSessionID === message.snapshot.session?.id) pendingSessionID = undefined
+  let incomingSnapshot = message.snapshot
+  const incomingSession = incomingSnapshot.session
+  const cachedHistory = incomingSession ? expandedHistory.get(incomingSession.id) : undefined
+  if (incomingSession && cachedHistory) {
+    if ((incomingSession.history?.totalMessages ?? 0) < cachedHistory.totalMessages) expandedHistory.delete(incomingSession.id)
+    else incomingSnapshot = {
+      ...incomingSnapshot,
+      session: mergeHistoryPage(incomingSession, {
+        ...cachedHistory,
+        totalMessages: incomingSession.history?.totalMessages ?? cachedHistory.totalMessages,
+        sourceMayBeTruncated: incomingSession.history?.sourceMayBeTruncated ?? cachedHistory.sourceMayBeTruncated,
+      }),
+    }
+  }
+  if (pendingSessionID && incomingSnapshot.session?.id !== pendingSessionID) return
+  if (pendingSessionID === incomingSnapshot.session?.id) pendingSessionID = undefined
   const previousSession = snapshot.session
-  const nextSession = message.snapshot.session
+  const nextSession = incomingSnapshot.session
   if (creatingSession && nextSession) creatingSession = false
   if (previousSession && nextSession && previousSession.id === nextSession.id && (previousSession.status.type === "busy" || previousSession.status.type === "retry") && nextSession.status.type === "idle") {
     announce("OpenCode response complete")
   }
-  snapshot = message.snapshot
+  snapshot = store.replace(incomingSnapshot)
   render()
 })
 
@@ -2814,6 +3100,9 @@ document.addEventListener("visibilitychange", () => {
   const active = snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry"
   syncAnimationTimers(Boolean(active))
 })
-window.addEventListener("beforeunload", flushPendingDraft)
+window.addEventListener("beforeunload", () => {
+  flushPendingDraft()
+  transport.dispose()
+})
 resizeDraft()
 post({ type: "ready" })

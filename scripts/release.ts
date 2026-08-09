@@ -1,4 +1,5 @@
 import { dirname, fromFileUrl, join } from "jsr:@std/path@1.1.2"
+import { validateReleaseOpenCodeCompatibility } from "./release-metadata.ts"
 
 interface PackageManifest {
   name?: string
@@ -6,7 +7,7 @@ interface PackageManifest {
   version: string
   engines?: { vscode?: string }
   dependencies?: Record<string, string>
-  compatibility?: { minimumOpenCode?: string }
+  compatibility?: { minimumOpenCode?: string; maximumOpenCodeExclusive?: string }
 }
 
 const root = dirname(dirname(fromFileUrl(import.meta.url)))
@@ -22,28 +23,14 @@ if (rootManifest.version !== extensionManifest.version || rootManifest.version !
   throw new Error("Root, extension, plugin, and shared versions must match")
 }
 const opencodeVersion = rootManifest.dependencies?.["@opencode-ai/plugin"]
-if (!opencodeVersion || !/^\d+\.\d+\.\d+$/.test(opencodeVersion) ||
-  pluginManifest.dependencies?.["@opencode-ai/plugin"] !== opencodeVersion) {
+if (!opencodeVersion || pluginManifest.dependencies?.["@opencode-ai/plugin"] !== opencodeVersion) {
   throw new Error("Root and plugin must use the same exact @opencode-ai/plugin version")
 }
-const minimumOpenCode = rootManifest.compatibility?.minimumOpenCode
-if (!minimumOpenCode || !/^\d+\.\d+\.\d+$/.test(minimumOpenCode)) {
-  throw new Error("Root compatibility.minimumOpenCode must be an exact semantic version")
-}
-const versionParts = (version: string): number[] => version.split(".").map(Number)
-const compareVersions = (left: string, right: string): number => {
-  const leftParts = versionParts(left)
-  const rightParts = versionParts(right)
-  for (let index = 0; index < 3; index += 1) {
-    if (leftParts[index] !== rightParts[index]) return leftParts[index] - rightParts[index]
-  }
-  return 0
-}
-const minimumMajor = versionParts(minimumOpenCode)[0]
-if (minimumMajor !== versionParts(opencodeVersion)[0] || compareVersions(minimumOpenCode, opencodeVersion) > 0) {
-  throw new Error("Minimum OpenCode version must share the build dependency major and not exceed its version")
-}
-const nextOpenCodeMajor = `${minimumMajor + 1}.0.0`
+const { minimumOpenCode, maximumOpenCodeExclusive } = validateReleaseOpenCodeCompatibility({
+  minimumOpenCode: rootManifest.compatibility?.minimumOpenCode,
+  maximumOpenCodeExclusive: rootManifest.compatibility?.maximumOpenCodeExclusive,
+  buildOpenCodeVersion: opencodeVersion,
+})
 const extensionID = `${extensionManifest.publisher ?? ""}.${extensionManifest.name ?? ""}`
 if (!/^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$/.test(extensionID)) {
   throw new Error("VS Code extension publisher and name must form a valid Marketplace identifier")
@@ -65,10 +52,10 @@ for (const name of names) {
 const release = {
   schemaVersion: 1,
   version: rootManifest.version,
-  protocolVersion: 1,
+  protocolVersion: 2,
   compatibility: {
     minimumOpenCode,
-    maximumOpenCodeExclusive: nextOpenCodeMajor,
+    maximumOpenCodeExclusive,
     minimumVSCode: (extensionManifest.engines?.vscode ?? "^1.95.0").replace(/^\^/, ""),
   },
   vscodeExtension: { id: extensionID },

@@ -103,6 +103,8 @@ Deno.test("composer submit ignores IME composition", () => {
   assertEquals(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: true }), false)
   assertEquals(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 229 }), false)
   assertEquals(shouldSubmitComposerKey({ key: "Enter", shiftKey: true, isComposing: false }), false)
+  assertEquals(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: false }, "newline"), false)
+  assertEquals(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, ctrlKey: true, isComposing: false }, "newline"), true)
 })
 
 Deno.test("composer revision merge preserves concurrent additions and removals", () => {

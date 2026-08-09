@@ -4,6 +4,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import os from "node:os"
 import path from "node:path"
 import * as vscode from "vscode"
+import { bridgeContextIsContained, pathIsContained } from "./application/bridge-containment.js"
+import { processLockCanBeReclaimed } from "./application/process-lock.js"
 import type { OpenCodeReloadRequest } from "./deferred-reload.js"
 
 const BRIDGE_OPERATIONS = [
@@ -60,6 +62,8 @@ interface BridgeRequest {
 export interface VsCodeBridgeOptions {
   bridgeID?: string
   requestOpenCodeReload?(request: OpenCodeReloadRequest): Promise<unknown> | unknown
+  terminalEvidence?(result: { sessionID: string; exitCode?: number }): void
+  taskEvidence?(result: { sessionID: string; name: string; source: string; group?: string; exitCode?: number }): void
 }
 
 class BridgeProtocolError extends Error {
@@ -303,6 +307,7 @@ export class VsCodeBridge implements vscode.Disposable {
   private terminal?: vscode.Terminal
   private lastTextEditor?: vscode.TextEditor
   private editorSubscription?: vscode.Disposable
+  private readonly evidenceSubscriptions = new Set<vscode.Disposable>()
   private heartbeat?: NodeJS.Timeout
   private registryTask: Promise<void> = Promise.resolve()
   private closing = false
@@ -422,9 +427,7 @@ export class VsCodeBridge implements vscode.Disposable {
   }
 
   private async validateContext(context: BridgeRequest["context"]): Promise<void> {
-    const worktree = await fs.realpath(context.worktree).catch(() => undefined)
-    const directory = await fs.realpath(context.directory).catch(() => undefined)
-    if (worktree !== this.workspaceRealPath || !directory || !this.pathIsContained(directory)) {
+    if (!await bridgeContextIsContained(this.workspaceRealPath, context)) {
       throw new BridgeProtocolError("forbidden_context")
     }
   }
@@ -440,9 +443,9 @@ export class VsCodeBridge implements vscode.Disposable {
       case "vscode_get_diagnostics": return this.diagnostics(params.uri)
       case "vscode_open_file": return this.openFile(params)
       case "vscode_get_debug_context": return this.debugContext()
-      case "vscode_execute_terminal": return this.executeTerminal(params, signal)
+      case "vscode_execute_terminal": return this.executeTerminal(params, context, signal)
       case "vscode_list_tasks": return this.listTasks()
-      case "vscode_run_task": return this.runTask(params)
+      case "vscode_run_task": return this.runTask(params, context)
       case "vscode_get_code_actions": return this.codeActions(params)
       case "vscode_preview_rename": return this.previewRename(params)
       case "vscode_open_url": return this.openUrl(params)
@@ -454,8 +457,7 @@ export class VsCodeBridge implements vscode.Disposable {
   }
 
   private pathIsContained(candidate: string): boolean {
-    const relative = path.relative(this.workspaceRealPath, candidate)
-    return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+    return pathIsContained(this.workspaceRealPath, candidate)
   }
 
   private async uriIsContained(uri: vscode.Uri): Promise<boolean> {
@@ -726,14 +728,23 @@ export class VsCodeBridge implements vscode.Disposable {
     })
   }
 
-  private async executeTerminal(params: JsonRecord, signal: AbortSignal): Promise<unknown> {
+  private async executeTerminal(params: JsonRecord, context: BridgeRequest["context"], signal: AbortSignal): Promise<unknown> {
     const executable = params.executable as string
     const args = params.args as string[]
     const terminal = await this.integratedTerminal(signal)
     const integration = terminal.shellIntegration
     if (!integration) throw new BridgeProtocolError("terminal_unavailable")
     if (signal.aborted) throw signal.reason
-    integration.executeCommand(executable, args)
+    const execution = integration.executeCommand(executable, args)
+    if (this.options.terminalEvidence) {
+      const subscription = vscode.window.onDidEndTerminalShellExecution((event) => {
+        if (event.execution !== execution) return
+        this.evidenceSubscriptions.delete(subscription)
+        subscription.dispose()
+        try { this.options.terminalEvidence?.({ sessionID: context.sessionID, exitCode: event.exitCode }) } catch { /* Evidence capture must not affect terminal execution. */ }
+      })
+      this.evidenceSubscriptions.add(subscription)
+    }
     terminal.show(false)
     return { started: true, terminal: terminal.name }
   }
@@ -753,13 +764,24 @@ export class VsCodeBridge implements vscode.Disposable {
     return output
   }
 
-  private async runTask(params: JsonRecord): Promise<unknown> {
+  private async runTask(params: JsonRecord, context: BridgeRequest["context"]): Promise<unknown> {
     const tasks: vscode.Task[] = []
     for (const task of await vscode.tasks.fetchTasks()) {
       if (task.name === params.name && task.source === params.source && await this.taskIsContained(task)) tasks.push(task)
     }
     if (tasks.length !== 1) throw new BridgeProtocolError(tasks.length ? "ambiguous_task" : "task_not_found")
     const execution = await vscode.tasks.executeTask(tasks[0]!)
+    if (this.options.taskEvidence) {
+      const subscription = vscode.tasks.onDidEndTaskProcess((event) => {
+        if (event.execution !== execution) return
+        this.evidenceSubscriptions.delete(subscription)
+        subscription.dispose()
+        try {
+          this.options.taskEvidence?.({ sessionID: context.sessionID, name: execution.task.name, source: execution.task.source, group: execution.task.group?.id, exitCode: event.exitCode })
+        } catch { /* Evidence capture must not affect task execution. */ }
+      })
+      this.evidenceSubscriptions.add(subscription)
+    }
     return { started: true, name: execution.task.name, source: execution.task.source }
   }
 
@@ -900,9 +922,7 @@ export class VsCodeBridge implements vscode.Disposable {
         try {
           const stat = await fs.stat(lockPath)
           const currentOwner = await fs.readFile(lockPath, "utf8").catch(() => "")
-          const ownerPid = Number(currentOwner.split(":", 1)[0])
-          if (Date.now() - stat.mtimeMs > 10_000 &&
-            (!Number.isSafeInteger(ownerPid) || ownerPid <= 0 || !processIsAlive(ownerPid))) {
+          if (processLockCanBeReclaimed(currentOwner, stat.mtimeMs, Date.now(), 10_000, processIsAlive)) {
             const confirmedOwner = await fs.readFile(lockPath, "utf8").catch(() => "")
             if (confirmedOwner !== currentOwner) continue
             const quarantine = `${lockPath}.stale-${randomUUID()}`
@@ -941,6 +961,8 @@ export class VsCodeBridge implements vscode.Disposable {
     this.terminal = undefined
     this.editorSubscription?.dispose()
     this.editorSubscription = undefined
+    for (const subscription of this.evidenceSubscriptions) subscription.dispose()
+    this.evidenceSubscriptions.clear()
     if (server) {
       await new Promise<void>((resolve) => {
         server.close(() => resolve())

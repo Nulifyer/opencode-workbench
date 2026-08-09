@@ -1,3 +1,5 @@
+import type { GoalVerdict, GoalVerifierConfiguration } from "./workbench-domain.ts"
+
 const OPEN_CODE_ID_RANDOM_LENGTH = 14
 const OPEN_CODE_ID_RANDOM_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 let lastMessageIDTimestamp = 0
@@ -130,6 +132,7 @@ export interface CommandOption {
 export interface QueuedPrompt {
   id: string
   text: string
+  delivery?: "follow-up" | "steer" | "replace"
   agent?: string
   model?: string
   variant?: string
@@ -337,6 +340,15 @@ export interface GoalSummary {
   checkpoint?: string
   completionEvidence?: string
   blocker?: string
+  acceptanceCriteria?: string[]
+  verifier?: GoalVerifierConfiguration
+  latestVerdict?: GoalVerdict
+  evidenceReferences?: string[]
+  consecutiveBlockedVerdicts?: number
+  pendingContinuation?: boolean
+  settlementGeneration?: number
+  planReference?: string
+  runGroupReference?: string
 }
 
 export interface OpenCodeEvent {

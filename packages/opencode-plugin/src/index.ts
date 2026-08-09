@@ -16,19 +16,24 @@ import {
   accountGoalTokens,
   cancelGoalAutoContinueReservation,
   clearGoal,
+  commitGoalContinuation,
+  configureGoalVerification,
   closeGoal,
   createGoal,
   emptyGoalState,
   failGoalAutoContinue,
   goalHistoryReport,
   importLegacyGoalState,
+  pauseGoalContinuationRecovery,
   parseGoalState,
   recordGoalCheckpoint,
+  recordGoalVerdict,
   refreshGoal,
   reserveGoalAutoContinue,
   setGoalStatus,
   snapshotGoal,
   updateGoalObjective,
+  type Goal,
   type GoalState,
 } from "./goals.ts"
 
@@ -38,25 +43,33 @@ const categorySchema = s.enum(PREFERENCE_CATEGORIES)
 const idSchema = s.string().min(1).max(128)
 const querySchema = s.string().max(LIMITS.search).optional()
 type ToolArguments = Parameters<typeof tool>[0]["args"]
-const PART_ID_RANDOM_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-let lastPartIDTimestamp = 0
-let partIDCounter = 0
+const OPEN_CODE_ID_RANDOM_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+let lastGeneratedIDTimestamp = 0
+let generatedIDCounter = 0
+
+function createOpenCodeID(prefix: "msg" | "prt", timestamp = Date.now()): string {
+  let currentTimestamp = Math.max(Math.trunc(timestamp), lastGeneratedIDTimestamp)
+  if (currentTimestamp !== lastGeneratedIDTimestamp) {
+    lastGeneratedIDTimestamp = currentTimestamp
+    generatedIDCounter = 0
+  } else if (generatedIDCounter >= 0xfff) {
+    currentTimestamp += 1
+    lastGeneratedIDTimestamp = currentTimestamp
+    generatedIDCounter = 0
+  }
+  generatedIDCounter += 1
+  const encoded = (BigInt(currentTimestamp) * 0x1000n + BigInt(generatedIDCounter)) & 0xffffffffffffn
+  const bytes = crypto.getRandomValues(new Uint8Array(14))
+  const random = Array.from(bytes, (byte) => OPEN_CODE_ID_RANDOM_CHARS[byte % OPEN_CODE_ID_RANDOM_CHARS.length]).join("")
+  return `${prefix}_${encoded.toString(16).padStart(12, "0")}${random}`
+}
 
 function createOpenCodePartID(timestamp = Date.now()): string {
-  let currentTimestamp = Math.max(Math.trunc(timestamp), lastPartIDTimestamp)
-  if (currentTimestamp !== lastPartIDTimestamp) {
-    lastPartIDTimestamp = currentTimestamp
-    partIDCounter = 0
-  } else if (partIDCounter >= 0xfff) {
-    currentTimestamp += 1
-    lastPartIDTimestamp = currentTimestamp
-    partIDCounter = 0
-  }
-  partIDCounter += 1
-  const encoded = (BigInt(currentTimestamp) * 0x1000n + BigInt(partIDCounter)) & 0xffffffffffffn
-  const bytes = crypto.getRandomValues(new Uint8Array(14))
-  const random = Array.from(bytes, (byte) => PART_ID_RANDOM_CHARS[byte % PART_ID_RANDOM_CHARS.length]).join("")
-  return `prt_${encoded.toString(16).padStart(12, "0")}${random}`
+  return createOpenCodeID("prt", timestamp)
+}
+
+function createOpenCodeMessageID(timestamp = Date.now()): string {
+  return createOpenCodeID("msg", timestamp)
 }
 
 function provenance(context: ToolContext) {
@@ -135,6 +148,37 @@ function messageTokens(messages: Array<{ info?: unknown; parts?: unknown[] }>): 
   return Math.ceil(total)
 }
 
+function isGoalContinuationMarker(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const marker = (value as Record<string, unknown>)["opencode-workbench"]
+  return Boolean(marker && typeof marker === "object" && !Array.isArray(marker) && (marker as Record<string, unknown>).kind === "goal-continuation")
+}
+
+function transcriptHasPendingContinuation(messages: unknown[], goal: Pick<Goal, "pendingContinuationMessageID" | "pendingContinuationID" | "pendingContinuationReservedAt" | "updatedAt" | "history">): boolean {
+  const legacyReservationAt = goal.history.slice().reverse().find((entry) => entry.type === "autoContinue")?.timestamp
+  const reservedAt = goal.pendingContinuationReservedAt ?? legacyReservationAt ?? goal.updatedAt
+  return messages.some((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false
+    const message = candidate as Record<string, unknown>
+    const info = message.info && typeof message.info === "object" && !Array.isArray(message.info) ? message.info as Record<string, unknown> : {}
+    const time = info.time && typeof info.time === "object" && !Array.isArray(info.time) ? info.time as Record<string, unknown> : {}
+    const rawCreatedAt = typeof time.created === "number" && Number.isFinite(time.created) ? time.created : 0
+    const createdAt = rawCreatedAt > 100_000_000_000 ? Math.floor(rawCreatedAt / 1_000) : Math.floor(rawCreatedAt)
+    const parts = Array.isArray(message.parts) ? message.parts : []
+    if (goal.pendingContinuationMessageID && info.id !== goal.pendingContinuationMessageID) return false
+    return parts.some((candidatePart) => {
+      if (!candidatePart || typeof candidatePart !== "object" || Array.isArray(candidatePart)) return false
+      const part = candidatePart as Record<string, unknown>
+      if (part.type !== "text") return false
+      const recognizableContinuation = isGoalContinuationMarker(part.metadata) || part.text === GOAL_CONTINUATION_PROMPT
+      if (!recognizableContinuation) return false
+      if (goal.pendingContinuationID) return part.id === goal.pendingContinuationID
+      if (goal.pendingContinuationMessageID) return true
+      return isGoalContinuationMarker(part.metadata) && createdAt >= Math.max(0, reservedAt - 1)
+    })
+  })
+}
+
 function bridgeTool(
   registryPath: string,
   operation: BridgeOperation,
@@ -164,7 +208,7 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
   await adapter.prepare(registryPath)
   const project = resolve(worktree)
   const autoContinuation = new Map<string, "admitted" | "running" | "settling">()
-  const reservingContinuation = new Set<string>()
+  const continuationAdmissionCompletions = new Map<string, Promise<void>>()
   const continuationTasks = new Set<Promise<void>>()
   const idleContinuations = new Map<string, {
     timer: ReturnType<typeof setTimeout>
@@ -176,9 +220,42 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
   const continuationEventTails = new Map<string, Promise<void>>()
   let disposed = false
 
+  type RecoveryOutcome = "none" | "admitted" | "retry" | "deferred" | "paused"
+
+  const reconcilePendingContinuation = async (sessionID: string, idleVerified: boolean): Promise<RecoveryOutcome> => {
+    const goal = (await goalStore.read()).goals[sessionID]
+    if (!goal?.pendingContinuation || goal.status !== "active") return "none"
+    let history: Awaited<ReturnType<typeof client.session.messages>>
+    try {
+      history = await client.session.messages({ path: { id: sessionID }, query: { directory } })
+    } catch (error) {
+      if (!idleVerified) return "deferred"
+      await goalStore.mutate((state) => pauseGoalContinuationRecovery(state, sessionID, `OpenCode transcript lookup failed: ${errorText(error)}`))
+      return "paused"
+    }
+    const historyError = "error" in history ? history.error : undefined
+    if (historyError || !Array.isArray(history.data)) {
+      if (!idleVerified) return "deferred"
+      const detail = historyError ? errorText(historyError) : "OpenCode transcript history was unavailable."
+      await goalStore.mutate((state) => pauseGoalContinuationRecovery(state, sessionID, detail))
+      return "paused"
+    }
+    if (transcriptHasPendingContinuation(history.data, goal)) {
+      await goalStore.mutate((state) => commitGoalContinuation(state, sessionID))
+      if (!idleVerified) autoContinuation.set(sessionID, "running")
+      return "admitted"
+    }
+    return idleVerified ? "retry" : "deferred"
+  }
+
   const continueGoal = async (sessionID: string, pending: { cancelled: boolean; abort: AbortController }): Promise<void> => {
-    if (reservingContinuation.has(sessionID)) return
-    reservingContinuation.add(sessionID)
+    while (continuationAdmissionCompletions.has(sessionID)) {
+      await continuationAdmissionCompletions.get(sessionID)
+      if (disposed || pending.cancelled) return
+    }
+    let completeAdmission!: () => void
+    const admissionCompletion = new Promise<void>((resolve) => completeAdmission = resolve)
+    continuationAdmissionCompletions.set(sessionID, admissionCompletion)
     let admittedContinuation = false
     try {
       const sessionStatuses = await client.session.status({ query: { directory }, signal: pending.abort.signal })
@@ -186,10 +263,16 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
       if ("error" in sessionStatuses && sessionStatuses.error) throw new Error(`Could not verify OpenCode session status: ${errorText(sessionStatuses.error)}`)
       const currentStatus = sessionStatuses.data?.[sessionID]
       if (currentStatus && currentStatus.type !== "idle") return
-      const goal = await goalStore.mutate((state) => reserveGoalAutoContinue(state, sessionID))
+      const continuationID = createOpenCodePartID()
+      const continuationMessageID = createOpenCodeMessageID()
+      let wasPending = false
+      const goal = await goalStore.mutate((state) => {
+        wasPending = state.goals[sessionID]?.pendingContinuation === true
+        return reserveGoalAutoContinue(state, sessionID, undefined, continuationID, continuationMessageID)
+      })
       if (!goal) return
       if (disposed || pending.cancelled) {
-        await goalStore.mutate((state) => cancelGoalAutoContinueReservation(state, sessionID, goal.autoTurns))
+        if (!wasPending) await goalStore.mutate((state) => cancelGoalAutoContinueReservation(state, sessionID, goal.autoTurns))
         return
       }
       autoContinuation.set(sessionID, "admitted")
@@ -198,17 +281,32 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
       const result = await client.session.promptAsync({
         path: { id: sessionID },
         query: { directory },
-        body: { parts: [{ type: "text", text: GOAL_CONTINUATION_PROMPT, synthetic: true, metadata: GOAL_CONTINUATION_METADATA }] },
+        body: {
+          messageID: goal.pendingContinuationMessageID ?? continuationMessageID,
+          parts: [{ id: goal.pendingContinuationID ?? continuationID, type: "text", text: GOAL_CONTINUATION_PROMPT, synthetic: true, metadata: GOAL_CONTINUATION_METADATA }],
+        },
       })
       if (result.error) throw new Error(errorText(result.error))
     } catch (error) {
       if (disposed || pending.cancelled) return
+      if (admittedContinuation) {
+        const recovered = await reconcilePendingContinuation(sessionID, false).catch(() => "deferred" as const)
+        if (recovered === "admitted") return
+        autoContinuation.delete(sessionID)
+        await goalStore.mutate((state) => pauseGoalContinuationRecovery(
+          state,
+          sessionID,
+          `Prompt admission returned an error and OpenCode history could not confirm the durable message ID: ${errorText(error)}`,
+        )).catch(() => undefined)
+        return
+      }
       autoContinuation.delete(sessionID)
       await goalStore.mutate((state) => failGoalAutoContinue(state, sessionID, errorText(error))).catch(() => undefined)
     } finally {
       if (idleContinuations.get(sessionID) === pending) idleContinuations.delete(sessionID)
       if (!admittedContinuation && autoContinuation.get(sessionID) === "settling") autoContinuation.delete(sessionID)
-      reservingContinuation.delete(sessionID)
+      if (continuationAdmissionCompletions.get(sessionID) === admissionCompletion) continuationAdmissionCompletions.delete(sessionID)
+      completeAdmission()
     }
   }
 
@@ -263,7 +361,6 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
     if (eventType === "session.deleted") {
       cancelIdleContinuation(sessionID)
       autoContinuation.delete(sessionID)
-      reservingContinuation.delete(sessionID)
       if ((await goalStore.read()).goals[sessionID]) await goalStore.mutate((state) => clearGoal(state, sessionID))
       return
     }
@@ -279,16 +376,44 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
       ["session.next.prompt.admitted", "session.next.prompted", "session.next.step.started"].includes(eventType)) {
       const cancelled = cancelIdleContinuation(sessionID)
       if (cancelled && autoContinuation.get(sessionID) === "settling") autoContinuation.delete(sessionID)
-      else if (autoContinuation.has(sessionID)) autoContinuation.set(sessionID, "running")
+      else if (autoContinuation.has(sessionID)) {
+        autoContinuation.set(sessionID, "running")
+        await goalStore.mutate((state) => commitGoalContinuation(state, sessionID))
+      }
       return
     }
     if (eventType !== "session.idle" && !(eventType === "session.status" && statusType === "idle")) return
     const phase = autoContinuation.get(sessionID)
     if (phase === "running") autoContinuation.set(sessionID, "settling")
     if (phase === "admitted" || phase === "settling") return
+    if ((await goalStore.read()).goals[sessionID]?.pendingContinuation) {
+      const recovery = await reconcilePendingContinuation(sessionID, true)
+      if (recovery === "paused" || recovery === "deferred") return
+    }
     if ((await goalStore.read()).goals[sessionID]?.status === "active") scheduleGoalContinuation(sessionID)
     else if (autoContinuation.get(sessionID) === "settling") autoContinuation.delete(sessionID)
   }
+
+  const reconcilePersistedContinuations = async (): Promise<void> => {
+    const pendingSessionIDs = Object.values((await goalStore.read()).goals)
+      .filter((goal) => goal.status === "active" && goal.pendingContinuation)
+      .map((goal) => goal.sessionID)
+    if (!pendingSessionIDs.length) return
+    let statuses: Record<string, { type?: string }> | undefined
+    try {
+      const response = await client.session.status({ query: { directory } })
+      if (!response.error && response.data && typeof response.data === "object") statuses = response.data
+    } catch {
+      statuses = undefined
+    }
+    for (const sessionID of pendingSessionIDs) {
+      const status = statuses?.[sessionID]?.type
+      const idleVerified = statuses !== undefined && (!status || status === "idle")
+      await reconcilePendingContinuation(sessionID, idleVerified)
+    }
+  }
+
+  await reconcilePersistedContinuations()
 
   return {
     dispose: async () => {
@@ -323,6 +448,11 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
           token_budget: s.number().int().min(1).nullable().optional(),
           max_auto_turns: s.number().int().min(1).nullable().optional(),
           max_duration_seconds: s.number().int().min(1).nullable().optional(),
+          acceptance_criteria: s.array(s.string().min(1).max(2_000)).max(100).optional(),
+          verifier_enabled: s.boolean().optional(),
+          verifier_model: s.string().min(1).max(1_024).optional(),
+          verifier_agent: s.string().min(1).max(1_024).optional(),
+          repeated_block_threshold: s.number().int().min(1).max(10).optional(),
         },
         async execute(args, context) {
           return json({ goal: await goalStore.mutate((state) => createGoal(state, context.sessionID, {
@@ -330,6 +460,8 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
             tokenBudget: args.token_budget,
             maxAutoTurns: args.max_auto_turns,
             maxDurationSeconds: args.max_duration_seconds,
+            acceptanceCriteria: args.acceptance_criteria,
+            verifier: { enabled: args.verifier_enabled, model: args.verifier_model, agent: args.verifier_agent, repeatedBlockThreshold: args.repeated_block_threshold },
             agent: context.agent,
           })) })
         },
@@ -341,6 +473,7 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
           token_budget: s.number().int().min(1).nullable().optional(),
           max_auto_turns: s.number().int().min(1).nullable().optional(),
           max_duration_seconds: s.number().int().min(1).nullable().optional(),
+          acceptance_criteria: s.array(s.string().min(1).max(2_000)).max(100).optional(),
         },
         async execute(args, context) {
           return json({ goal: await goalStore.mutate((state) => createGoal(state, context.sessionID, {
@@ -348,6 +481,7 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
             tokenBudget: args.token_budget,
             maxAutoTurns: args.max_auto_turns,
             maxDurationSeconds: args.max_duration_seconds,
+            acceptanceCriteria: args.acceptance_criteria,
             agent: context.agent,
           })) })
         },
@@ -360,6 +494,47 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
         },
         async execute(args, context) {
           return json({ goal: await goalStore.mutate((state) => updateGoalObjective(state, context.sessionID, args.objective, args.status, context.agent)) })
+        },
+      }),
+      configure_goal_verification: tool({
+        description: "Configure explicit acceptance criteria and independent verifier behavior only when the user requests it.",
+        args: {
+          acceptance_criteria: s.array(s.string().min(1).max(2_000)).max(100).optional(),
+          token_budget: s.number().int().min(1).nullable().optional(),
+          max_auto_turns: s.number().int().min(1).nullable().optional(),
+          max_duration_seconds: s.number().int().min(1).nullable().optional(),
+          enabled: s.boolean().optional(),
+          model: s.string().min(1).max(1_024).nullable().optional(),
+          agent: s.string().min(1).max(1_024).nullable().optional(),
+          timeout_milliseconds: s.number().int().min(1_000).max(300_000).optional(),
+          repeated_block_threshold: s.number().int().min(1).max(10).optional(),
+          plan_reference: s.string().min(1).max(8_192).nullable().optional(),
+          run_group_reference: s.string().min(1).max(1_024).nullable().optional(),
+        },
+        async execute(args, context) {
+          return json({ goal: await goalStore.mutate((state) => configureGoalVerification(state, context.sessionID, {
+            acceptanceCriteria: args.acceptance_criteria,
+            tokenBudget: args.token_budget,
+            maxAutoTurns: args.max_auto_turns,
+            maxDurationSeconds: args.max_duration_seconds,
+            verifier: { enabled: args.enabled, model: args.model, agent: args.agent, timeoutMilliseconds: args.timeout_milliseconds, repeatedBlockThreshold: args.repeated_block_threshold },
+            planReference: args.plan_reference,
+            runGroupReference: args.run_group_reference,
+          })) })
+        },
+      }),
+      record_goal_verdict: tool({
+        description: "Record an independent verifier verdict supplied by the Workbench. Do not invent or self-issue a verdict.",
+        args: {
+          verdict: s.enum(["continue", "complete", "blocked", "needs-user"]),
+          reason: s.string().min(1).max(4_000),
+          missing_criteria: s.array(s.string().min(1).max(2_000)).max(100),
+          confidence: s.enum(["low", "medium", "high"]),
+          evidence_references: s.array(s.string().min(1).max(1_024)).max(500).optional(),
+          expected_generation: s.number().int().min(0),
+        },
+        async execute(args, context) {
+          return json({ goal: await goalStore.mutate((state) => recordGoalVerdict(state, context.sessionID, { verdict: args.verdict, reason: args.reason, missingCriteria: args.missing_criteria, confidence: args.confidence }, args.evidence_references, undefined, args.expected_generation)) })
         },
       }),
       update_goal: tool({

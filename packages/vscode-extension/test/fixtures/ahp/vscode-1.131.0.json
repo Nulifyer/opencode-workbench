@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-08T20:19:27.209Z",
+  "vscode": {
+    "channel": "stable",
+    "version": "1.131.0",
+    "commit": "e4c7e7b1d6d060162f4aa7f8225271b67ce1df75",
+    "architecture": "x64"
+  },
+  "cli": {
+    "agentHostCommandAvailable": true,
+    "optionNames": [
+      "cli-data-dir",
+      "connection-token",
+      "connection-token-file",
+      "host",
+      "log",
+      "name",
+      "port",
+      "random-name",
+      "replace",
+      "server-data-dir",
+      "tunnel",
+      "verbose",
+      "without-connection-token"
+    ],
+    "customAdapterRegistrationOptionNames": []
+  },
+  "extension": {
+    "id": "nulifyer.opencode-workbench",
+    "version": "0.4.6",
+    "enabledApiProposals": [],
+    "contributesChatSessions": false
+  },
+  "proposals": [
+    {
+      "proposal": "agentSessionsWorkspace",
+      "allowlistedExtensionIDs": ["GitHub.copilot-chat"]
+    },
+    {
+      "proposal": "agentsWindowConfiguration",
+      "allowlistedExtensionIDs": ["GitHub.copilot-chat"]
+    },
+    {
+      "proposal": "chatSessionCustomizationProvider",
+      "allowlistedExtensionIDs": [
+        "GitHub.copilot-chat",
+        "ms-vscode.vscode-chat-customizations-evaluations"
+      ]
+    },
+    {
+      "proposal": "chatSessionsProvider",
+      "allowlistedExtensionIDs": [
+        "GitHub.copilot-chat",
+        "GitHub.vscode-pull-request-github",
+        "openai.chatgpt"
+      ]
+    },
+    {
+      "proposal": "languageModelProxy",
+      "allowlistedExtensionIDs": ["openai.chatgpt"]
+    },
+    {
+      "proposal": "remoteCodingAgents",
+      "allowlistedExtensionIDs": ["GitHub.vscode-pull-request-github"]
+    }
+  ],
+  "conclusions": {
+    "publicMarketplaceRegistrationProven": false,
+    "standaloneHostAcceptsThirdPartyAdapter": false,
+    "nativePickerRegistration": "blocked-proposed-api-allowlist",
+    "productionDependencyAllowed": false
+  }
+}

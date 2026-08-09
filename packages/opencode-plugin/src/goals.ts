@@ -12,6 +12,22 @@ export interface GoalCheckpoint {
   timestamp: number
 }
 
+export interface GoalVerifierConfig {
+  enabled: boolean
+  model: string | null
+  agent: string | null
+  timeoutMilliseconds: number
+  repeatedBlockThreshold: number
+}
+
+export interface GoalVerdictRecord {
+  verdict: "continue" | "complete" | "blocked" | "needs-user"
+  reason: string
+  missingCriteria: string[]
+  confidence: "low" | "medium" | "high"
+  verifiedAt: number
+}
+
 export interface Goal {
   sessionID: string
   objective: string
@@ -34,10 +50,22 @@ export interface Goal {
   history: GoalHistoryEntry[]
   checkpoints: GoalCheckpoint[]
   lastCheckpoint: GoalCheckpoint | null
+  acceptanceCriteria: string[]
+  verifier: GoalVerifierConfig
+  evidenceReferences: string[]
+  latestVerdict: GoalVerdictRecord | null
+  consecutiveBlockedVerdicts: number
+  pendingContinuation: boolean
+  pendingContinuationMessageID: string | null
+  pendingContinuationID: string | null
+  pendingContinuationReservedAt: number | null
+  settlementGeneration: number
+  planReference: string | null
+  runGroupReference: string | null
 }
 
 export interface GoalState {
-  version: 1
+  version: 2
   goals: Record<string, Goal>
 }
 
@@ -52,6 +80,10 @@ export interface CreateGoalInput {
   maxAutoTurns?: number | null
   maxDurationSeconds?: number | null
   agent?: string
+  acceptanceCriteria?: string[]
+  verifier?: Partial<GoalVerifierConfig>
+  planReference?: string
+  runGroupReference?: string
 }
 
 const MAX_GOALS = 2_000
@@ -134,6 +166,18 @@ function parseGoal(value: unknown, key: string): Goal | undefined {
   const lastCheckpointValue = record(value.lastCheckpoint)
     ? checkpoints([value.lastCheckpoint])[0] ?? null
     : goalCheckpoints.at(-1) ?? null
+  const verifierValue = record(value.verifier) ? value.verifier : {}
+  const autoTurns = integer(value.autoTurns)
+  const pendingContinuation = value.pendingContinuation === true && autoTurns > 0 && status === "active"
+  const latestVerdictValue = record(value.latestVerdict) && ["continue", "complete", "blocked", "needs-user"].includes(String(value.latestVerdict.verdict))
+    ? {
+      verdict: value.latestVerdict.verdict as GoalVerdictRecord["verdict"],
+      reason: boundedText(value.latestVerdict.reason, 4_000),
+      missingCriteria: Array.isArray(value.latestVerdict.missingCriteria) ? value.latestVerdict.missingCriteria.filter((item): item is string => typeof item === "string" && item.length <= 2_000).slice(0, 100) : [],
+      confidence: ["low", "medium", "high"].includes(String(value.latestVerdict.confidence)) ? value.latestVerdict.confidence as GoalVerdictRecord["confidence"] : "low" as const,
+      verifiedAt: integer(value.latestVerdict.verifiedAt),
+    }
+    : null
   return {
     sessionID,
     objective: goalObjective,
@@ -145,7 +189,7 @@ function parseGoal(value: unknown, key: string): Goal | undefined {
     createdAt: integer(value.createdAt),
     updatedAt: integer(value.updatedAt),
     lastAccountedAt: value.lastAccountedAt === null ? null : integer(value.lastAccountedAt) || null,
-    autoTurns: integer(value.autoTurns),
+    autoTurns,
     maxAutoTurns: positiveOrNull(value.maxAutoTurns),
     maxDurationSeconds: positiveOrNull(value.maxDurationSeconds),
     lastStatus: nullableText(value.lastStatus, 4_000),
@@ -156,22 +200,42 @@ function parseGoal(value: unknown, key: string): Goal | undefined {
     history: history(value.history),
     checkpoints: goalCheckpoints,
     lastCheckpoint: lastCheckpointValue,
+    acceptanceCriteria: Array.isArray(value.acceptanceCriteria) ? value.acceptanceCriteria.filter((item): item is string => typeof item === "string" && item.trim().length > 0 && item.length <= 2_000).slice(0, 100) : [],
+    verifier: {
+      enabled: verifierValue.enabled === true,
+      model: nullableText(verifierValue.model, 1_024),
+      agent: nullableText(verifierValue.agent, 1_024),
+      timeoutMilliseconds: Math.min(300_000, Math.max(1_000, integer(verifierValue.timeoutMilliseconds, 60_000))),
+      repeatedBlockThreshold: Math.min(10, Math.max(1, integer(verifierValue.repeatedBlockThreshold, 3))),
+    },
+    evidenceReferences: Array.isArray(value.evidenceReferences) ? value.evidenceReferences.filter((item): item is string => typeof item === "string" && item.length <= 1_024).slice(0, 500) : [],
+    latestVerdict: latestVerdictValue,
+    consecutiveBlockedVerdicts: integer(value.consecutiveBlockedVerdicts),
+    pendingContinuation,
+    pendingContinuationMessageID: pendingContinuation ? nullableText(value.pendingContinuationMessageID, 256) : null,
+    pendingContinuationID: pendingContinuation ? nullableText(value.pendingContinuationID, 256) : null,
+    pendingContinuationReservedAt: !pendingContinuation || value.pendingContinuationReservedAt === null
+      ? null
+      : integer(value.pendingContinuationReservedAt) || null,
+    settlementGeneration: integer(value.settlementGeneration),
+    planReference: nullableText(value.planReference, 8_192),
+    runGroupReference: nullableText(value.runGroupReference, 1_024),
   }
 }
 
 export function emptyGoalState(): GoalState {
-  return { version: 1, goals: Object.create(null) as Record<string, Goal> }
+  return { version: 2, goals: Object.create(null) as Record<string, Goal> }
 }
 
 export function parseGoalState(value: unknown): GoalState {
-  if (!record(value) || value.version !== 1 || !record(value.goals)) throw new Error("Invalid or unsupported Workbench goal state")
+  if (!record(value) || (value.version !== 1 && value.version !== 2) || !record(value.goals)) throw new Error("Invalid or unsupported Workbench goal state")
   const goals = Object.create(null) as Record<string, Goal>
   for (const [key, candidate] of Object.entries(value.goals).slice(0, MAX_GOALS)) {
     const goal = parseGoal(candidate, key)
     if (!goal) throw new Error("Invalid Workbench goal state")
     goals[key] = goal
   }
-  return { version: 1, goals }
+  return { version: 2, goals }
 }
 
 export function importLegacyGoalState(value: unknown): GoalState | undefined {
@@ -211,6 +275,17 @@ function applyLimits(goal: Goal): void {
   }
 }
 
+function advanceSettlementGeneration(goal: Goal): void {
+  goal.settlementGeneration += 1
+}
+
+function clearPendingContinuation(goal: Goal): void {
+  goal.pendingContinuation = false
+  goal.pendingContinuationMessageID = null
+  goal.pendingContinuationID = null
+  goal.pendingContinuationReservedAt = null
+}
+
 export function snapshotGoal(goal: Goal, at = nowSeconds()): GoalSnapshot {
   const extra = goal.status === "active" && goal.lastAccountedAt !== null ? Math.max(0, at - goal.lastAccountedAt) : 0
   const timeUsedSeconds = goal.timeUsedSeconds + extra
@@ -226,8 +301,10 @@ export function snapshotGoal(goal: Goal, at = nowSeconds()): GoalSnapshot {
 export function refreshGoal(state: GoalState, sessionID: string, at = nowSeconds()): GoalSnapshot | null {
   const goal = state.goals[sessionID]
   if (!goal) return null
+  const previousStatus = goal.status
   accountTime(goal, at)
   applyLimits(goal)
+  if (goal.status !== previousStatus) advanceSettlementGeneration(goal)
   goal.updatedAt = at
   return snapshotGoal(goal, at)
 }
@@ -259,6 +336,24 @@ export function createGoal(state: GoalState, sessionID: string, input: CreateGoa
     history: [],
     checkpoints: [],
     lastCheckpoint: null,
+    acceptanceCriteria: (input.acceptanceCriteria ?? []).map((criterion) => requiredText(criterion, "Acceptance criterion")).slice(0, 100),
+    verifier: {
+      enabled: input.verifier?.enabled === true,
+      model: nullableText(input.verifier?.model, 1_024),
+      agent: nullableText(input.verifier?.agent, 1_024),
+      timeoutMilliseconds: Math.min(300_000, Math.max(1_000, integer(input.verifier?.timeoutMilliseconds, 60_000))),
+      repeatedBlockThreshold: Math.min(10, Math.max(1, integer(input.verifier?.repeatedBlockThreshold, 3))),
+    },
+    evidenceReferences: [],
+    latestVerdict: null,
+    consecutiveBlockedVerdicts: 0,
+    pendingContinuation: false,
+    pendingContinuationMessageID: null,
+    pendingContinuationID: null,
+    pendingContinuationReservedAt: null,
+    settlementGeneration: 0,
+    planReference: nullableText(input.planReference, 8_192),
+    runGroupReference: nullableText(input.runGroupReference, 1_024),
   }
   pushHistory(goal, "created", paused ? "Goal created and paused in Plan mode." : "Goal created.", at)
   state.goals[sessionID] = goal
@@ -279,6 +374,11 @@ export function updateGoalObjective(state: GoalState, sessionID: string, nextObj
   goal.blocker = pausedForPlan ? "Goal execution is paused while the session is in Plan mode." : null
   goal.completionEvidence = null
   goal.closedAt = null
+  goal.latestVerdict = null
+  goal.evidenceReferences = []
+  goal.consecutiveBlockedVerdicts = 0
+  clearPendingContinuation(goal)
+  advanceSettlementGeneration(goal)
   goal.lastStatus = pausedForPlan ? "Goal objective updated and paused in Plan mode." : `Goal objective updated and ${goal.status === "active" ? "resumed" : "paused"}.`
   pushHistory(goal, "updated", goal.lastStatus, at)
   return snapshotGoal(goal, at)
@@ -294,7 +394,9 @@ export function setGoalStatus(state: GoalState, sessionID: string, status: Mutab
   goal.lastAccountedAt = status === "active" ? at : null
   goal.stopReason = status === "paused" ? "paused" : null
   goal.blocker = status === "active" ? null : goal.blocker
+  if (status === "paused") clearPendingContinuation(goal)
   goal.lastStatus = status === "active" ? "Goal resumed." : "Goal paused."
+  advanceSettlementGeneration(goal)
   pushHistory(goal, status === "active" ? "resumed" : "paused", goal.lastStatus, at)
   return snapshotGoal(goal, at)
 }
@@ -302,19 +404,22 @@ export function setGoalStatus(state: GoalState, sessionID: string, status: Mutab
 export function closeGoal(state: GoalState, sessionID: string, status: "complete" | "unmet", detail: string | undefined, at = nowSeconds()): GoalSnapshot {
   const goal = state.goals[sessionID]
   if (!goal) throw new Error("This session has no goal")
+  const resolvedDetail = requiredText(detail, status === "complete" ? "Completion evidence" : "Blocker")
   accountTime(goal, at)
   goal.status = status
   goal.updatedAt = at
   goal.closedAt = at
+  clearPendingContinuation(goal)
+  advanceSettlementGeneration(goal)
   goal.lastAccountedAt = null
   if (status === "complete") {
-    goal.completionEvidence = requiredText(detail, "Completion evidence")
+    goal.completionEvidence = resolvedDetail
     goal.blocker = null
     goal.stopReason = null
     goal.lastStatus = "Goal completed."
     pushHistory(goal, "completed", goal.completionEvidence, at)
   } else {
-    goal.blocker = requiredText(detail, "Blocker")
+    goal.blocker = resolvedDetail
     goal.completionEvidence = null
     goal.stopReason = "blocked"
     goal.lastStatus = "Goal marked unmet."
@@ -332,6 +437,7 @@ export function recordGoalCheckpoint(state: GoalState, sessionID: string, summar
     goal.lastCheckpoint = checkpoint
     goal.checkpoints = [...goal.checkpoints, checkpoint].slice(-MAX_CHECKPOINTS)
     pushHistory(goal, "checkpoint", checkpoint.summary, at)
+    advanceSettlementGeneration(goal)
   }
   goal.lastStatus = "Goal checkpoint recorded."
   goal.updatedAt = at
@@ -347,17 +453,26 @@ export function clearGoal(state: GoalState, sessionID: string): boolean {
 export function accountGoalTokens(state: GoalState, sessionID: string, tokens: number, at = nowSeconds()): GoalSnapshot | null {
   const goal = state.goals[sessionID]
   if (!goal) return null
+  const previousTokens = goal.tokensUsed
+  const previousStatus = goal.status
   accountTime(goal, at)
   if (Number.isSafeInteger(tokens) && tokens >= 0) {
     if (goal.tokenBaseline === null) goal.tokenBaseline = Math.max(0, tokens - goal.tokensUsed)
     goal.tokensUsed = Math.max(goal.tokensUsed, tokens - goal.tokenBaseline)
   }
   applyLimits(goal)
+  if (goal.tokensUsed !== previousTokens || goal.status !== previousStatus) advanceSettlementGeneration(goal)
   goal.updatedAt = at
   return snapshotGoal(goal, at)
 }
 
-export function reserveGoalAutoContinue(state: GoalState, sessionID: string, at = nowSeconds()): GoalSnapshot | null {
+export function reserveGoalAutoContinue(
+  state: GoalState,
+  sessionID: string,
+  at = nowSeconds(),
+  continuationID?: string,
+  continuationMessageID?: string,
+): GoalSnapshot | null {
   const goal = state.goals[sessionID]
   if (!goal) return null
   accountTime(goal, at)
@@ -366,16 +481,39 @@ export function reserveGoalAutoContinue(state: GoalState, sessionID: string, at 
     goal.updatedAt = at
     return null
   }
+  if (goal.pendingContinuation) {
+    let attachedIdentity = false
+    if (!goal.pendingContinuationID && continuationID) {
+      goal.pendingContinuationID = boundedText(continuationID, 256).trim() || null
+      attachedIdentity = goal.pendingContinuationID !== null
+    }
+    if (!goal.pendingContinuationMessageID && continuationMessageID) {
+      goal.pendingContinuationMessageID = boundedText(continuationMessageID, 256).trim() || null
+      attachedIdentity = attachedIdentity || goal.pendingContinuationMessageID !== null
+    }
+    if (attachedIdentity) {
+      goal.pendingContinuationReservedAt ??= at
+      goal.updatedAt = at
+      advanceSettlementGeneration(goal)
+    }
+    return snapshotGoal(goal, at)
+  }
   if (goal.maxAutoTurns !== null && goal.autoTurns >= goal.maxAutoTurns) {
     goal.status = "usageLimited"
     goal.lastAccountedAt = null
     goal.stopReason = `max auto-turns reached (${goal.autoTurns}/${goal.maxAutoTurns})`
     goal.lastStatus = "Auto-turn limit reached; user action is required."
     goal.updatedAt = at
+    advanceSettlementGeneration(goal)
     pushHistory(goal, "limited", goal.stopReason, at)
     return null
   }
   goal.autoTurns += 1
+  goal.pendingContinuation = true
+  goal.pendingContinuationMessageID = continuationMessageID ? boundedText(continuationMessageID, 256).trim() || null : null
+  goal.pendingContinuationID = continuationID ? boundedText(continuationID, 256).trim() || null : null
+  goal.pendingContinuationReservedAt = at
+  advanceSettlementGeneration(goal)
   goal.lastStatus = `Auto-continuation ${goal.autoTurns} admitted.`
   goal.updatedAt = at
   pushHistory(goal, "autoContinue", goal.lastStatus, at)
@@ -385,8 +523,10 @@ export function reserveGoalAutoContinue(state: GoalState, sessionID: string, at 
 export function cancelGoalAutoContinueReservation(state: GoalState, sessionID: string, reservedTurn: number, at = nowSeconds()): GoalSnapshot | null {
   const goal = state.goals[sessionID]
   if (!goal) return null
-  if (goal.autoTurns === reservedTurn && reservedTurn > 0) {
+  if (goal.pendingContinuation && goal.autoTurns === reservedTurn && reservedTurn > 0) {
     goal.autoTurns -= 1
+    clearPendingContinuation(goal)
+    advanceSettlementGeneration(goal)
     goal.lastStatus = "Auto-continuation cancelled before prompt admission."
     goal.updatedAt = at
     pushHistory(goal, "warning", goal.lastStatus, at)
@@ -399,11 +539,113 @@ export function failGoalAutoContinue(state: GoalState, sessionID: string, detail
   if (!goal || goal.status !== "active") return goal ? snapshotGoal(goal, at) : null
   accountTime(goal, at)
   goal.status = "paused"
+  clearPendingContinuation(goal)
   goal.lastAccountedAt = null
   goal.stopReason = "auto-continuation failed"
   goal.lastStatus = `Auto-continuation failed: ${summarize(detail)}`
   goal.updatedAt = at
+  advanceSettlementGeneration(goal)
   pushHistory(goal, "error", goal.lastStatus, at)
+  return snapshotGoal(goal, at)
+}
+
+export function commitGoalContinuation(state: GoalState, sessionID: string, at = nowSeconds()): GoalSnapshot | null {
+  const goal = state.goals[sessionID]
+  if (!goal) return null
+  if (goal.pendingContinuation) advanceSettlementGeneration(goal)
+  clearPendingContinuation(goal)
+  goal.updatedAt = at
+  return snapshotGoal(goal, at)
+}
+
+export function pauseGoalContinuationRecovery(state: GoalState, sessionID: string, detail: string, at = nowSeconds()): GoalSnapshot | null {
+  const goal = state.goals[sessionID]
+  if (!goal || goal.status !== "active" || !goal.pendingContinuation) return goal ? snapshotGoal(goal, at) : null
+  accountTime(goal, at)
+  goal.status = "paused"
+  clearPendingContinuation(goal)
+  goal.lastAccountedAt = null
+  goal.stopReason = "auto-continuation recovery required"
+  goal.blocker = "OpenCode history could not establish whether the reserved continuation was admitted."
+  goal.lastStatus = `Auto-continuation recovery paused: ${summarize(detail)} Review the session transcript, then explicitly resume the goal to continue.`
+  goal.updatedAt = at
+  advanceSettlementGeneration(goal)
+  pushHistory(goal, "warning", goal.lastStatus, at)
+  return snapshotGoal(goal, at)
+}
+
+export function configureGoalVerification(state: GoalState, sessionID: string, input: { acceptanceCriteria?: string[]; tokenBudget?: number | null; maxAutoTurns?: number | null; maxDurationSeconds?: number | null; verifier?: Partial<GoalVerifierConfig>; planReference?: string | null; runGroupReference?: string | null }, at = nowSeconds()): GoalSnapshot {
+  const goal = state.goals[sessionID]
+  if (!goal) throw new Error("This session has no goal")
+  if (input.acceptanceCriteria) goal.acceptanceCriteria = input.acceptanceCriteria.map((criterion) => requiredText(criterion, "Acceptance criterion")).slice(0, 100)
+  if (input.tokenBudget !== undefined) goal.tokenBudget = positiveOrNull(input.tokenBudget)
+  if (input.maxAutoTurns !== undefined) goal.maxAutoTurns = positiveOrNull(input.maxAutoTurns)
+  if (input.maxDurationSeconds !== undefined) goal.maxDurationSeconds = positiveOrNull(input.maxDurationSeconds)
+  if (input.verifier) goal.verifier = {
+    enabled: input.verifier.enabled ?? goal.verifier.enabled,
+    model: input.verifier.model === undefined ? goal.verifier.model : nullableText(input.verifier.model, 1_024),
+    agent: input.verifier.agent === undefined ? goal.verifier.agent : nullableText(input.verifier.agent, 1_024),
+    timeoutMilliseconds: Math.min(300_000, Math.max(1_000, integer(input.verifier.timeoutMilliseconds, goal.verifier.timeoutMilliseconds))),
+    repeatedBlockThreshold: Math.min(10, Math.max(1, integer(input.verifier.repeatedBlockThreshold, goal.verifier.repeatedBlockThreshold))),
+  }
+  if (input.planReference !== undefined) goal.planReference = nullableText(input.planReference, 8_192)
+  if (input.runGroupReference !== undefined) goal.runGroupReference = nullableText(input.runGroupReference, 1_024)
+  applyLimits(goal)
+  goal.latestVerdict = null
+  goal.consecutiveBlockedVerdicts = 0
+  advanceSettlementGeneration(goal)
+  goal.updatedAt = at
+  pushHistory(goal, "updated", "Goal verification configuration updated.", at)
+  return snapshotGoal(goal, at)
+}
+
+export function recordGoalVerdict(
+  state: GoalState,
+  sessionID: string,
+  verdict: Omit<GoalVerdictRecord, "verifiedAt">,
+  evidenceReferences: string[] = [],
+  at = nowSeconds(),
+  expectedSettlementGeneration?: number,
+): GoalSnapshot {
+  const goal = state.goals[sessionID]
+  if (!goal) throw new Error("This session has no goal")
+  if (expectedSettlementGeneration !== undefined && goal.settlementGeneration !== expectedSettlementGeneration) {
+    throw new Error("Verifier verdict is stale because the goal changed")
+  }
+  const recordValue: GoalVerdictRecord = {
+    verdict: verdict.verdict,
+    reason: requiredText(verdict.reason, "Verifier reason"),
+    missingCriteria: verdict.missingCriteria.map((criterion) => requiredText(criterion, "Missing criterion")).slice(0, 100),
+    confidence: verdict.confidence,
+    verifiedAt: at,
+  }
+  goal.latestVerdict = recordValue
+  goal.evidenceReferences = [...new Set([...goal.evidenceReferences, ...evidenceReferences.filter((value) => typeof value === "string" && value.length <= 1_024)])].slice(-500)
+  goal.consecutiveBlockedVerdicts = verdict.verdict === "blocked" ? goal.consecutiveBlockedVerdicts + 1 : 0
+  // A continue verdict keeps the goal active. The scheduler records a future
+  // prompt reservation separately; preserve one only if it was already
+  // durably counted before this verdict was applied.
+  if (verdict.verdict !== "continue") clearPendingContinuation(goal)
+  advanceSettlementGeneration(goal)
+  goal.lastStatus = `Verifier: ${verdict.verdict} — ${summarize(verdict.reason)}`
+  if (verdict.verdict === "blocked" && goal.consecutiveBlockedVerdicts >= goal.verifier.repeatedBlockThreshold) {
+    goal.status = "unmet"
+    goal.blocker = recordValue.reason
+    goal.stopReason = "verified blocked"
+    goal.closedAt = at
+    clearPendingContinuation(goal)
+  } else if (verdict.verdict === "complete") {
+    goal.status = "complete"
+    goal.completionEvidence = recordValue.reason
+    goal.closedAt = at
+    clearPendingContinuation(goal)
+  } else if (verdict.verdict === "needs-user") {
+    goal.status = "paused"
+    goal.blocker = recordValue.reason
+    clearPendingContinuation(goal)
+  }
+  goal.updatedAt = at
+  pushHistory(goal, verdict.verdict === "blocked" ? "warning" : "updated", goal.lastStatus, at)
   return snapshotGoal(goal, at)
 }
 

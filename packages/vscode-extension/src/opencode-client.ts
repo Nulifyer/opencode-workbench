@@ -3,6 +3,7 @@ import {
   PERMISSION_METADATA_CHARACTER_LIMIT,
   permissionRequestCharacters,
 } from "@opencode-workbench/shared"
+import path from "node:path"
 import type {
   AgentOption,
   CommandOption,
@@ -46,7 +47,7 @@ const ERROR_BODY_LIMIT = 64 * 1024
 const REQUEST_TIMEOUT_MS = 30_000
 const LONG_REQUEST_TIMEOUT_MS = 10 * 60_000
 const SSE_FRAME_LIMIT = 8 * 1024 * 1024
-const TRANSCRIPT_MESSAGE_LIMIT = 10_000
+export const TRANSCRIPT_MESSAGE_LIMIT = 10_000
 
 export interface PromptFilePart {
   type: "file"
@@ -223,6 +224,9 @@ function parseSessionInfo(value: unknown): SessionInfo | undefined {
 function parseSessionStatus(value: unknown): SessionStatus | undefined {
   if (!isRecord(value)) return undefined
   if (value.type === "idle" || value.type === "busy") return { type: value.type }
+  if (value.type === "error") {
+    return { type: "error", message: boundedString(value.message, 20_000) ? value.message : undefined }
+  }
   if (value.type !== "retry") return undefined
   return {
     type: "retry",
@@ -332,6 +336,7 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
           cost: typeof item.cost === "number" ? item.cost : undefined,
           tokens: isRecord(item.tokens) ? item.tokens : undefined,
           error: item.error,
+          structured: item.structured ?? item.output,
         },
         parts,
       })
@@ -630,6 +635,11 @@ export class OpenCodeClient {
   canReadLocalFiles(): boolean {
     const hostname = new URL(this.connection.baseUrl).hostname
     return hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1"
+  }
+
+  forDirectory(directory: string): OpenCodeClient {
+    if (!path.isAbsolute(directory) || directory.includes("\0")) throw new Error("OpenCode directory must be an absolute path")
+    return new OpenCodeClient({ ...this.connection, directory })
   }
 
   private endpoint(pathname: string): URL {
@@ -992,6 +1002,22 @@ export class OpenCodeClient {
       delivery,
       resume: true,
     })
+  }
+
+  async sendStructuredPrompt(sessionID: string, text: string, input: { agent?: string; model?: string; schema: Record<string, unknown>; retryCount?: number }, signal?: AbortSignal): Promise<void> {
+    const model = input.model && input.model.includes("/") ? { providerID: input.model.slice(0, input.model.indexOf("/")), modelID: input.model.slice(input.model.indexOf("/") + 1) } : undefined
+    await this.request("POST", `/session/${encodeURIComponent(sessionID)}/prompt_async`, {
+      agent: input.agent,
+      model,
+      tools: { "*": false },
+      format: { type: "json_schema", schema: input.schema, retryCount: Math.min(3, Math.max(0, input.retryCount ?? 1)) },
+      parts: [{ type: "text", text }],
+    }, signal)
+  }
+
+  async structuredOutput(sessionID: string): Promise<unknown> {
+    const assistant = (await this.messages(sessionID)).slice().reverse().find((message) => message.info.role === "assistant")
+    return assistant?.info.structured ?? assistant?.parts.find((part) => part.type === "text" && part.text)?.text
   }
 
   sendCommand(sessionID: string, command: string, args: string, agent?: string, model?: string, variant?: string, files: PromptFilePart[] = [], messageID?: string): Promise<unknown> {

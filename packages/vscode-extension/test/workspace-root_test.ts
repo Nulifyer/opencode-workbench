@@ -1,6 +1,6 @@
 import { resolveWorkspaceRoot } from "../src/workspace-root.ts"
 
-Deno.test("folderless sessions use the user home directory", () => {
-  if (resolveWorkspaceRoot(undefined, "/home/user") !== "/home/user") throw new Error("Folderless session did not use the home directory")
-  if (resolveWorkspaceRoot("/work/project", "/home/user") !== "/work/project") throw new Error("Workspace folder did not take precedence")
+Deno.test("folderless windows do not authorize the user home directory", () => {
+  if (resolveWorkspaceRoot(undefined) !== undefined) throw new Error("Folderless window authorized an implicit root")
+  if (resolveWorkspaceRoot("/work/project") !== "/work/project") throw new Error("Workspace folder was not retained")
 })

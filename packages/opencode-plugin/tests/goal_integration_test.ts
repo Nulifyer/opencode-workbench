@@ -29,6 +29,15 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
   return { promise, resolve }
 }
 
+function transcriptMessage(request: Record<string, unknown>, sessionID: string): Record<string, unknown> {
+  const body = request.body as { messageID?: string; parts?: Array<Record<string, unknown>> }
+  if (!body?.messageID || !body.parts?.length) throw new Error("Continuation request did not carry stable message and part IDs")
+  return {
+    info: { id: body.messageID, sessionID, role: "user", time: { created: Date.now() } },
+    parts: body.parts.map((part) => ({ ...part, sessionID, messageID: body.messageID })),
+  }
+}
+
 async function eventually(condition: () => Promise<boolean>, milliseconds = 1_000): Promise<void> {
   const deadline = Date.now() + milliseconds
   while (!await condition()) {
@@ -175,10 +184,10 @@ Deno.test("goal continuation follows OpenCode status ordering and pauses on back
   const previous = Deno.env.get("XDG_DATA_HOME")
   Deno.env.set("XDG_DATA_HOME", root)
   let hooks: GoalHooks | undefined
+  const secondPromptReturn = deferred()
   try {
     const prompts: Array<Record<string, unknown>> = []
     let admitted = deferred()
-    const secondPromptReturn = deferred()
     let statusError: unknown
     const client = { session: {
       status: async () => statusError === undefined ? { data: {}, error: undefined } : { data: undefined, error: statusError },
@@ -230,6 +239,7 @@ Deno.test("goal continuation follows OpenCode status ordering and pauses on back
     const statusFailure = parsed(await hooks.tool.get_goal.execute({}, context(statusFailureSessionID))).goal as { lastStatus?: string }
     if (!statusFailure.lastStatus?.includes("status endpoint unavailable")) throw new Error("Status lookup failure did not pause the goal with a diagnostic")
   } finally {
+    secondPromptReturn.resolve()
     if (hooks) await hooks.dispose()
     if (previous === undefined) Deno.env.delete("XDG_DATA_HOME")
     else Deno.env.set("XDG_DATA_HOME", previous)
@@ -269,6 +279,228 @@ Deno.test("busy events cancel an in-flight idle continuation before reservation"
     if (prompts !== 0 || goal.autoTurns !== 0) throw new Error("A stale idle continuation survived a newer busy event")
   } finally {
     releaseStatus.resolve()
+    if (hooks) await hooks.dispose()
+    if (previous === undefined) Deno.env.delete("XDG_DATA_HOME")
+    else Deno.env.set("XDG_DATA_HOME", previous)
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+Deno.test("restart reconciles an admitted continuation by its durable transcript IDs", async () => {
+  const root = await Deno.makeTempDir({ prefix: "workbench-goal-crash-admitted-" })
+  const previous = Deno.env.get("XDG_DATA_HOME")
+  Deno.env.set("XDG_DATA_HOME", root)
+  const plugins: GoalHooks[] = []
+  try {
+    const prompts: Array<Record<string, unknown>> = []
+    const transcript: Array<Record<string, unknown>> = []
+    const client = { session: {
+      status: async () => ({ data: {}, error: undefined }),
+      messages: async () => ({ data: transcript, error: undefined }),
+      promptAsync: async (request: Record<string, unknown>) => {
+        prompts.push(request)
+        return { data: undefined, error: undefined }
+      },
+    } }
+    const first = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+    plugins.push(first)
+    const sessionID = "ses_crash_admitted"
+    await first.tool.create_goal.execute({ objective: "Recover one admitted continuation", max_auto_turns: 3 }, context(sessionID))
+    await first.event({ event: { type: "session.idle", properties: { sessionID } } })
+    await eventually(async () => prompts.length === 1)
+    const beforeRestart = parsed(await first.tool.get_goal.execute({}, context(sessionID))).goal as {
+      autoTurns?: number
+      pendingContinuation?: boolean
+      pendingContinuationMessageID?: string
+      pendingContinuationID?: string
+    }
+    if (beforeRestart.autoTurns !== 1 || beforeRestart.pendingContinuation !== true || !beforeRestart.pendingContinuationMessageID || !beforeRestart.pendingContinuationID) {
+      throw new Error("Crash fixture did not persist the in-flight continuation reservation")
+    }
+    transcript.push(transcriptMessage(prompts[0]!, sessionID))
+    await first.dispose()
+
+    const restarted = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+    plugins.push(restarted)
+    const recovered = parsed(await restarted.tool.get_goal.execute({}, context(sessionID))).goal as { autoTurns?: number; pendingContinuation?: boolean }
+    if (recovered.autoTurns !== 1 || recovered.pendingContinuation !== false || prompts.length !== 1) {
+      throw new Error("Restart did not reconcile the admitted continuation without replaying or recounting it")
+    }
+
+    await restarted.event({ event: { type: "session.idle", properties: { sessionID } } })
+    await eventually(async () => prompts.length === 2)
+    const next = parsed(await restarted.tool.get_goal.execute({}, context(sessionID))).goal as { autoTurns?: number }
+    if (next.autoTurns !== 2) throw new Error("Recovered goal did not reserve exactly one later continuation")
+  } finally {
+    await Promise.allSettled(plugins.map((plugin) => plugin.dispose()))
+    if (previous === undefined) Deno.env.delete("XDG_DATA_HOME")
+    else Deno.env.set("XDG_DATA_HOME", previous)
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+Deno.test("restart reconciles an older ID-less pending reservation by marker and time", async () => {
+  const root = await Deno.makeTempDir({ prefix: "workbench-goal-crash-legacy-" })
+  const previous = Deno.env.get("XDG_DATA_HOME")
+  Deno.env.set("XDG_DATA_HOME", root)
+  const plugins: GoalHooks[] = []
+  try {
+    const prompts: Array<Record<string, unknown>> = []
+    const transcript: Array<Record<string, unknown>> = []
+    const client = { session: {
+      status: async () => ({ data: {}, error: undefined }),
+      messages: async () => ({ data: transcript, error: undefined }),
+      promptAsync: async (request: Record<string, unknown>) => {
+        prompts.push(request)
+        return { data: undefined, error: undefined }
+      },
+    } }
+    const first = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+    plugins.push(first)
+    const sessionID = "ses_crash_legacy"
+    await first.tool.create_goal.execute({ objective: "Recover state written before durable IDs" }, context(sessionID))
+    await first.event({ event: { type: "session.idle", properties: { sessionID } } })
+    await eventually(async () => prompts.length === 1)
+    transcript.push(transcriptMessage(prompts[0]!, sessionID))
+    await first.dispose()
+
+    const statePath = path.join(root, "opencode-workbench", "plugin", "goals.json")
+    const state = JSON.parse(await Deno.readTextFile(statePath)) as { goals: Record<string, Record<string, unknown>> }
+    delete state.goals[sessionID]?.pendingContinuationMessageID
+    delete state.goals[sessionID]?.pendingContinuationID
+    delete state.goals[sessionID]?.pendingContinuationReservedAt
+    state.goals[sessionID]!.updatedAt = Number(state.goals[sessionID]!.updatedAt) + 100
+    await Deno.writeTextFile(statePath, `${JSON.stringify(state)}\n`)
+
+    const restarted = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+    plugins.push(restarted)
+    const recovered = parsed(await restarted.tool.get_goal.execute({}, context(sessionID))).goal as { autoTurns?: number; pendingContinuation?: boolean }
+    if (recovered.autoTurns !== 1 || recovered.pendingContinuation !== false || prompts.length !== 1) {
+      throw new Error("Legacy pending reservation was replayed instead of reconciled from its transcript marker")
+    }
+  } finally {
+    await Promise.allSettled(plugins.map((plugin) => plugin.dispose()))
+    if (previous === undefined) Deno.env.delete("XDG_DATA_HOME")
+    else Deno.env.set("XDG_DATA_HOME", previous)
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+Deno.test("restart retries an unobserved reservation with the same IDs and count", async () => {
+  const root = await Deno.makeTempDir({ prefix: "workbench-goal-crash-reserved-" })
+  const previous = Deno.env.get("XDG_DATA_HOME")
+  Deno.env.set("XDG_DATA_HOME", root)
+  const plugins: GoalHooks[] = []
+  try {
+    const prompts: Array<Record<string, unknown>> = []
+    const client = { session: {
+      status: async () => ({ data: {}, error: undefined }),
+      messages: async () => ({ data: [], error: undefined }),
+      promptAsync: async (request: Record<string, unknown>) => {
+        prompts.push(request)
+        return { data: undefined, error: undefined }
+      },
+    } }
+    const first = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+    plugins.push(first)
+    const sessionID = "ses_crash_reserved"
+    await first.tool.create_goal.execute({ objective: "Retry a reservation without double counting" }, context(sessionID))
+    await first.event({ event: { type: "session.idle", properties: { sessionID } } })
+    await eventually(async () => prompts.length === 1)
+    const firstBody = prompts[0]!.body as { messageID?: string; parts?: Array<{ id?: string }> }
+    await first.dispose()
+
+    const restarted = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+    plugins.push(restarted)
+    await restarted.event({ event: { type: "session.idle", properties: { sessionID } } })
+    await eventually(async () => prompts.length === 2)
+    const secondBody = prompts[1]!.body as { messageID?: string; parts?: Array<{ id?: string }> }
+    const recovered = parsed(await restarted.tool.get_goal.execute({}, context(sessionID))).goal as { autoTurns?: number; pendingContinuation?: boolean }
+    if (recovered.autoTurns !== 1 || recovered.pendingContinuation !== true || firstBody.messageID !== secondBody.messageID || firstBody.parts?.[0]?.id !== secondBody.parts?.[0]?.id) {
+      throw new Error("Restart created a second reservation instead of retrying the durable one")
+    }
+  } finally {
+    await Promise.allSettled(plugins.map((plugin) => plugin.dispose()))
+    if (previous === undefined) Deno.env.delete("XDG_DATA_HOME")
+    else Deno.env.set("XDG_DATA_HOME", previous)
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+Deno.test("restart pauses pending continuation when transcript recovery is unavailable", async () => {
+  const root = await Deno.makeTempDir({ prefix: "workbench-goal-crash-unknown-" })
+  const previous = Deno.env.get("XDG_DATA_HOME")
+  Deno.env.set("XDG_DATA_HOME", root)
+  const plugins: GoalHooks[] = []
+  try {
+    let prompts = 0
+    let historyError: unknown
+    const client = { session: {
+      status: async () => ({ data: {}, error: undefined }),
+      messages: async () => historyError === undefined
+        ? { data: [], error: undefined }
+        : { data: undefined, error: historyError },
+      promptAsync: async () => {
+        prompts += 1
+        return { data: undefined, error: undefined }
+      },
+    } }
+    const first = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+    plugins.push(first)
+    const sessionID = "ses_crash_unknown"
+    await first.tool.create_goal.execute({ objective: "Pause rather than guess after a crash" }, context(sessionID))
+    await first.event({ event: { type: "session.idle", properties: { sessionID } } })
+    await eventually(async () => prompts === 1)
+    await first.dispose()
+
+    historyError = { message: "transcript endpoint unavailable" }
+    const restarted = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+    plugins.push(restarted)
+    const recovered = parsed(await restarted.tool.get_goal.execute({}, context(sessionID))).goal as {
+      status?: string
+      autoTurns?: number
+      pendingContinuation?: boolean
+      lastStatus?: string
+    }
+    if (recovered.status !== "paused" || recovered.autoTurns !== 1 || recovered.pendingContinuation !== false || !recovered.lastStatus?.includes("explicitly resume") || prompts !== 1) {
+      throw new Error("Ambiguous restart did not pause with an explicit recovery instruction")
+    }
+  } finally {
+    await Promise.allSettled(plugins.map((plugin) => plugin.dispose()))
+    if (previous === undefined) Deno.env.delete("XDG_DATA_HOME")
+    else Deno.env.set("XDG_DATA_HOME", previous)
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+Deno.test("lost prompt response reconciles the admitted stable message from history", async () => {
+  const root = await Deno.makeTempDir({ prefix: "workbench-goal-lost-response-" })
+  const previous = Deno.env.get("XDG_DATA_HOME")
+  Deno.env.set("XDG_DATA_HOME", root)
+  let hooks: GoalHooks | undefined
+  try {
+    const transcript: Array<Record<string, unknown>> = []
+    let prompts = 0
+    const sessionID = "ses_lost_response"
+    const client = { session: {
+      status: async () => ({ data: {}, error: undefined }),
+      messages: async () => ({ data: transcript, error: undefined }),
+      promptAsync: async (request: Record<string, unknown>) => {
+        prompts += 1
+        transcript.push(transcriptMessage(request, sessionID))
+        return { data: undefined, error: { message: "connection closed after admission" } }
+      },
+    } }
+    hooks = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+    await hooks.tool.create_goal.execute({ objective: "Reconcile an admitted prompt after a lost response" }, context(sessionID))
+    await hooks.event({ event: { type: "session.idle", properties: { sessionID } } })
+    await eventually(async () => {
+      const goal = parsed(await hooks!.tool.get_goal.execute({}, context(sessionID))).goal as { pendingContinuation?: boolean }
+      return prompts === 1 && goal.pendingContinuation === false
+    })
+    const recovered = parsed(await hooks.tool.get_goal.execute({}, context(sessionID))).goal as { status?: string; autoTurns?: number }
+    if (recovered.status !== "active" || recovered.autoTurns !== 1) throw new Error("Lost response was treated as a failed admission despite matching durable history")
+  } finally {
     if (hooks) await hooks.dispose()
     if (previous === undefined) Deno.env.delete("XDG_DATA_HOME")
     else Deno.env.set("XDG_DATA_HOME", previous)

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "protocol": {
+    "current": 2,
+    "minimum": 2,
+    "maximum": 2,
+    "compatibilityDecision": "Protocol v1 remains a legacy in-process webview contract; v2 requires hello/ready negotiation."
+  },
+  "errorCodes": [
+    "VALIDATION_FAILED",
+    "CAPABILITY_UNAVAILABLE",
+    "STALE_REVISION",
+    "SESSION_BUSY",
+    "SESSION_NOT_FOUND",
+    "WORKSPACE_MISMATCH",
+    "UPSTREAM_DISCONNECTED",
+    "AUTH_REQUIRED",
+    "OPERATION_CONFLICT",
+    "OVERLOADED",
+    "CANCELLED",
+    "TIMEOUT",
+    "INTERNAL"
+  ],
+  "capabilities": [
+    "session.create",
+    "session.resume",
+    "session.fork",
+    "session.delete",
+    "prompt.steer",
+    "prompt.followUp",
+    "prompt.replace",
+    "prompt.cancel",
+    "input.permissions.exact",
+    "input.questions",
+    "context.ledger",
+    "context.editorBridge",
+    "review.exactDiff",
+    "goal.lifecycle",
+    "preference.memory",
+    "skill.candidates",
+    "native.agentHost"
+  ],
+  "limits": {
+    "maxRequestBytes": 33554432,
+    "maxPendingRequests": 128,
+    "maxEventQueue": 2000,
+    "maxStringCharacters": 20000000,
+    "maxErrorDetailsBytes": 16384
+  }
+}

@@ -6,6 +6,7 @@ import type { AtomicAdapter } from "./atomic-store.ts"
 const MAX_STATE_BYTES = 2 * 1024 * 1024
 const LOCK_STALE_MS = 10_000
 const LOCK_WAIT_MS = 5_000
+const LOCK_OWNER_WRITE_GRACE_MS = 250
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined
@@ -85,7 +86,14 @@ export class NodeAtomicAdapter implements AtomicAdapter {
         const currentOwner = await readFile(ownerPath, "utf8").catch(() => "")
         const ownerPid = Number(currentOwner.split(":", 1)[0])
         const stale = info && Date.now() - info.mtimeMs > LOCK_STALE_MS
-        if (stale && (!Number.isSafeInteger(ownerPid) || ownerPid <= 0 || !processIsAlive(ownerPid))) {
+        const ownerWriteGraceElapsed = info && Date.now() - info.mtimeMs > LOCK_OWNER_WRITE_GRACE_MS
+        const validOwnerPid = Number.isSafeInteger(ownerPid) && ownerPid > 0
+        const deadOwner = validOwnerPid && !processIsAlive(ownerPid)
+        // A positive PID that the OS confirms is gone cannot still own the
+        // lock, even when the directory is young. Invalid/missing owner files
+        // retain the grace period because another process may still be between
+        // mkdir() and writing its owner token.
+        if (deadOwner || ((stale || ownerWriteGraceElapsed) && !validOwnerPid)) {
           const confirmedOwner = await readFile(ownerPath, "utf8").catch(() => "")
           if (confirmedOwner !== currentOwner) continue
           const quarantine = `${path}.stale-${crypto.randomUUID()}`

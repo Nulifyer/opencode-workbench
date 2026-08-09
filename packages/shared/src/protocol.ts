@@ -20,6 +20,7 @@ import type {
   SessionStatus,
   TodoItem,
 } from "./opencode.ts"
+import type { AttentionItem, ContextReceipt, RunGroup, WalkthroughDocument, WorktreeJournalEntry } from "./workbench-domain.ts"
 import type { ConnectionState } from "./session-state.ts"
 import {
   PERMISSION_AGGREGATE_CHARACTER_LIMIT,
@@ -40,6 +41,8 @@ export type WebviewToHostMessage =
   | { type: "send"; sessionID: string; promptID?: string; composerRevision?: number; delivery?: "queue" | "steer" | "replace"; text: string; agent?: string; model?: string; variant?: string; attachments?: InlineAttachment[]; pastedText?: PastedTextBlock[]; contextIDs?: string[] }
   | { type: "abort"; sessionID: string }
   | { type: "createSession"; draft?: string; submit?: boolean }
+  | { type: "planTask" }
+  | { type: "loadOlderHistory"; sessionID: string; beforeMessageID: string }
   | { type: "selectSession"; sessionID: string }
   | { type: "setPreference"; sessionID: string; agent?: string; model?: string; variant?: string }
   | { type: "removeQueued"; sessionID: string; promptID: string }
@@ -53,7 +56,9 @@ export type WebviewToHostMessage =
   | { type: "openPatch"; sessionID: string; file: string }
   | { type: "sessionAction"; sessionID: string; action: "rename" | "delete" | "fork" | "undo" | "redo" | "retry" | "compact" | "share" | "unshare" | "export" | "copyLast" | "copyTranscript"; messageID?: string }
   | { type: "setAutoApproval"; sessionID: string; enabled: boolean }
-  | { type: "goalAction"; sessionID: string; action: "edit" | "pause" | "resume" | "cancel" }
+  | { type: "goalAction"; sessionID: string; action: "edit" | "configure" | "verify" | "pause" | "resume" | "cancel" }
+  | { type: "runAction"; groupID: string; runID?: string; action: "open" | "cancel" | "retry" | "refresh" | "compare" | "fuse" | "diff" | "review" | "keep" | "discard" }
+  | { type: "walkthroughAction"; documentID: string; stopID: string }
   | { type: "openInEditor" }
   | { type: "openInSidebar" }
   | { type: "navigateBack" }
@@ -116,6 +121,8 @@ export interface ChatSnapshot {
     context?: ContextSummary
     goal?: GoalSummary
     delegations?: DelegationProgress[]
+    contextReceipts?: ContextReceipt[]
+    history?: TranscriptHistoryState
   }
   agents: AgentOption[]
   mentionAgents?: AgentOption[]
@@ -126,6 +133,64 @@ export interface ChatSnapshot {
   commands?: CommandOption[]
   autoApproval?: boolean
   runtime?: RuntimeStatus
+  attentionItems?: AttentionItem[]
+  composer?: { enterBehavior: "send" | "newline" }
+  runGroups?: RunGroup[]
+  worktrees?: WorktreeJournalEntry[]
+  walkthroughs?: WalkthroughDocument[]
+  /**
+   * Present only when the extension host had to project an otherwise valid
+   * snapshot below the webview transport limit. The authoritative session and
+   * durable metadata stores are not changed by this projection.
+   */
+  projection?: ChatSnapshotProjection
+}
+
+export interface ChatSnapshotProjectionOmissions {
+  sessions?: number
+  messages?: number
+  delegations?: number
+  queuedPrompts?: number
+  permissions?: number
+  questions?: number
+  todos?: number
+  changes?: number
+  contextReceipts?: number
+  catalogItems?: number
+  runtimeServices?: number
+  attentionItems?: number
+  runGroups?: number
+  worktrees?: number
+  walkthroughs?: number
+  walkthroughStops?: number
+}
+
+export interface ChatSnapshotProjection {
+  truncated: true
+  limitBytes: number
+  encodedBytes: number
+  omitted: ChatSnapshotProjectionOmissions
+  message: string
+}
+
+export interface TranscriptHistoryState {
+  /** Messages retained by the controller after OpenCode history paging and safety limits. */
+  totalMessages: number
+  /** Messages currently projected into this webview transcript. */
+  visibleMessages: number
+  hasOlder: boolean
+  limitedBy?: "messages" | "parts" | "characters"
+  /** Upstream history may have been clipped by a client safety bound; older server history may exist. */
+  sourceMayBeTruncated?: boolean
+}
+
+export interface TranscriptHistoryPage {
+  sessionID: string
+  messages: MessageBundle[]
+  messageRevisions: Record<string, number>
+  hasOlder: boolean
+  totalMessages: number
+  sourceMayBeTruncated?: boolean
 }
 
 export interface MessagePatch {
@@ -141,6 +206,7 @@ export interface MessagePatch {
 export type HostToWebviewMessage =
   | { type: "snapshot"; snapshot: ChatSnapshot }
   | { type: "messagePatches"; patches: MessagePatch[] }
+  | { type: "historyPage"; page: TranscriptHistoryPage }
   | { type: "error"; message: string }
   | { type: "insertText"; sessionID: string; text: string }
   | { type: "fileSuggestions"; sessionID: string; requestID: number; files: string[] }
@@ -230,6 +296,12 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
       return exactKeys(value, ["type", "draft", "submit"]) && boundedOptionalString(value.draft, PROMPT_TEXT_CHARACTER_LIMIT) &&
           (value.submit === undefined || typeof value.submit === "boolean") && (!value.submit || Boolean(value.draft?.trim()))
         ? { type: "createSession", draft: value.draft, submit: value.submit }
+        : undefined
+    case "planTask":
+      return exactKeys(value, ["type"]) ? { type: "planTask" } : undefined
+    case "loadOlderHistory":
+      return exactKeys(value, ["type", "sessionID", "beforeMessageID"]) && validID(value.sessionID) && validID(value.beforeMessageID)
+        ? { type: "loadOlderHistory", sessionID: value.sessionID, beforeMessageID: value.beforeMessageID }
         : undefined
     case "ready":
       return { type: "ready" }
@@ -360,8 +432,17 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         : undefined
     case "goalAction":
       return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) &&
-          ["edit", "pause", "resume", "cancel"].includes(String(value.action))
-        ? { type: "goalAction", sessionID: value.sessionID, action: value.action as "edit" | "pause" | "resume" | "cancel" }
+          ["edit", "configure", "verify", "pause", "resume", "cancel"].includes(String(value.action))
+        ? { type: "goalAction", sessionID: value.sessionID, action: value.action as Extract<WebviewToHostMessage, { type: "goalAction" }>["action"] }
+        : undefined
+    case "runAction":
+      return exactKeys(value, ["type", "groupID", "runID", "action"]) && validID(value.groupID) && boundedOptionalString(value.runID) &&
+          ["open", "cancel", "retry", "refresh", "compare", "fuse", "diff", "review", "keep", "discard"].includes(String(value.action)) && (["refresh", "compare", "fuse"].includes(String(value.action)) || value.runID !== undefined)
+        ? { type: "runAction", groupID: value.groupID, runID: value.runID, action: value.action as Extract<WebviewToHostMessage, { type: "runAction" }>["action"] }
+        : undefined
+    case "walkthroughAction":
+      return exactKeys(value, ["type", "documentID", "stopID"]) && validID(value.documentID) && validID(value.stopID)
+        ? { type: "walkthroughAction", documentID: value.documentID, stopID: value.stopID }
         : undefined
     case "selectSession":
       return typeof value.sessionID === "string" && value.sessionID.length > 0 && value.sessionID.length <= 1_024
@@ -533,8 +614,26 @@ function validDelegations(value: unknown): value is DelegationProgress[] {
 function validMessageRevisions(value: unknown, messages: unknown[]): boolean {
   if (!record(value)) return false
   const entries = Object.entries(value)
+  const messageIDs = new Set(messages.flatMap((message) => record(message) && record(message.info) && typeof message.info.id === "string" ? [message.info.id] : []))
   if (entries.length > messages.length) return false
-  return entries.every(([messageID, revision]) => messageID.length <= 1_024 && Number.isInteger(revision) && Number(revision) >= 0)
+  return entries.every(([messageID, revision]) => messageIDs.has(messageID) && messageID.length <= 1_024 && Number.isInteger(revision) && Number(revision) >= 0)
+}
+
+function validTranscriptHistory(value: unknown): value is TranscriptHistoryState {
+  if (!record(value) || !exactKeys(value, ["totalMessages", "visibleMessages", "hasOlder", "limitedBy", "sourceMayBeTruncated"])) return false
+  return Number.isSafeInteger(value.totalMessages) && Number(value.totalMessages) >= 0 && Number(value.totalMessages) <= 1_000_000 &&
+    Number.isSafeInteger(value.visibleMessages) && Number(value.visibleMessages) >= 0 && Number(value.visibleMessages) <= Number(value.totalMessages) &&
+    typeof value.hasOlder === "boolean" && (value.limitedBy === undefined || ["messages", "parts", "characters"].includes(String(value.limitedBy))) &&
+    (value.sourceMayBeTruncated === undefined || typeof value.sourceMayBeTruncated === "boolean")
+}
+
+function validTranscriptHistoryPage(value: unknown): value is TranscriptHistoryPage {
+  if (!record(value) || !exactKeys(value, ["sessionID", "messages", "messageRevisions", "hasOlder", "totalMessages", "sourceMayBeTruncated"]) ||
+    !validID(value.sessionID) || !Array.isArray(value.messages) || value.messages.length > 200 || !validMessages(value.messages) ||
+    !validMessageRevisions(value.messageRevisions, value.messages) || typeof value.hasOlder !== "boolean" ||
+    !Number.isSafeInteger(value.totalMessages) || Number(value.totalMessages) < value.messages.length || Number(value.totalMessages) > 1_000_000 ||
+    (value.sourceMayBeTruncated !== undefined && typeof value.sourceMayBeTruncated !== "boolean")) return false
+  return value.messages.every((message) => (message as MessageBundle).info.sessionID === value.sessionID)
 }
 
 function validJson(value: unknown, depth = 0, budget = { nodes: 0, characters: 0 }, characterLimit = PERMISSION_METADATA_CHARACTER_LIMIT): boolean {
@@ -559,15 +658,87 @@ function validQueue(value: unknown): value is QueuedPrompt[] {
   const ids = new Set<string>()
   let characters = 0
   return value.every((prompt) => {
-    if (!record(prompt) || !exactKeys(prompt, ["id", "text", "agent", "model", "variant", "attachments", "createdAt"]) || !validID(prompt.id) || ids.has(prompt.id) ||
+    if (!record(prompt) || !exactKeys(prompt, ["id", "text", "delivery", "agent", "model", "variant", "attachments", "createdAt"]) || !validID(prompt.id) || ids.has(prompt.id) ||
       !boundedString(prompt.text, PROMPT_TEXT_CHARACTER_LIMIT) || (!prompt.text.trim() && (!Array.isArray(prompt.attachments) || prompt.attachments.length === 0)) || !boundedOptionalString(prompt.agent) ||
-      !boundedOptionalString(prompt.model) || !boundedOptionalString(prompt.variant) || !Number.isSafeInteger(prompt.createdAt) || Number(prompt.createdAt) < 0) return false
+      !boundedOptionalString(prompt.model) || !boundedOptionalString(prompt.variant) ||
+      (prompt.delivery !== undefined && !["follow-up", "steer", "replace"].includes(String(prompt.delivery))) ||
+      !Number.isSafeInteger(prompt.createdAt) || Number(prompt.createdAt) < 0) return false
     if (prompt.attachments !== undefined && (!Array.isArray(prompt.attachments) || prompt.attachments.length > 20 || prompt.attachments.some((attachment) =>
       !record(attachment) || !exactKeys(attachment, ["name", "mime"]) || !boundedString(attachment.name, 255) || !boundedString(attachment.mime, 100)))) return false
     ids.add(prompt.id)
     characters += prompt.id.length + prompt.text.length + (prompt.agent?.length ?? 0) + (prompt.model?.length ?? 0) + (prompt.variant?.length ?? 0)
     return characters <= PROMPT_QUEUE_CHARACTER_LIMIT
   })
+}
+
+function validContextReceipts(value: unknown): value is ContextReceipt[] {
+  if (!Array.isArray(value) || value.length > 2_000) return false
+  return value.every((receipt) => record(receipt) && boundedString(receipt.id) && boundedString(receipt.sessionID) && boundedString(receipt.promptID) &&
+    Number.isSafeInteger(receipt.admittedAt) && Number(receipt.admittedAt) >= 0 && ["none", "explicit", "unknown"].includes(String(receipt.truncation)) &&
+    (receipt.estimatedTokens === undefined || (Number.isSafeInteger(receipt.estimatedTokens) && Number(receipt.estimatedTokens) >= 0)) &&
+    Array.isArray(receipt.items) && receipt.items.length <= 100 && receipt.items.every((item) => record(item) && boundedString(item.id) && boundedString(item.kind, 64) && boundedString(item.label) &&
+      (item.uri === undefined || boundedString(item.uri, 4_096)) && (item.revision === undefined || boundedString(item.revision, 256)) &&
+      (item.contentHash === undefined || boundedString(item.contentHash, 256)) && (item.bytes === undefined || (Number.isSafeInteger(item.bytes) && Number(item.bytes) >= 0)) &&
+      (item.estimatedTokens === undefined || (Number.isSafeInteger(item.estimatedTokens) && Number(item.estimatedTokens) >= 0)) && (item.truncated === undefined || typeof item.truncated === "boolean")))
+}
+
+function validAttentionItems(value: unknown): value is AttentionItem[] {
+  if (!Array.isArray(value) || value.length > 500) return false
+  return value.every((item) => record(item) && boundedString(item.id) && boundedString(item.kind, 64) && boundedOptionalString(item.sessionID) &&
+    boundedString(item.title, 1_024) && boundedOptionalString(item.detail, 2_000) && Number.isSafeInteger(item.createdAt) && Number(item.createdAt) >= 0 &&
+    record(item.target) && ["conversation", "goal", "runs", "health"].includes(String(item.target.surface)) && boundedOptionalString(item.target.itemID))
+}
+
+function validRunGroups(value: unknown): value is RunGroup[] {
+  if (!Array.isArray(value) || value.length > 500) return false
+  return value.every((group) => record(group) && boundedString(group.id) && boundedString(group.title, 500) && boundedString(group.repository, 8_192) && boundedString(group.baseRef) && boundedString(group.promptReceiptID) &&
+    ["shared", "worktree"].includes(String(group.isolation)) && Number.isSafeInteger(group.createdAt) && Number(group.createdAt) >= 0 && Array.isArray(group.runs) && group.runs.length <= 5 &&
+    group.runs.every((run) => record(run) && boundedString(run.id) && boundedString(run.model) && boundedOptionalString(run.agent) && boundedOptionalString(run.variant) && (run.retained === undefined || typeof run.retained === "boolean") && (run.discarded === undefined || typeof run.discarded === "boolean") && ["pending", "preparing", "admitting", "working", "needs-input", "completed", "failed", "cancelled"].includes(String(run.phase)) && record(run.session) && boundedString(run.session.sessionID) && boundedString(run.session.directory, 8_192)))
+}
+
+function validWorktrees(value: unknown): value is WorktreeJournalEntry[] {
+  const phases = ["requested", "creating", "ready", "setup-running", "session-creating", "session-ready", "prompt-admitting", "prompt-admitted", "failed", "cleanup-pending", "retained-dirty", "removed"]
+  return Array.isArray(value) && value.length <= 1_000 && value.every((entry) => record(entry) &&
+    exactKeys(entry, ["id", "mutationID", "owner", "repository", "repositoryID", "path", "branch", "baseRef", "phase", "sessionID", "promptID", "createdAt", "updatedAt", "error"]) &&
+    validID(entry.id) && boundedString(entry.mutationID) && ["native-agent-host", "workbench"].includes(String(entry.owner)) &&
+    boundedString(entry.repository, 8_192) && boundedString(entry.repositoryID) && boundedString(entry.path, 8_192) && boundedString(entry.branch, 1_024) &&
+    boundedString(entry.baseRef) && phases.includes(String(entry.phase)) && boundedOptionalString(entry.sessionID) && boundedOptionalString(entry.promptID) &&
+    Number.isSafeInteger(entry.createdAt) && Number(entry.createdAt) >= 0 && Number.isSafeInteger(entry.updatedAt) && Number(entry.updatedAt) >= 0 &&
+    (entry.error === undefined || (record(entry.error) && exactKeys(entry.error, ["code", "message", "retryable"]) && boundedString(entry.error.code, 256) && boundedString(entry.error.message, 2_000) && typeof entry.error.retryable === "boolean")))
+}
+
+function validWalkthroughs(value: unknown): value is WalkthroughDocument[] {
+  if (!Array.isArray(value) || value.length > 100) return false
+  return value.every((document) => record(document) && exactKeys(document, ["id", "diffHash", "model", "promptVersion", "language", "generatedAt", "stops", "coverage", "uncoveredFiles"]) && validID(document.id) && boundedString(document.diffHash, 256) && boundedString(document.model) && boundedString(document.promptVersion, 100) && boundedString(document.language, 100) && Number.isSafeInteger(document.generatedAt) && Number(document.generatedAt) >= 0 && ["complete", "partial"].includes(String(document.coverage)) &&
+    (document.uncoveredFiles === undefined || (Array.isArray(document.uncoveredFiles) && document.uncoveredFiles.length <= 500 && document.uncoveredFiles.every((file) => boundedString(file, 8_192)))) && Array.isArray(document.stops) && document.stops.length <= 500 && document.stops.every((stop) => record(stop) && exactKeys(stop, ["id", "title", "explanation", "importance", "anchors"]) && validID(stop.id) && boundedString(stop.title, 2_000) && boundedString(stop.explanation, 20_000) && ["key-change", "normal", "context"].includes(String(stop.importance)) && Array.isArray(stop.anchors) && stop.anchors.length > 0 && stop.anchors.length <= 100 && stop.anchors.every((anchor) => record(anchor) && exactKeys(anchor, ["file", "side", "startLine", "endLine", "hunkHeader"]) && boundedString(anchor.file, 8_192) && ["base", "modified"].includes(String(anchor.side)) && Number.isSafeInteger(anchor.startLine) && Number(anchor.startLine) >= 1 && Number.isSafeInteger(anchor.endLine) && Number(anchor.endLine) >= Number(anchor.startLine) && boundedOptionalString(anchor.hunkHeader, 2_000))))
+}
+
+const SNAPSHOT_OMISSION_KEYS = [
+  "sessions",
+  "messages",
+  "delegations",
+  "queuedPrompts",
+  "permissions",
+  "questions",
+  "todos",
+  "changes",
+  "contextReceipts",
+  "catalogItems",
+  "runtimeServices",
+  "attentionItems",
+  "runGroups",
+  "worktrees",
+  "walkthroughs",
+  "walkthroughStops",
+] as const
+
+function validSnapshotProjection(value: unknown): value is ChatSnapshotProjection {
+  if (!record(value) || !exactKeys(value, ["truncated", "limitBytes", "encodedBytes", "omitted", "message"]) || value.truncated !== true ||
+    !Number.isSafeInteger(value.limitBytes) || Number(value.limitBytes) < 1 || Number(value.limitBytes) > 33_554_432 ||
+    !Number.isSafeInteger(value.encodedBytes) || Number(value.encodedBytes) < 1 || Number(value.encodedBytes) > Number(value.limitBytes) ||
+    !boundedString(value.message, 2_000) || !record(value.omitted) || !exactKeys(value.omitted, SNAPSHOT_OMISSION_KEYS)) return false
+  const entries = Object.entries(value.omitted)
+  return entries.length > 0 && entries.every(([, count]) => Number.isSafeInteger(count) && Number(count) > 0 && Number(count) <= 1_000_000)
 }
 
 function validTodos(value: unknown): value is TodoItem[] {
@@ -647,12 +818,19 @@ function validContext(value: unknown): value is ContextSummary {
 }
 
 function validGoal(value: unknown): value is GoalSummary {
-  if (!record(value) || !exactKeys(value, ["objective", "status", "sourceTool", "tokenBudget", "tokensUsed", "remainingTokens", "timeUsedSeconds", "maxDurationSeconds", "autoTurns", "maxAutoTurns", "lastStatus", "stopReason", "checkpoint", "completionEvidence", "blocker"]) ||
+  if (!record(value) || !exactKeys(value, ["objective", "status", "sourceTool", "tokenBudget", "tokensUsed", "remainingTokens", "timeUsedSeconds", "maxDurationSeconds", "autoTurns", "maxAutoTurns", "lastStatus", "stopReason", "checkpoint", "completionEvidence", "blocker", "acceptanceCriteria", "verifier", "latestVerdict", "evidenceReferences", "consecutiveBlockedVerdicts", "pendingContinuation", "settlementGeneration", "planReference", "runGroupReference"]) ||
     !boundedOptionalString(value.objective, 20_000) || !boundedOptionalString(value.status, 100) || !boundedString(value.sourceTool, 100)) return false
   return [value.tokenBudget, value.tokensUsed, value.remainingTokens, value.timeUsedSeconds, value.maxDurationSeconds, value.autoTurns, value.maxAutoTurns]
       .every((metric) => metric === undefined || (Number.isSafeInteger(metric) && Number(metric) >= 0)) &&
-    [value.lastStatus, value.stopReason, value.checkpoint, value.completionEvidence, value.blocker]
-      .every((text) => boundedOptionalString(text, 20_000))
+    [value.lastStatus, value.stopReason, value.checkpoint, value.completionEvidence, value.blocker].every((text) => boundedOptionalString(text, 20_000)) &&
+    (value.acceptanceCriteria === undefined || (Array.isArray(value.acceptanceCriteria) && value.acceptanceCriteria.length <= 100 && value.acceptanceCriteria.every((item) => boundedString(item, 2_000)))) &&
+    (value.verifier === undefined || (record(value.verifier) && exactKeys(value.verifier, ["model", "agent", "timeoutMilliseconds", "repeatedBlockThreshold", "enabled"]) && boundedOptionalString(value.verifier.model) && boundedOptionalString(value.verifier.agent) && Number.isSafeInteger(value.verifier.timeoutMilliseconds) && Number(value.verifier.timeoutMilliseconds) >= 1_000 && Number(value.verifier.timeoutMilliseconds) <= 300_000 && Number.isSafeInteger(value.verifier.repeatedBlockThreshold) && Number(value.verifier.repeatedBlockThreshold) >= 1 && Number(value.verifier.repeatedBlockThreshold) <= 10 && typeof value.verifier.enabled === "boolean")) &&
+    (value.evidenceReferences === undefined || (Array.isArray(value.evidenceReferences) && value.evidenceReferences.length <= 500 && value.evidenceReferences.every((item) => boundedString(item)))) &&
+    (value.consecutiveBlockedVerdicts === undefined || (Number.isSafeInteger(value.consecutiveBlockedVerdicts) && Number(value.consecutiveBlockedVerdicts) >= 0)) &&
+    (value.pendingContinuation === undefined || typeof value.pendingContinuation === "boolean") &&
+    (value.settlementGeneration === undefined || (Number.isSafeInteger(value.settlementGeneration) && Number(value.settlementGeneration) >= 0)) &&
+    boundedOptionalString(value.planReference, 8_192) && boundedOptionalString(value.runGroupReference) &&
+    (value.latestVerdict === undefined || (record(value.latestVerdict) && ["continue", "complete", "blocked", "needs-user"].includes(String(value.latestVerdict.verdict)) && boundedString(value.latestVerdict.reason, 4_000) && Array.isArray(value.latestVerdict.missingCriteria) && value.latestVerdict.missingCriteria.length <= 100 && value.latestVerdict.missingCriteria.every((item) => boundedString(item, 2_000)) && ["low", "medium", "high"].includes(String(value.latestVerdict.confidence))))
 }
 
 function validRuntimeService(value: unknown): boolean {
@@ -731,6 +909,11 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
     if (valid && !validMessages(messages)) return undefined
     return valid ? value as HostToWebviewMessage : undefined
   }
+  if (value.type === "historyPage") {
+    return exactKeys(value, ["type", "page"]) && validTranscriptHistoryPage(value.page)
+      ? value as HostToWebviewMessage
+      : undefined
+  }
   if (value.type !== "snapshot" || !record(value.snapshot)) return undefined
   const snapshot = value.snapshot
   if (
@@ -748,7 +931,13 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
       !boundedOptionalString(snapshot.catalog.error, 20_000))) ||
     (snapshot.commands !== undefined && (!Array.isArray(snapshot.commands) || snapshot.commands.length > 1_000 || !validCatalog(snapshot.commands, validCommand))) ||
     (snapshot.autoApproval !== undefined && typeof snapshot.autoApproval !== "boolean") ||
-    (snapshot.runtime !== undefined && !validRuntime(snapshot.runtime))
+    (snapshot.runtime !== undefined && !validRuntime(snapshot.runtime)) ||
+    (snapshot.attentionItems !== undefined && !validAttentionItems(snapshot.attentionItems)) ||
+    (snapshot.composer !== undefined && (!record(snapshot.composer) || !["send", "newline"].includes(String(snapshot.composer.enterBehavior))))
+    || (snapshot.runGroups !== undefined && !validRunGroups(snapshot.runGroups))
+    || (snapshot.worktrees !== undefined && !validWorktrees(snapshot.worktrees))
+    || (snapshot.walkthroughs !== undefined && !validWalkthroughs(snapshot.walkthroughs))
+    || (snapshot.projection !== undefined && !validSnapshotProjection(snapshot.projection))
   ) return undefined
   if (snapshot.session !== undefined) {
     if (!record(snapshot.session)) return undefined
@@ -776,7 +965,9 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
       (session.changes !== undefined && !validChanges(session.changes)) ||
       (session.context !== undefined && !validContext(session.context)) ||
       (session.goal !== undefined && !validGoal(session.goal)) ||
-      (session.delegations !== undefined && !validDelegations(session.delegations))
+      (session.delegations !== undefined && !validDelegations(session.delegations)) ||
+      (session.contextReceipts !== undefined && !validContextReceipts(session.contextReceipts)) ||
+      (session.history !== undefined && (!validTranscriptHistory(session.history) || session.history.visibleMessages !== session.messages.length))
     ) return undefined
   }
   return value as HostToWebviewMessage

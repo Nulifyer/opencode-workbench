@@ -1,5 +1,6 @@
 import { createOpenCodeMessageID, isOpenCodeMessageID } from "@opencode-workbench/shared"
 import type {
+  AttentionItem,
   AgentOption,
   ChatSnapshot,
   CommandOption,
@@ -20,10 +21,10 @@ import type {
   RuntimeStatus,
   SessionStatus,
   TodoItem,
+  TranscriptHistoryPage,
   WorkbenchState,
 } from "@opencode-workbench/shared"
 import {
-  initialWorkbenchState,
   PERMISSION_AGGREGATE_CHARACTER_LIMIT,
   PROMPT_ATTACHMENT_CHARACTER_LIMIT,
   PROMPT_ATTACHMENT_COUNT_LIMIT,
@@ -33,10 +34,18 @@ import {
   permissionPatternMatches,
   permissionRequestCharacters,
   reusablePermissionScopes,
-  sessionReducer,
 } from "@opencode-workbench/shared"
-import { OpenCodeClient, parseChanges, parsePermission, parseQuestion, parseTodos, type PromptFilePart, type SessionMessageHistory } from "./opencode-client.js"
+import { OpenCodeClient, TRANSCRIPT_MESSAGE_LIMIT, parseChanges, parsePermission, parseQuestion, parseTodos, type PromptFilePart, type SessionMessageHistory } from "./opencode-client.js"
 import { OrderedEventBus } from "./ordered-event-bus.js"
+import { ConnectionCoordinator } from "./session/connection-coordinator.js"
+import { SessionRepository } from "./application/session-repository.js"
+import { CatalogService } from "./application/catalog-service.js"
+import { PermissionCoordinator } from "./application/permission-coordinator.js"
+import { PromptDispatcher } from "./application/prompt-dispatcher.js"
+import { QuestionCoordinator } from "./application/question-coordinator.js"
+import { SettlementCoordinator } from "./application/settlement-coordinator.js"
+import { mergeTranscripts, TranscriptReconciler } from "./application/transcript-reconciler.js"
+import { boundedRuntimeString, boundedText, deriveContext, deriveGoal, GOAL_TOOLS, normalizeRuntime, snapshotMessage, snapshotPartCharacters, snapshotTranscript } from "./application/snapshot-projector.js"
 
 export interface ControllerCallbacks {
   error(message: string): void
@@ -44,6 +53,7 @@ export interface ControllerCallbacks {
   preferencesChanged?(preferences: ComposerPreferences): void
   selectionChanged?(sessionID: string | undefined): void
   sessionRecovered?(sourceSessionID: string, recoveredSessionID: string): void
+  promptAdmitted?(sessionID: string, promptID: string, admittedAt: number): void
   validateConnection?(): Promise<void>
   openExternal?(url: string): Promise<void> | void
 }
@@ -58,7 +68,7 @@ export interface ComposerPreferences {
 
 const RECOVERY_DUPLICATE_WINDOW_MS = 30_000
 
-export type ControllerUpdate = Parameters<typeof sessionReducer>[1]
+export type ControllerUpdate = import("./application/session-repository.js").SessionRepositoryUpdate
 
 type JsonRecord = Record<string, unknown>
 
@@ -89,8 +99,6 @@ function persistedAssistantFailure(entry?: MessageBundle): string | undefined {
 
 export { permissionPatternMatches } from "@opencode-workbench/shared"
 
-const OMIT = Symbol("omit")
-
 const KNOWN_OPENCODE_EVENTS = new Set([
   "server.connected", "server.heartbeat", "server.instance.disposed",
   "session.created", "session.updated", "session.deleted", "session.status", "session.idle", "session.error", "session.diff", "session.compacted",
@@ -116,406 +124,10 @@ const NEXT_EVENTS_REQUIRING_TRANSCRIPT_REFRESH = new Set([
   "session.next.revert.staged", "session.next.revert.cleared", "session.next.revert.committed",
 ])
 
-interface JsonBudget {
-  nodes: number
-  characters: number
-}
-
-function boundedJson(value: unknown, depth = 0, budget: JsonBudget = { nodes: 0, characters: 0 }): unknown | typeof OMIT {
-  if (budget.nodes >= 900 || budget.characters >= 100_000) return OMIT
-  budget.nodes += 1
-  if (value === null || typeof value === "boolean") return value
-  if (typeof value === "number") return Number.isFinite(value) ? value : null
-  if (typeof value === "string") {
-    const remaining = 100_000 - budget.characters
-    budget.characters += Math.min(value.length, remaining)
-    return value.slice(0, remaining)
-  }
-  if (depth >= 8) return "[Truncated]"
-  if (Array.isArray(value)) {
-    const output: unknown[] = []
-    for (const entry of value.slice(0, 100)) {
-      const bounded = boundedJson(entry, depth + 1, budget)
-      if (bounded === OMIT) break
-      output.push(bounded)
-    }
-    return output
-  }
-  if (record(value)) {
-    const output: JsonRecord = Object.create(null) as JsonRecord
-    for (const [key, entry] of Object.entries(value).slice(0, 100)) {
-      const remaining = 100_000 - budget.characters
-      if (remaining <= 0) break
-      const boundedKey = key.slice(0, Math.min(1_024, remaining))
-      if (!boundedKey || Object.hasOwn(output, boundedKey)) continue
-      budget.characters += boundedKey.length
-      const bounded = boundedJson(entry, depth + 1, budget)
-      if (bounded === OMIT) break
-      output[boundedKey] = bounded
-    }
-    return output
-  }
-  return String(value).slice(0, 1_024)
-}
-
-function boundedText(value: unknown, limit: number): string | undefined {
-  return typeof value === "string" ? value.slice(0, limit) : undefined
-}
-
-function boundedTime(value: unknown): { start?: number; end?: number } | undefined {
-  if (!record(value)) return undefined
-  const start = typeof value.start === "number" && Number.isFinite(value.start) && value.start >= 0 ? value.start : undefined
-  const end = typeof value.end === "number" && Number.isFinite(value.end) && value.end >= 0 ? value.end : undefined
-  return start === undefined && end === undefined ? undefined : { start, end }
-}
-
-function snapshotPart(part: MessagePart): MessagePart | undefined {
-  if (typeof part.id !== "string" || !part.id || part.id.length > 1_024 ||
-    typeof part.sessionID !== "string" || !part.sessionID || part.sessionID.length > 1_024 ||
-    typeof part.messageID !== "string" || !part.messageID || part.messageID.length > 1_024 ||
-    typeof part.type !== "string" || !part.type || part.type.length > 100) return undefined
-  const output: MessagePart = {
-    id: part.id,
-    sessionID: part.sessionID,
-    messageID: part.messageID,
-    type: part.type,
-  }
-  const text = boundedText(part.text, 500_000)
-  if (text !== undefined) output.text = text
-  if (typeof part.synthetic === "boolean") output.synthetic = part.synthetic
-  if (part.metadata !== undefined) {
-    const metadata = boundedJson(part.metadata)
-    if (metadata !== OMIT) output.metadata = metadata
-  }
-  const tool = boundedText(part.tool, 1_024)
-  if (tool !== undefined) output.tool = tool
-  if (part.type === "file") {
-    const mime = boundedText(part.mime, 100)
-    const filename = boundedText(part.filename, 255)
-    if (mime !== undefined) output.mime = mime
-    if (filename !== undefined) output.filename = filename
-  }
-  const time = boundedTime(part.time)
-  if (time) output.time = time
-  if (record(part.state)) {
-    const state: NonNullable<MessagePart["state"]> = {}
-    const status = boundedText(part.state.status, 100)
-    const title = boundedText(part.state.title, 2_000)
-    const stateOutput = boundedText(part.state.output, 100_000)
-    const error = boundedText(part.state.error, 100_000)
-    if (status !== undefined) state.status = status
-    if (title !== undefined) state.title = title
-    if (stateOutput !== undefined) state.output = stateOutput
-    if (error !== undefined) state.error = error
-    for (const key of ["input", "metadata"] as const) {
-      if (part.state[key] === undefined) continue
-      const value = boundedJson(part.state[key])
-      if (value !== OMIT) state[key] = value
-    }
-    const stateTime = boundedTime(part.state.time)
-    if (stateTime) state.time = stateTime
-    output.state = state
-  }
-  return output
-}
-
-function snapshotPartCharacters(part: MessagePart): number {
-  return (part.text?.length ?? 0) + (typeof part.mime === "string" ? part.mime.length : 0) + (typeof part.filename === "string" ? part.filename.length : 0) +
-    (part.metadata === undefined ? 0 : JSON.stringify(part.metadata).length) +
-    (part.state?.title?.length ?? 0) + (part.state?.output?.length ?? 0) +
-    (part.state?.error?.length ?? 0) + (part.state?.input === undefined ? 0 : JSON.stringify(part.state.input).length) +
-    (part.state?.metadata === undefined ? 0 : JSON.stringify(part.state.metadata).length)
-}
-
-function snapshotMessage(message: MessageBundle, pendingText?: string): MessageBundle | undefined {
-  const info = message.info
-  if (typeof info.id !== "string" || !info.id || info.id.length > 1_024 ||
-    typeof info.sessionID !== "string" || !info.sessionID || info.sessionID.length > 1_024 ||
-    (info.role !== "user" && info.role !== "assistant")) return undefined
-  const safeInfo: MessageBundle["info"] = { id: info.id, sessionID: info.sessionID, role: info.role }
-  if (record(info.time)) {
-    const created = typeof info.time.created === "number" && Number.isFinite(info.time.created) && info.time.created >= 0 ? info.time.created : undefined
-    const completed = typeof info.time.completed === "number" && Number.isFinite(info.time.completed) && info.time.completed >= 0 ? info.time.completed : undefined
-    if (created !== undefined || completed !== undefined) safeInfo.time = { created, completed }
-  }
-  if (info.error !== undefined) {
-    const error = boundedJson(info.error)
-    if (error !== OMIT) safeInfo.error = error
-  }
-  const parts: MessagePart[] = []
-  let characters = 0
-  for (const part of message.parts.slice(-2_000).reverse()) {
-    const safe = snapshotPart(part)
-    if (!safe) continue
-    const size = snapshotPartCharacters(safe)
-    if (characters + size > 1_500_000) break
-    characters += size
-    parts.push(safe)
-  }
-  parts.reverse()
-  const fallbackText = boundedText(pendingText, 500_000)
-  if (info.role === "user" && fallbackText && characters + fallbackText.length <= 1_500_000 &&
-    !parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text))) {
-    parts.push({ id: `${info.id}-pending-text`, sessionID: info.sessionID, messageID: info.id, type: "text", text: fallbackText })
-  }
-  return { info: safeInfo, parts }
-}
-
-function snapshotTranscript(
-  messages: MessageBundle[],
-  revisions: Map<string, number>,
-  characterLimit = 3_800_000,
-  partLimit = 19_000,
-  messageLimit = 5_000,
-  pendingText?: (messageID: string) => string | undefined,
-): { messages: MessageBundle[]; revisions: Record<string, number> } {
-  const output: MessageBundle[] = []
-  let parts = 0
-  let characters = 0
-  for (const message of messages.slice(-messageLimit).reverse()) {
-    const safe = snapshotMessage(message, pendingText?.(message.info.id))
-    if (!safe) continue
-    const nextParts = parts + safe.parts.length
-    const nextCharacters = characters + safe.parts.reduce((total, part) => total + snapshotPartCharacters(part), 0)
-    if (nextParts > partLimit || nextCharacters > characterLimit) break
-    parts = nextParts
-    characters = nextCharacters
-    output.push(safe)
-  }
-  output.reverse()
-  return {
-    messages: output,
-    revisions: Object.fromEntries(output.map((message) => [message.info.id, revisions.get(message.info.id) ?? 0])),
-  }
-}
-
 function delegationSessionID(part: MessagePart): string | undefined {
   if (part.type !== "tool" || part.tool !== "task" || !record(part.state?.metadata)) return undefined
   const sessionID = part.state.metadata.sessionId
   return typeof sessionID === "string" && sessionID.length > 0 && sessionID.length <= 1_024 ? sessionID : undefined
-}
-
-function boundedRuntimeString(value: unknown, limit: number): string | undefined {
-  return typeof value === "string" && value.length <= limit ? value : undefined
-}
-
-function runtimeServices(value: unknown, objectEntries = false): RuntimeService[] {
-  const entries: Array<[string | undefined, unknown]> = Array.isArray(value)
-    ? value.slice(0, 500).map((entry) => [undefined, entry])
-    : objectEntries && record(value)
-    ? Object.entries(value).slice(0, 500)
-    : []
-  const services: RuntimeService[] = []
-  let characters = 0
-  for (const [key, entry] of entries) {
-    if (!record(entry)) continue
-    const id = boundedRuntimeString(entry.id, 1_024) ?? boundedRuntimeString(entry.name, 1_024) ?? boundedRuntimeString(key, 1_024)
-    if (!id) continue
-    const extensions = Array.isArray(entry.extensions)
-      ? entry.extensions.slice(0, 200).filter((item): item is string => typeof item === "string" && item.length <= 100)
-      : undefined
-    const service: RuntimeService = {
-      id,
-      name: boundedRuntimeString(entry.name, 2_000),
-      status: boundedRuntimeString(entry.status, 100) ?? boundedRuntimeString(entry.type, 100),
-      root: boundedRuntimeString(entry.root, 8_192),
-      error: boundedRuntimeString(entry.error, 20_000),
-      extensions,
-      enabled: typeof entry.enabled === "boolean" ? entry.enabled : undefined,
-    }
-    characters += id.length + (service.name?.length ?? 0) + (service.root?.length ?? 0) + (service.error?.length ?? 0) +
-      (extensions?.reduce((total, extension) => total + extension.length, 0) ?? 0)
-    if (characters > 1_000_000) break
-    services.push(service)
-  }
-  return services
-}
-
-function runtimeFormatters(value: unknown): RuntimeService[] {
-  return runtimeServices(value).filter((formatter) => typeof formatter.enabled === "boolean" && Boolean(formatter.extensions))
-}
-
-function normalizeRuntime(path: unknown, vcs: unknown, lsp: unknown, formatter: unknown, mcp: unknown): RuntimeStatus {
-  const pathRecord = record(path) ? path : undefined
-  const vcsRecord = record(vcs) ? vcs : undefined
-  return {
-    path: pathRecord
-      ? {
-          home: boundedRuntimeString(pathRecord.home, 8_192),
-          state: boundedRuntimeString(pathRecord.state, 8_192),
-          config: boundedRuntimeString(pathRecord.config, 8_192),
-          worktree: boundedRuntimeString(pathRecord.worktree, 8_192),
-          directory: boundedRuntimeString(pathRecord.directory, 8_192),
-        }
-      : undefined,
-    vcs: vcsRecord ? { branch: boundedRuntimeString(vcsRecord.branch, 2_000) } : undefined,
-    lsp: runtimeServices(lsp),
-    formatters: runtimeFormatters(formatter),
-    mcp: runtimeServices(mcp, true),
-    updatedAt: Date.now(),
-  }
-}
-
-function count(value: unknown): number {
-  return Number.isSafeInteger(value) && Number(value) >= 0 ? Math.min(Number(value), 1_000_000_000_000) : 0
-}
-
-function tokenCounts(value: unknown): Omit<ContextSummary, "contextLimit" | "inputLimit" | "outputLimit" | "model" | "usagePercent" | "cost"> | undefined {
-  if (!record(value)) return undefined
-  const cache = record(value.cache) ? value.cache : undefined
-  const inputTokens = count(value.input)
-  const outputTokens = count(value.output)
-  const reasoningTokens = count(value.reasoning)
-  const cacheReadTokens = count(value.cacheRead ?? cache?.read)
-  const cacheWriteTokens = count(value.cacheWrite ?? cache?.write)
-  return {
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    totalTokens: inputTokens + outputTokens + reasoningTokens + cacheReadTokens + cacheWriteTokens,
-  }
-}
-
-function finiteCost(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.min(value, 1_000_000_000_000) : undefined
-}
-
-function deriveContext(messages: WorkbenchState["sessions"][string]["messages"], models: ModelOption[], fallbackModel?: ModelOption, sessionCost?: number): ContextSummary | undefined {
-  const assistant = messages.slice().reverse().find((entry) => entry.info.role === "assistant" &&
-    (entry.info.time?.completed !== undefined || tokenCounts(entry.info.tokens) !== undefined || entry.parts.some((part) => part.type === "step-finish" && tokenCounts(part.tokens) !== undefined)))
-  if (!assistant) return undefined
-  const finish = assistant.parts.slice().reverse().find((part) => part.type === "step-finish")
-  const tokens = tokenCounts(finish?.tokens) ?? tokenCounts(assistant.info.tokens)
-  if (!tokens) return undefined
-  let cost = finiteCost(sessionCost) ?? 0
-  if (finiteCost(sessionCost) === undefined) for (const entry of messages) {
-    if (entry.info.role !== "assistant") continue
-    const messageCost = finiteCost(entry.info.cost)
-    if (messageCost !== undefined) cost = Math.min(1_000_000_000_000, cost + messageCost)
-    else for (const part of entry.parts) if (part.type === "step-finish") cost = Math.min(1_000_000_000_000, cost + (finiteCost(part.cost) ?? 0))
-  }
-  const providerID = typeof assistant.info.providerID === "string" ? assistant.info.providerID : undefined
-  const modelID = typeof assistant.info.modelID === "string" ? assistant.info.modelID : undefined
-  const model = providerID && modelID ? models.find((candidate) => candidate.providerID === providerID && candidate.id === modelID) : fallbackModel
-  const contextLimit = model?.contextLimit
-  return {
-    ...tokens,
-    cost,
-    contextLimit,
-    inputLimit: model?.inputLimit,
-    outputLimit: model?.outputLimit,
-    model: model ? `${model.providerID}/${model.id}` : providerID && modelID ? `${providerID}/${modelID}` : undefined,
-    usagePercent: contextLimit ? Math.min(100, tokens.totalTokens / contextLimit * 100) : undefined,
-  }
-}
-
-const GOAL_TOOLS = new Set([
-  "get_goal",
-  "get_goal_history",
-  "create_goal",
-  "set_goal",
-  "update_goal",
-  "update_goal_status",
-  "update_goal_objective",
-  "update_goal_checkpoint",
-  "clear_goal",
-])
-
-function parsedGoal(output: unknown): GoalSummary | undefined {
-  if (typeof output !== "string" || output.length === 0 || output.length > 64 * 1024) return undefined
-  let value: unknown
-  try {
-    value = JSON.parse(output)
-  } catch {
-    return undefined
-  }
-  if (!record(value)) return undefined
-  const goal = record(value.goal) ? value.goal : value
-  const text = (key: string, limit = 20_000) => typeof goal[key] === "string" && goal[key].length <= limit ? goal[key] : undefined
-  const integer = (key: string) => Number.isSafeInteger(goal[key]) && Number(goal[key]) >= 0 ? Number(goal[key]) : undefined
-  const checkpoint = record(goal.lastCheckpoint) ? textFromRecord(goal.lastCheckpoint, "summary", 20_000) : undefined
-  const result: GoalSummary = {
-    sourceTool: "goal",
-    objective: text("objective"),
-    status: text("status", 100),
-    tokenBudget: integer("tokenBudget"),
-    tokensUsed: integer("tokensUsed"),
-    remainingTokens: integer("remainingTokens"),
-    timeUsedSeconds: integer("timeUsedSeconds"),
-    maxDurationSeconds: integer("maxDurationSeconds"),
-    autoTurns: integer("autoTurns"),
-    maxAutoTurns: integer("maxAutoTurns"),
-    lastStatus: text("lastStatus"),
-    stopReason: text("stopReason"),
-    checkpoint,
-    completionEvidence: text("completionEvidence"),
-    blocker: text("blocker"),
-  }
-  return result.objective !== undefined || result.status !== undefined ? result : undefined
-}
-
-function textFromRecord(value: JsonRecord, key: string, limit: number): string | undefined {
-  const item = value[key]
-  return typeof item === "string" && item.length <= limit ? item : undefined
-}
-
-function deriveGoal(messages: WorkbenchState["sessions"][string]["messages"]): GoalSummary | undefined {
-  let summary: GoalSummary | undefined
-  for (const message of messages) {
-    if (message.info.role !== "assistant") continue
-    for (const part of message.parts) {
-      if (part.type !== "tool" || !part.tool || !GOAL_TOOLS.has(part.tool) ||
-        (part.state?.status !== "completed" && part.state?.status !== "complete")) continue
-      if (part.tool === "clear_goal") {
-        summary = undefined
-        continue
-      }
-      const parsed = parsedGoal(part.state?.output)
-      if (!parsed) continue
-      summary = {
-        ...summary,
-        ...Object.fromEntries(Object.entries(parsed).filter(([, value]) => value !== undefined)),
-        sourceTool: part.tool,
-      }
-    }
-  }
-  return summary
-}
-
-function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const aborted = () => {
-      clearTimeout(timer)
-      reject(signal.reason)
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", aborted)
-      resolve()
-    }, milliseconds)
-    signal.addEventListener("abort", aborted, { once: true })
-  })
-}
-
-function mergeTranscripts(server: WorkbenchState["sessions"][string]["messages"], current: WorkbenchState["sessions"][string]["messages"]) {
-  const merged = server.map((message) => ({ ...message, parts: message.parts.slice() }))
-  for (const live of current) {
-    const index = merged.findIndex((message) => message.info.id === live.info.id)
-    if (index < 0) {
-      merged.push(live)
-      continue
-    }
-    const base = merged[index]!
-    const parts = base.parts.slice()
-    for (const part of live.parts) {
-      const partIndex = parts.findIndex((candidate) => candidate.id === part.id)
-      if (partIndex < 0) parts.push(part)
-      else parts[partIndex] = part
-    }
-    merged[index] = { info: { ...base.info, ...live.info }, parts }
-  }
-  return merged
 }
 
 function descendantSessions(state: WorkbenchState, parentID: string): WorkbenchState["sessions"][string][] {
@@ -542,49 +154,16 @@ function descendantSessions(state: WorkbenchState, parentID: string): WorkbenchS
   return output
 }
 
-function rejectOnlyPermission(request: PermissionRequest): PermissionRequest {
-  return { id: request.id, sessionID: request.sessionID, title: request.title, type: request.type, protocol: request.protocol, truncated: true }
-}
-
-function boundedPermissionList(requests: PermissionRequest[]): PermissionRequest[] {
-  const output: PermissionRequest[] = []
-  let characters = 0
-  for (const request of requests) {
-    if (output.length >= 100) break
-    let safe = request
-    let size = permissionRequestCharacters(safe)
-    if (characters + size > PERMISSION_AGGREGATE_CHARACTER_LIMIT) {
-      safe = rejectOnlyPermission(request)
-      size = permissionRequestCharacters(safe)
-    }
-    if (characters + size > PERMISSION_AGGREGATE_CHARACTER_LIMIT) break
-    output.push(safe)
-    characters += size
-  }
-  return output
-}
-
 export class SessionController {
-  private state: WorkbenchState = initialWorkbenchState
-  private readonly listeners = new Set<(update: ControllerUpdate) => void>()
+  private readonly repository = new SessionRepository()
+  private readonly transcripts = new TranscriptReconciler()
+  private readonly prompts = new PromptDispatcher()
+  private readonly permissions = new PermissionCoordinator()
+  private readonly questions = new QuestionCoordinator()
+  private readonly settlements = new SettlementCoordinator()
   private readonly eventBus: OrderedEventBus<OpenCodeEvent>
-  private stream?: AbortController
+  private readonly connectionCoordinator: ConnectionCoordinator<OpenCodeEvent>
   private disposed = false
-  private readonly respondingPermissions = new Set<string>()
-  private readonly automaticallyRespondingPermissions = new Set<string>()
-  private readonly permissionGrants = new Map<string, Array<{ protocol: PermissionRequest["protocol"]; type?: string; pattern: string }>>()
-  private readonly respondingQuestions = new Set<string>()
-  private permissionRevision = 0
-  private permissionGeneration = 0
-  private agents: AgentOption[] = []
-  private models: ModelOption[] = []
-  private commands: CommandOption[] = []
-  private defaultAgent?: string
-  private defaultModel?: string
-  private defaultVariant?: string
-  private currentAgent?: string
-  private lastModel?: string
-  private readonly modelVariants = new Map<string, string | undefined>()
   private runtime?: RuntimeStatus
   private runtimeGeneration = 0
   private runtimeRefreshTimer?: NodeJS.Timeout
@@ -592,40 +171,62 @@ export class SessionController {
   private reconcileGeneration = 0
   private sessionRevision = 0
   private statusRevision = 0
-  private readonly transcriptRevisions = new Map<string, number>()
-  private readonly transcriptGenerations = new Map<string, number>()
-  private readonly transcriptRefreshTimers = new Map<string, NodeJS.Timeout>()
-  private readonly removedMessages = new Map<string, Map<string, number>>()
-  private readonly removedParts = new Map<string, Map<string, number>>()
-  private readonly sendGenerations = new Map<string, number>()
-  private readonly drainingQueues = new Set<string>()
-  private readonly sendingPrompts = new Map<string, string>()
-  private readonly retryingSessions = new Set<string>()
   private readonly unknownEventTypes = new Set<string>()
-  private readonly steeringPrompts = new Set<string>()
-  private readonly pendingPromptSessions = new Map<string, string>()
-  private readonly pendingPromptTexts = new Map<string, string>()
-  private readonly pendingPromptFileCounts = new Map<string, number>()
-  private readonly sessionFailures = new Map<string, string>()
-  private readonly promptFiles = new Map<string, PromptFilePart[]>()
-  private readonly promptAgents = new Map<string, string[]>()
-  private readonly messageHistories = new Map<string, { legacyMessageIDs: Set<string>; v2MessageIDs: Set<string> }>()
   private readonly recoveredSessions = new Map<string, string>()
   private readonly recoveringSessions = new Set<string>()
-  private promptAdmissionPaused = false
-  private readonly messageRevisions = new Map<string, Map<string, number>>()
   private readonly todoRevisions = new Map<string, number>()
   private readonly todoGenerations = new Map<string, number>()
   private readonly changeGenerations = new Map<string, number>()
   private readonly changeRevisions = new Map<string, number>()
-  private questionGeneration = 0
-  private questionRevision = 0
   private selectionIntent = 0
-  private mentionAgents: AgentOption[] = []
-  private providers: ProviderOption[] = []
-  private resources: ResourceOption[] = []
-  private catalog: NonNullable<ChatSnapshot["catalog"]> = { status: "error" }
+  private readonly catalogService: CatalogService
   private restoreSelectionID?: string
+
+  private get agents(): AgentOption[] { return this.catalogService.agents }
+  private get models(): ModelOption[] { return this.catalogService.models }
+  private get commands(): CommandOption[] { return this.catalogService.commands }
+  private get defaultAgent(): string | undefined { return this.catalogService.defaultAgent }
+  private get defaultModel(): string | undefined { return this.catalogService.defaultModel }
+  private get defaultVariant(): string | undefined { return this.catalogService.defaultVariant }
+  private get currentAgent(): string | undefined { return this.catalogService.currentAgent }
+  private get lastModel(): string | undefined { return this.catalogService.lastModel }
+  private get modelVariants(): Map<string, string | undefined> { return this.catalogService.modelVariants }
+  private get mentionAgents(): AgentOption[] { return this.catalogService.mentionAgents }
+  private get providers(): ProviderOption[] { return this.catalogService.providers }
+  private get resources(): ResourceOption[] { return this.catalogService.resources }
+  private get catalog(): NonNullable<ChatSnapshot["catalog"]> { return this.catalogService.status }
+  private get respondingPermissions(): Set<string> { return this.permissions.responding }
+  private get automaticallyRespondingPermissions(): Set<string> { return this.permissions.automaticallyResponding }
+  private get permissionGrants() { return this.permissions.grants }
+  private get permissionRevision(): number { return this.permissions.revision }
+  private set permissionRevision(value: number) { this.permissions.revision = value }
+  private get permissionGeneration(): number { return this.permissions.generation }
+  private set permissionGeneration(value: number) { this.permissions.generation = value }
+  private get respondingQuestions(): Set<string> { return this.questions.responding }
+  private get questionRevision(): number { return this.questions.revision }
+  private set questionRevision(value: number) { this.questions.revision = value }
+  private get questionGeneration(): number { return this.questions.generation }
+  private set questionGeneration(value: number) { this.questions.generation = value }
+  private get transcriptRevisions() { return this.transcripts.revisions }
+  private get transcriptGenerations() { return this.transcripts.generations }
+  private get transcriptRefreshTimers() { return this.transcripts.refreshTimers }
+  private get removedMessages() { return this.transcripts.removedMessages }
+  private get removedParts() { return this.transcripts.removedParts }
+  private get messageHistories() { return this.transcripts.messageHistories }
+  private get messageRevisions() { return this.transcripts.messageRevisions }
+  private get sendGenerations() { return this.prompts.sendGenerations }
+  private get drainingQueues() { return this.prompts.drainingQueues }
+  private get sendingPrompts() { return this.prompts.sendingPrompts }
+  private get retryingSessions() { return this.prompts.retryingSessions }
+  private get steeringPrompts() { return this.prompts.steeringPrompts }
+  private get promptFiles() { return this.prompts.promptFiles }
+  private get promptAgents() { return this.prompts.promptAgents }
+  private get pendingPromptSessions() { return this.settlements.pendingPromptSessions }
+  private get pendingPromptTexts() { return this.settlements.pendingPromptTexts }
+  private get pendingPromptFileCounts() { return this.settlements.pendingPromptFileCounts }
+  private get sessionFailures() { return this.settlements.sessionFailures }
+  private get promptAdmissionPaused(): boolean { return this.settlements.promptAdmissionPaused }
+  private set promptAdmissionPaused(value: boolean) { this.settlements.promptAdmissionPaused = value }
 
   constructor(
     private readonly client: OpenCodeClient,
@@ -634,29 +235,37 @@ export class SessionController {
     selectedSessionID?: string,
     recoveredSessions?: Record<string, string>,
   ) {
+    this.catalogService = new CatalogService(preferences)
     this.eventBus = new OrderedEventBus((event) => this.handleEvent(event), {
       onError: (error) => this.callbacks.error(`Could not handle OpenCode event: ${message(error)}`),
+    })
+    this.connectionCoordinator = new ConnectionCoordinator({
+      connect: (signal, opened, event) => this.client.events(signal, opened, event),
+      flush: () => this.eventBus.flush(),
+      opened: async (signal) => {
+        await this.callbacks.validateConnection?.()
+        if (signal.aborted) return
+        await this.reconcile()
+        if (signal.aborted) return
+        await this.reconcilePermissions().catch((error) => this.callbacks.error(`Could not reconcile permission requests: ${message(error)}`))
+        await this.reconcileQuestions().catch((error) => this.callbacks.error(`Could not reconcile questions: ${message(error)}`))
+        if (!signal.aborted) this.dispatch({ type: "connected", connected: true, connectionState: "connected" })
+      },
+      event: (event) => this.eventBus.emit(event),
+      disconnected: () => this.dispatch({ type: "connected", connected: false, connectionState: "reconnecting" }),
+      error: (error) => this.callbacks.error(message(error)),
     })
     if (selectedSessionID) this.restoreSelectionID = selectedSessionID
     for (const [source, recovered] of Object.entries(recoveredSessions ?? {}).slice(0, 100)) {
       if (source && recovered && source.length <= 1_024 && recovered.length <= 1_024) this.recoveredSessions.set(source, recovered)
     }
-    if (typeof preferences?.currentAgent === "string" && preferences.currentAgent.length <= 1_024) this.currentAgent = preferences.currentAgent
-    if (typeof preferences?.lastModel === "string" && preferences.lastModel.length <= 1_024) this.lastModel = preferences.lastModel
-    if (!this.lastModel) {
-      const legacy = preferences?.agentModels?.find(([agent]) => agent === this.currentAgent) ?? preferences?.agentModels?.at(-1)
-      if (legacy && legacy.every((value) => typeof value === "string" && value.length <= 1_024)) this.lastModel = legacy[1]
-    }
-    for (const entry of preferences?.modelVariants?.slice(0, 500) ?? []) {
-      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || entry[0].length > 1_024 ||
-        (entry[1] !== null && (typeof entry[1] !== "string" || entry[1].length > 1_024))) continue
-      this.modelVariants.set(entry[0], entry[1] ?? undefined)
-    }
   }
 
   get snapshot(): WorkbenchState {
-    return this.state
+    return this.repository.snapshot
   }
+
+  private get state(): WorkbenchState { return this.repository.snapshot }
 
   canAttachWorkspaceFiles(): boolean {
     return this.client.canReadLocalFiles()
@@ -683,20 +292,16 @@ export class SessionController {
   }
 
   subscribe(listener: (update: ControllerUpdate) => void): { dispose(): void } {
-    this.listeners.add(listener)
-    return { dispose: () => this.listeners.delete(listener) }
+    return this.repository.subscribe(listener)
   }
 
   start(): void {
-    if (this.stream || this.disposed) return
-    this.stream = new AbortController()
-    void this.runEventLoop(this.stream.signal)
+    if (this.disposed) return
+    this.connectionCoordinator.start()
   }
 
   reconnect(): void {
     this.client.cancelPendingRequests?.()
-    this.stream?.abort()
-    this.stream = undefined
     this.eventBus.discard()
     this.reconcileGeneration += 1
     this.permissionGeneration += 1
@@ -705,7 +310,7 @@ export class SessionController {
       this.transcriptGenerations.set(sessionID, generation + 1)
     }
     this.dispatch({ type: "connected", connected: false, connectionState: "connecting" })
-    this.start()
+    this.connectionCoordinator.reconnect()
   }
 
   dispose(): void {
@@ -713,33 +318,20 @@ export class SessionController {
     this.eventBus.dispose()
     this.permissionGeneration += 1
     this.questionGeneration += 1
-    this.stream?.abort()
-    this.stream = undefined
+    this.connectionCoordinator.dispose()
     this.client.cancelPendingRequests?.()
     if (this.runtimeRefreshTimer) clearTimeout(this.runtimeRefreshTimer)
     if (this.catalogRefreshTimer) clearTimeout(this.catalogRefreshTimer)
-    for (const timer of this.transcriptRefreshTimers.values()) clearTimeout(timer)
-    this.transcriptRefreshTimers.clear()
-    this.promptFiles.clear()
-    this.promptAgents.clear()
-    this.pendingPromptSessions.clear()
-    this.pendingPromptTexts.clear()
-    this.pendingPromptFileCounts.clear()
-    this.sessionFailures.clear()
-    this.permissionGrants.clear()
-    this.automaticallyRespondingPermissions.clear()
-    this.listeners.clear()
-  }
-
-  private notify(update: ControllerUpdate): void {
-    for (const listener of this.listeners) listener(update)
+    this.transcripts.dispose()
+    this.prompts.dispose()
+    this.settlements.dispose()
+    this.permissions.dispose()
+    this.questions.dispose()
+    this.repository.dispose()
   }
 
   private dispatch(action: ControllerUpdate): void {
-    const next = sessionReducer(this.state, action)
-    if (next === this.state) return
-    this.state = next
-    this.notify(action)
+    this.repository.dispatch(action)
   }
 
   private async readRuntime(): Promise<RuntimeStatus> {
@@ -758,7 +350,7 @@ export class SessionController {
     const runtime = await this.readRuntime()
     if (this.disposed || generation !== this.runtimeGeneration) return
     this.runtime = runtime
-    this.notify({ type: "connected", connected: this.state.connected })
+    this.repository.notify({ type: "connected", connected: this.state.connected })
   }
 
   messageUpdateKey(update: ControllerUpdate): { sessionID: string; messageID: string } | undefined {
@@ -779,10 +371,7 @@ export class SessionController {
   }
 
   private pendingPromptTextFor(messageID: string): string | undefined {
-    const retained = this.pendingPromptTexts.get(messageID)
-    if (retained !== undefined) return retained
-    const sessionID = this.pendingPromptSessions.get(messageID)
-    return sessionID ? this.state.sessions[sessionID]?.queue.find((prompt) => prompt.id === messageID)?.text : undefined
+    return this.settlements.pendingText(messageID, (sessionID) => this.state.sessions[sessionID]?.queue.find((prompt) => prompt.id === messageID)?.text)
   }
 
   messagePatches(keys: Array<{ sessionID: string; messageID: string }>): MessagePatch[] | undefined {
@@ -816,18 +405,15 @@ export class SessionController {
   }
 
   private validAgent(name?: string): name is string {
-    return Boolean(name && this.agents.some((agent) => agent.name === name))
+    return this.catalogService.validAgent(name)
   }
 
   private validModel(value?: string): value is string {
-    return Boolean(value && this.models.some((model) => `${model.providerID}/${model.id}` === value))
+    return this.catalogService.validModel(value)
   }
 
   private modelForAgent(agent?: string): string | undefined {
-    const configured = this.agents.find((candidate) => candidate.name === agent)?.model
-    const configuredValue = configured ? `${configured.providerID}/${configured.modelID}` : undefined
-    if (this.validModel(configuredValue)) return configuredValue
-    return this.validModel(this.lastModel) ? this.lastModel : this.defaultModel
+    return this.catalogService.modelForAgent(agent)
   }
 
   private requiresLegacyPromptTransport(sessionID: string, agent?: string, model?: string): boolean {
@@ -914,43 +500,16 @@ export class SessionController {
   }
 
   private persistPreferences(): void {
-    this.callbacks.preferencesChanged?.({
-      currentAgent: this.currentAgent,
-      lastModel: this.lastModel,
-      modelVariants: [...this.modelVariants].map(([key, value]) => [key, value ?? null]),
-    })
+    this.callbacks.preferencesChanged?.(this.catalogService.preferences())
   }
 
   private rememberPreference(agent?: string, model?: string, variant?: string, rememberVariant = false): void {
-    let changed = false
-    if (this.validAgent(agent) && this.currentAgent !== agent) {
-      this.currentAgent = agent
-      changed = true
-    }
-    if (!this.validModel(model)) {
-      if (changed) this.persistPreferences()
-      return
-    }
-    if (this.lastModel !== model) {
-      this.lastModel = model
-      changed = true
-    }
-    if ((rememberVariant || variant !== undefined) && (!this.modelVariants.has(model) || this.modelVariants.get(model) !== (variant || undefined))) {
-      this.modelVariants.set(model, variant || undefined)
-      changed = true
-    }
-    if (changed) this.persistPreferences()
+    if (this.catalogService.remember(agent, model, variant, rememberVariant)) this.persistPreferences()
   }
 
   private validatePreference(agent?: string, model?: string, variant?: string): void {
-    if (agent && !this.validAgent(agent)) throw new Error("Unknown OpenCode agent")
-    if (model && !this.validModel(model)) throw new Error("Unknown OpenCode model")
-    if (!variant) return
     const session = this.state.selectedID ? this.state.sessions[this.state.selectedID] : undefined
-    const effectiveAgent = agent || session?.agent || this.currentAgent || this.defaultAgent
-    const effectiveModel = model === "" ? this.modelForAgent(effectiveAgent) : model || session?.model || this.modelForAgent(effectiveAgent)
-    const selectedModel = this.models.find((candidate) => `${candidate.providerID}/${candidate.id}` === effectiveModel)
-    if (!selectedModel?.variants?.includes(variant)) throw new Error("Unknown reasoning level for the selected model")
+    this.catalogService.validate(agent, model === undefined ? session?.model : model, variant, session?.agent)
   }
 
   private bumpMessageRevision(sessionID: string, messageID: string): void {
@@ -965,47 +524,6 @@ export class SessionController {
     for (const entry of messages) revisions.set(entry.info.id, (revisions.get(entry.info.id) ?? 0) + 1)
     for (const messageID of revisions.keys()) if (!current.has(messageID)) revisions.delete(messageID)
     this.messageRevisions.set(sessionID, revisions)
-  }
-
-  private async runEventLoop(signal: AbortSignal): Promise<void> {
-    let attempt = 0
-    while (!signal.aborted) {
-      try {
-        await this.client.events(
-          signal,
-          async () => {
-            this.eventBus.flush()
-            attempt = 0
-            await this.callbacks.validateConnection?.()
-            if (signal.aborted) return
-            await this.reconcile()
-            if (signal.aborted) return
-            await this.reconcilePermissions().catch((error) => this.callbacks.error(`Could not reconcile permission requests: ${message(error)}`))
-            await this.reconcileQuestions().catch((error) => this.callbacks.error(`Could not reconcile questions: ${message(error)}`))
-            if (signal.aborted) return
-            this.dispatch({ type: "connected", connected: true, connectionState: "connected" })
-          },
-          (event) => {
-            if (!signal.aborted) this.eventBus.emit(event)
-          },
-        )
-        this.eventBus.flush()
-        if (signal.aborted) return
-        this.dispatch({ type: "connected", connected: false, connectionState: "reconnecting" })
-        await delay(250, signal)
-      } catch (error) {
-        this.eventBus.flush()
-        if (signal.aborted) return
-        this.dispatch({ type: "connected", connected: false, connectionState: "reconnecting" })
-        if (attempt === 0) this.callbacks.error(message(error))
-        attempt += 1
-        try {
-          await delay(Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)), signal)
-        } catch {
-          return
-        }
-      }
-    }
   }
 
   async reconcile(): Promise<void> {
@@ -1029,32 +547,9 @@ export class SessionController {
       void this.reconcile()
       return
     }
-    this.agents = catalogs.agents
-    this.mentionAgents = catalogs.mentionAgents ?? []
-    this.providers = catalogs.providers ?? []
-    this.models = catalogs.models
-    this.resources = catalogs.resources ?? []
-    this.catalog = catalogError
-      ? { status: this.models.length ? "stale" : "error", updatedAt: this.catalog.updatedAt, error: catalogError.slice(0, 20_000) }
-      : { status: "ready", updatedAt: Date.now() }
-    this.defaultAgent = catalogs.defaults?.agent
-    this.defaultModel = catalogs.defaults?.model
-    this.defaultVariant = catalogs.defaults?.variant
-    if (!this.validAgent(this.currentAgent)) this.currentAgent = this.defaultAgent
-    let changedPreferences = false
-    if (this.lastModel && !this.validModel(this.lastModel)) {
-      this.lastModel = undefined
-      changedPreferences = true
-    }
-    for (const [model, variant] of this.modelVariants) {
-      const option = this.models.find((candidate) => `${candidate.providerID}/${candidate.id}` === model)
-      if (!option || (variant && !option.variants?.includes(variant))) {
-        this.modelVariants.delete(model)
-        changedPreferences = true
-      }
-    }
-    if (changedPreferences) this.persistPreferences()
-    this.commands = commands
+    const previousPreferences = JSON.stringify(this.catalogService.preferences())
+    this.catalogService.apply(catalogs, commands, catalogError)
+    if (JSON.stringify(this.catalogService.preferences()) !== previousPreferences) this.persistPreferences()
     if (runtimeGeneration === this.runtimeGeneration) this.runtime = runtime
     const effectiveStatuses: Record<string, SessionStatus> = statusRevision === this.statusRevision
       ? statuses
@@ -1144,7 +639,7 @@ export class SessionController {
       const requestCharacters = permissionRequestCharacters(request)
       const nextCharacters = (characters.get(request.sessionID) ?? 0) + requestCharacters
       if (values.length < 100 && !values.some((candidate) => candidate.id === request.id && candidate.protocol === request.protocol)) {
-        const safe = nextCharacters <= PERMISSION_AGGREGATE_CHARACTER_LIMIT ? request : rejectOnlyPermission(request)
+        const safe = nextCharacters <= PERMISSION_AGGREGATE_CHARACTER_LIMIT ? request : this.permissions.rejectOnly(request)
         const safeCharacters = (characters.get(request.sessionID) ?? 0) + permissionRequestCharacters(safe)
         if (safeCharacters <= PERMISSION_AGGREGATE_CHARACTER_LIMIT) {
           values.push(safe)
@@ -1577,7 +1072,7 @@ export class SessionController {
     this.dispatch({
       type: "queue",
       sessionID,
-      prompt: { id: promptID, text, agent, model, variant, attachments: files.length ? files.map((file) => ({ name: file.filename, mime: file.mime })) : undefined, createdAt: Date.now() },
+      prompt: { id: promptID, text, delivery: delivery === "queue" ? "follow-up" : delivery, agent, model, variant, attachments: files.length ? files.map((file) => ({ name: file.filename, mime: file.mime })) : undefined, createdAt: Date.now() },
     })
     if (delivery === "steer" || delivery === "replace") this.steeringPrompts.add(promptID)
     try {
@@ -1736,6 +1231,7 @@ export class SessionController {
         this.scheduleTranscriptRefresh(sessionID)
       }
       accepted = true
+      this.callbacks.promptAdmitted?.(sessionID, prompt.id, Date.now())
       if (this.sendGenerations.get(sessionID) === generation) {
         this.promptFiles.delete(prompt.id)
         this.promptAgents.delete(prompt.id)
@@ -1810,6 +1306,36 @@ export class SessionController {
     return output.reverse()
   }
 
+  historyPage(sessionID: string, beforeMessageID: string): TranscriptHistoryPage {
+    const session = this.requireSession(sessionID)
+    const beforeIndex = session.messages.findIndex((message) => message.info.id === beforeMessageID)
+    if (beforeIndex < 0) throw new Error("Cannot load history before an unknown message")
+    if (beforeIndex === 0) return {
+      sessionID,
+      messages: [],
+      messageRevisions: {},
+      hasOlder: false,
+      totalMessages: session.messages.length,
+      sourceMayBeTruncated: session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+    }
+    const transcript = snapshotTranscript(
+      session.messages.slice(0, beforeIndex),
+      this.messageRevisions.get(sessionID) ?? new Map(),
+      3_800_000,
+      19_000,
+      200,
+      (messageID) => this.pendingPromptTextFor(messageID),
+    )
+    return {
+      sessionID,
+      messages: transcript.messages,
+      messageRevisions: transcript.revisions,
+      hasOlder: transcript.history.hasOlder,
+      totalMessages: session.messages.length,
+      sourceMayBeTruncated: session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+    }
+  }
+
   chatSnapshot(): ChatSnapshot {
     const current = this.state.selectedID ? this.state.sessions[this.state.selectedID] : undefined
     const visiblePermissions = new Map<string, PermissionRequest[]>(Object.values(this.state.sessions).map((session) => [
@@ -1872,6 +1398,53 @@ export class SessionController {
     const fallbackVariant = agentVariant ?? (selectedModel?.variants?.includes(this.defaultVariant ?? "") ? this.defaultVariant : undefined)
     const effectiveVariant = current?.variant ?? (effectiveModel && this.modelVariants.has(effectiveModel) ? this.modelVariants.get(effectiveModel) : fallbackVariant)
     const goal = current ? deriveGoal(current.messages) : undefined
+    const attentionItems: AttentionItem[] = []
+    for (const session of Object.values(this.state.sessions)) {
+      for (const request of visiblePermissions.get(session.info.id) ?? []) attentionItems.push({
+        id: `permission:${request.protocol}:${request.sessionID}:${request.id}`,
+        kind: "permission",
+        sessionID: session.info.id,
+        title: request.title || "Permission required",
+        detail: request.type,
+        createdAt: session.info.time.updated,
+        target: { surface: "conversation", itemID: request.id },
+      })
+      for (const request of session.questions) attentionItems.push({
+        id: `question:${request.sessionID}:${request.id}`,
+        kind: "question",
+        sessionID: session.info.id,
+        title: request.questions[0]?.header || request.questions[0]?.question || "Question from OpenCode",
+        createdAt: session.info.time.updated,
+        target: { surface: "conversation", itemID: request.id },
+      })
+      const sessionGoal = deriveGoal(session.messages)
+      if (sessionGoal?.blocker || ["unmet", "blocked", "needs-user"].includes(sessionGoal?.status ?? "")) attentionItems.push({
+        id: `goal:${session.info.id}`,
+        kind: "blocked-goal",
+        sessionID: session.info.id,
+        title: "Goal needs attention",
+        detail: sessionGoal?.blocker || sessionGoal?.stopReason,
+        createdAt: session.info.time.updated,
+        target: { surface: "goal" },
+      })
+      if (session.status.type === "error") attentionItems.push({
+        id: `failure:${session.info.id}`,
+        kind: "prompt-failure",
+        sessionID: session.info.id,
+        title: "OpenCode session failed",
+        detail: session.status.message,
+        createdAt: session.info.time.updated,
+        target: { surface: "conversation" },
+      })
+      if (!this.state.connected && (session.status.type === "busy" || session.status.type === "retry")) attentionItems.push({
+        id: `disconnected:${session.info.id}`,
+        kind: "disconnected-session",
+        sessionID: session.info.id,
+        title: "Active session disconnected",
+        createdAt: Date.now(),
+        target: { surface: "health" },
+      })
+    }
     return {
       connected: this.state.connected,
       connectionState: this.state.connectionState,
@@ -1907,6 +1480,7 @@ export class SessionController {
       commands: this.commands,
       autoApproval: current ? this.autoApprovalFor(current.info.id) : false,
       runtime: this.runtime,
+      attentionItems: attentionItems.sort((left, right) => right.createdAt - left.createdAt).slice(0, 500),
       session: current ? {
         id: current.info.id,
         parentID: current.info.parentID,
@@ -1918,12 +1492,16 @@ export class SessionController {
         loadState: current.loadState,
         messages: transcript!.messages,
         messageRevisions: transcript!.revisions,
+        history: {
+          ...transcript!.history,
+          sourceMayBeTruncated: current.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+        },
         agent: effectiveAgent,
         model: effectiveModel,
         variant: effectiveVariant,
         queue: current.queue,
         inFlightPromptID: this.sendingPrompts.get(current.info.id),
-        permissions: current.info.parentID ? [] : boundedPermissionList([
+        permissions: current.info.parentID ? [] : this.permissions.bounded([
           ...(visiblePermissions.get(current.info.id) ?? []),
           ...delegatedSessions.flatMap((session) => visiblePermissions.get(session.info.id) ?? []),
         ]),
@@ -2093,7 +1671,7 @@ export class SessionController {
     if (event.type === "vcs.branch.updated") {
       const branch = boundedRuntimeString(event.properties.branch, 2_000)
       this.runtime = { ...(this.runtime ?? { lsp: [], formatters: [], mcp: [], updatedAt: Date.now() }), vcs: { branch }, updatedAt: Date.now() }
-      this.notify({ type: "connected", connected: this.state.connected })
+      this.repository.notify({ type: "connected", connected: this.state.connected })
     } else if (event.type === "file.watcher.updated") {
       if (this.runtimeRefreshTimer) clearTimeout(this.runtimeRefreshTimer)
       this.runtimeRefreshTimer = setTimeout(() => {
@@ -2228,7 +1806,7 @@ export class SessionController {
       permissions.push(request)
     } else permissions[index] = request
     if (permissions.reduce((total, candidate) => total + permissionRequestCharacters(candidate), 0) > PERMISSION_AGGREGATE_CHARACTER_LIMIT) {
-      permissions[index < 0 ? permissions.length - 1 : index] = rejectOnlyPermission(request)
+      permissions[index < 0 ? permissions.length - 1 : index] = this.permissions.rejectOnly(request)
       if (permissions.reduce((total, candidate) => total + permissionRequestCharacters(candidate), 0) > PERMISSION_AGGREGATE_CHARACTER_LIMIT) {
         this.callbacks.error("OpenCode permission request detail limit reached for this session")
         return
@@ -2273,7 +1851,7 @@ export class SessionController {
       this.automaticallyRespondingPermissions.delete(key)
       const session = this.state.sessions[request.sessionID]
       if (session?.permissions.some((candidate) => candidate.id === request.id && candidate.protocol === request.protocol)) {
-        this.notify({ type: "permissions", sessionID: request.sessionID, permissions: session.permissions })
+        this.repository.notify({ type: "permissions", sessionID: request.sessionID, permissions: session.permissions })
       }
     })
   }

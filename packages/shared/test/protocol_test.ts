@@ -17,6 +17,10 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "createSession", draft: "Review this workspace" })?.type === "createSession", "valid starter rejected")
   assert(parseWebviewMessage({ type: "createSession", draft: "Review this workspace", submit: true })?.type === "createSession", "session-creating submit rejected")
   assert(parseWebviewMessage({ type: "createSession", draft: "", submit: true }) === undefined, "empty session-creating submit accepted")
+  assert(parseWebviewMessage({ type: "planTask" })?.type === "planTask", "plan-first command rejected")
+  assert(parseWebviewMessage({ type: "planTask", command: "workbench.action.closeWindow" }) === undefined, "plan-first command injection accepted")
+  assert(parseWebviewMessage({ type: "loadOlderHistory", sessionID: "session-1", beforeMessageID: "message-200" })?.type === "loadOlderHistory", "older-history request rejected")
+  assert(parseWebviewMessage({ type: "loadOlderHistory", sessionID: "session-1", beforeMessageID: "" }) === undefined, "empty older-history cursor accepted")
   assert(parseWebviewMessage({ type: "reorderQueue", sessionID: "session-1", promptIDs: ["one", "two"] })?.type === "reorderQueue", "valid queue order rejected")
   assert(parseWebviewMessage({ type: "editQueued", sessionID: "session-1", promptID: "msg_018bcfe568001234567890abcd" })?.type === "editQueued", "queued prompt edit rejected")
   assert(parseWebviewMessage({ type: "respondPermission", sessionID: "session-1", requestID: "request", protocol: "current", response: "once" })?.type === "respondPermission", "valid permission response rejected")
@@ -29,6 +33,12 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "openFile", sessionID: "session-1", file: "src/main.ts", line: 42, column: 3, endLine: 48, endColumn: 9 })?.type === "openFile", "file range request rejected")
   assert(parseWebviewMessage({ type: "setAutoApproval", sessionID: "session", enabled: true })?.type === "setAutoApproval", "valid auto approval rejected")
   assert(parseWebviewMessage({ type: "goalAction", sessionID: "session", action: "pause" })?.type === "goalAction", "valid goal action rejected")
+  assert(parseWebviewMessage({ type: "goalAction", sessionID: "session", action: "configure" })?.type === "goalAction", "goal configuration action rejected")
+  assert(parseWebviewMessage({ type: "goalAction", sessionID: "session", action: "verify" })?.type === "goalAction", "goal verification action rejected")
+  assert(parseWebviewMessage({ type: "runAction", groupID: "group", action: "compare" })?.type === "runAction", "group comparison action rejected")
+  assert(parseWebviewMessage({ type: "runAction", groupID: "group", runID: "run", action: "diff" })?.type === "runAction", "run native diff action rejected")
+  assert(parseWebviewMessage({ type: "runAction", groupID: "group", action: "discard" }) === undefined, "run action without run ID accepted")
+  assert(parseWebviewMessage({ type: "walkthroughAction", documentID: "walkthrough", stopID: "stop" })?.type === "walkthroughAction", "walkthrough navigation action rejected")
   assert(parseWebviewMessage({ type: "sessionAction", sessionID: "session", action: "fork", messageID: "message" })?.type === "sessionAction", "message fork rejected")
   assert(parseWebviewMessage({ type: "sessionAction", sessionID: "session", action: "retry" })?.type === "sessionAction", "retry action rejected")
   assert(parseWebviewMessage({ type: "sessionAction", sessionID: "session", action: "retry", messageID: "message" })?.type === "sessionAction", "message retry rejected")
@@ -107,6 +117,7 @@ Deno.test("validates host snapshots", () => {
       models: [{ id: "m", name: "Model", providerID: "p", contextLimit: 10_000, inputLimit: 8_000, outputLimit: 2_000, capabilities: { reasoning: true, input: { text: true, image: true } }, variants: ["low", "high"] }],
       autoApproval: false,
       runtime: { lsp: [], formatters: [], mcp: [], updatedAt: 1 },
+      walkthroughs: [{ id: "walkthrough", diffHash: "abc", model: "p/m", promptVersion: "v1", language: "en", generatedAt: 1, coverage: "complete", stops: [{ id: "stop", title: "Change", explanation: "Inspect this change", importance: "key-change", anchors: [{ file: "src/main.ts", side: "modified", startLine: 1, endLine: 2 }] }] }],
       session: {
         id: "s",
         directory: "/work",
@@ -130,6 +141,24 @@ Deno.test("validates host snapshots", () => {
     },
   }
   assert(parseHostMessage(valid)?.type === "snapshot", "valid snapshot rejected")
+  const projected = {
+    ...valid,
+    snapshot: {
+      ...valid.snapshot,
+      projection: {
+        truncated: true,
+        limitBytes: 24 * 1024 * 1024,
+        encodedBytes: 1024,
+        omitted: { contextReceipts: 2, runGroups: 1, worktrees: 4, walkthroughStops: 8 },
+        message: "Some older records are hidden; stored records were not deleted.",
+      },
+    },
+  }
+  assert(parseHostMessage(projected)?.type === "snapshot", "bounded snapshot projection metadata was rejected")
+  assert(parseHostMessage({ ...projected, snapshot: { ...projected.snapshot, projection: { ...projected.snapshot.projection, encodedBytes: projected.snapshot.projection.limitBytes + 1 } } }) === undefined, "snapshot projection above its declared byte limit was accepted")
+  assert(parseHostMessage({ ...projected, snapshot: { ...projected.snapshot, projection: { ...projected.snapshot.projection, omitted: { contextReceipts: 0 } } } }) === undefined, "empty snapshot omission count was accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, session: { ...valid.snapshot.session, history: { totalMessages: 6_000, visibleMessages: 0, hasOlder: true, limitedBy: "messages" } } } })?.type === "snapshot", "bounded transcript metadata was rejected")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, session: { ...valid.snapshot.session, history: { totalMessages: 6_000, visibleMessages: 1, hasOlder: true } } } }) === undefined, "history metadata disagreed with the projected transcript")
   const goalMarker: unknown = structuredClone(valid)
   const markerSession = (goalMarker as { snapshot: { session: { messages: unknown[]; messageRevisions: Record<string, number> } } }).snapshot.session
   markerSession.messages = [{
@@ -161,6 +190,19 @@ Deno.test("validates host snapshots", () => {
       afterMessageID: undefined,
     }],
   })?.type === "messagePatches", "valid message patch rejected")
+  const historyPage = {
+    type: "historyPage",
+    page: {
+      sessionID: "s",
+      messages: [{ info: { id: "older", sessionID: "s", role: "user" }, parts: [{ id: "older-part", sessionID: "s", messageID: "older", type: "text", text: "Earlier" }] }],
+      messageRevisions: { older: 1 },
+      hasOlder: true,
+      totalMessages: 6_000,
+      sourceMayBeTruncated: false,
+    },
+  }
+  assert(parseHostMessage(historyPage)?.type === "historyPage", "valid older-history page rejected")
+  assert(parseHostMessage({ ...historyPage, page: { ...historyPage.page, sessionID: "other" } }) === undefined, "cross-session older-history page accepted")
   assert(parseHostMessage({ type: "insertText", sessionID: "s", text: "@<src/main.ts#1-3>" })?.type === "insertText", "composer insertion rejected")
   assert(parseHostMessage({ type: "fileSuggestions", sessionID: "s", requestID: 1, files: ["src/main.ts"] })?.type === "fileSuggestions", "file suggestions rejected")
   assert(parseHostMessage({ type: "editorContextChanged", context: { name: "Untitled-1", detail: "Unsaved changes", dirty: true, attached: false } })?.type === "editorContextChanged", "editor context update rejected")
@@ -181,6 +223,7 @@ Deno.test("validates host snapshots", () => {
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, session: { ...valid.snapshot.session, permissions: [{ id: "p", sessionID: "s", title: "Read", protocol: "current", metadata: { value: "x".repeat(100_001) } }] } } }) === undefined, "oversized permission metadata accepted")
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, session: { ...valid.snapshot.session, messages: [{ info: { id: "m", sessionID: "s", role: "assistant" }, parts: [{ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "read", state: { input: { path: "x".repeat(100_001) } } }] }] } } }) === undefined, "oversized tool input accepted")
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, runtime: { lsp: Array.from({ length: 501 }, (_, index) => ({ id: String(index) })), formatters: [], mcp: [], updatedAt: 1 } } }) === undefined, "oversized runtime status accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, walkthroughs: [{ ...valid.snapshot.walkthroughs[0], stops: [{ ...valid.snapshot.walkthroughs[0].stops[0], anchors: [] }] }] } }) === undefined, "walkthrough without anchors accepted")
   assert(parseHostMessage({
     ...valid,
     snapshot: {

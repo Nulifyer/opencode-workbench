@@ -9,7 +9,8 @@
     "url": "https://github.com/nulifyer/opencode-workbench.git"
   },
   "compatibility": {
-    "minimumOpenCode": "1.18.11"
+    "minimumOpenCode": "1.18.11",
+    "maximumOpenCodeExclusive": "1.19.0"
   },
   "workspaces": [
     "packages/*"

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-08T20:30:13.061Z",
+  "providerRequestMode": "disabled",
+  "opencodeVersion": "1.18.15",
+  "verifier": {
+    "executionPath": "separate-opencode-session",
+    "agentName": "workbench-verifier",
+    "agentMode": "primary",
+    "wildcardPermissionDenied": true,
+    "requestToolsDisabled": true,
+    "transcriptVisible": false,
+    "noAssistantMessageWithoutProvider": true,
+    "selectedModelPersisted": true,
+    "structuredOutputFormatAccepted": true,
+    "jsonSchemaAccepted": true,
+    "structuredOutputLegacyTranscriptCompatible": false,
+    "retryCountAcceptedOnPrompt": true,
+    "retryCountTranscriptCompatible": false,
+    "idleCancellationAccepted": true,
+    "providerSdkAdded": false
+  },
+  "classifications": [
+    {
+      "concern": "model selection",
+      "status": "proven-provider-free",
+      "evidence": "The admitted verifier user message persists the exact provider/model selected by OpenCode."
+    },
+    {
+      "concern": "schema enforcement",
+      "status": "requires-opt-in-model-probe",
+      "evidence": "OpenCode persists json_schema and the bounded verdict schema; output validation requires a provider response."
+    },
+    {
+      "concern": "timeout and cancellation",
+      "status": "workbench-owned",
+      "evidence": "Requests use bounded AbortSignals and OpenCode accepts session interruption; the verifier service must own its wall-clock deadline."
+    },
+    {
+      "concern": "transcript visibility",
+      "status": "requires-opt-in-model-probe",
+      "evidence": "The separate session is inspectable, but 1.18.15 rejects the structured-output legacy transcript and the provider-free v2 projection is empty."
+    },
+    {
+      "concern": "filesystem and tool isolation",
+      "status": "proven-provider-free",
+      "evidence": "The custom agent resolves wildcard permission deny and the admitted request persists wildcard tools false."
+    },
+    {
+      "concern": "token accounting",
+      "status": "requires-opt-in-model-probe",
+      "evidence": "No provider response means no token usage; production reads authoritative usage from the verifier assistant message."
+    },
+    {
+      "concern": "retry behavior",
+      "status": "workbench-owned",
+      "evidence": "OpenCode accepts retryCount but 1.18.15 then rejects its own legacy transcript shape; production owns a bounded retry budget."
+    },
+    {
+      "concern": "provider-free test seam",
+      "status": "proven-provider-free",
+      "evidence": "noReply admits and persists the complete verifier request without creating an assistant message or contacting a model."
+    }
+  ]
+}
