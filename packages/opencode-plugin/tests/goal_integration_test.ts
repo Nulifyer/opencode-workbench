@@ -187,35 +187,31 @@ Deno.test("goal continuation follows OpenCode status ordering and pauses on back
   const secondPromptReturn = deferred()
   try {
     const prompts: Array<Record<string, unknown>> = []
-    let admitted = deferred()
+    const sessionID = "ses_status_order"
     let statusError: unknown
     const client = { session: {
       status: async () => statusError === undefined ? { data: {}, error: undefined } : { data: undefined, error: statusError },
+      messages: async () => ({ data: prompts.map((request) => transcriptMessage(request, sessionID)), error: undefined }),
       promptAsync: async (request: Record<string, unknown>) => {
         prompts.push(request)
-        admitted.resolve()
         if (prompts.length === 2) await secondPromptReturn.promise
         return { data: undefined, error: undefined }
       },
     } }
     hooks = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
-    const sessionID = "ses_status_order"
     await hooks.tool.create_goal.execute({ objective: "Follow the real OpenCode event contract" }, context(sessionID))
 
-    const first = admitted.promise
     await hooks.event({ event: { type: "session.status", properties: { sessionID, status: { type: "idle" } } } })
     await hooks.event({ event: { type: "session.idle", properties: { sessionID } } })
-    await first
+    await eventually(async () => prompts.length === 1)
     await hooks.tool.get_goal.execute({}, context(sessionID))
     if (prompts.length !== 1) throw new Error("Canonical and deprecated idle events admitted duplicate prompts")
 
     await hooks.event({ event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } } })
     await hooks.event({ event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } } })
-    admitted = deferred()
-    const second = admitted.promise
     await hooks.event({ event: { type: "session.status", properties: { sessionID, status: { type: "idle" } } } })
     await hooks.event({ event: { type: "session.idle", properties: { sessionID } } })
-    await second
+    await eventually(async () => prompts.length === 2)
     await hooks.tool.get_goal.execute({}, context(sessionID))
     if (Number(prompts.length) !== 2) throw new Error("A busy-to-idle transition did not admit exactly one continuation")
 
