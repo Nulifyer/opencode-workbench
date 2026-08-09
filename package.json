@@ -18,7 +18,7 @@
   "dependencies": {
     "@opencode-ai/plugin": "1.18.11",
     "jsonc-parser": "3.3.1",
-    "markdown-it": "14.1.0"
+    "markdown-it": "14.2.0"
   },
   "devDependencies": {
     "@types/markdown-it": "13.0.9",
