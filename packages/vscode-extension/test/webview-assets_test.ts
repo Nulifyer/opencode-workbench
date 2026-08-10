@@ -422,10 +422,11 @@ Deno.test("chat chrome prioritizes useful actions, health, sessions, and bounded
   const headerStart = chatView.indexOf('<div class="header-actions">')
   const headerEnd = chatView.indexOf("</div>", headerStart)
   const header = chatView.slice(headerStart, headerEnd)
-  const ordered = ["attention-toggle", "create-header", "inspector-toggle", "rail-toggle", "surface-toggle", "help-toggle", "session-menu-toggle"]
+  const ordered = ["create-header", "attention-toggle", "help-toggle", "inspector-toggle", "surface-toggle", "rail-toggle", "session-menu-toggle"]
   for (let index = 1; index < ordered.length; index += 1) {
     if (header.indexOf(ordered[index - 1]!) >= header.indexOf(ordered[index]!)) throw new Error(`Header action order is not intentional at ${ordered[index]}`)
   }
+  if (!header.includes('${ICONS.workbench}')) throw new Error("Task Workbench should use its dedicated pane icon")
   if (chatView.includes(">Open walkthrough<") || chatView.includes(">Check OpenCode health<")) throw new Error("Empty state still duplicates walkthrough or health navigation")
   for (const marker of ["healthWorkspaceDetail()", "workspace-health-dot", "OpenCode health", "session-change-summary", "data-session-changes-review"]) {
     if (!(webview + css + chatView).includes(marker)) throw new Error(`Chat chrome omits ${marker}`)
