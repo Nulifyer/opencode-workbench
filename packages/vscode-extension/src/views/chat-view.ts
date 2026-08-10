@@ -548,7 +548,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <div class="notice-copy"><strong id="notice-title"></strong><p id="notice-message"></p></div>
           <div class="notice-actions"><button id="notice-retry" type="button">Retry</button><button id="notice-logs" type="button">Open Logs</button><button id="notice-copy" type="button">Copy details</button><button id="notice-dismiss" type="button" aria-label="Dismiss message">×</button></div>
         </section>
-        <nav id="turn-navigation" class="turn-navigation" aria-label="Session markers" hidden></nav>
+        <nav id="turn-navigation" class="turn-navigation" aria-label="Conversation turns" hidden></nav>
+        <div id="turn-navigation-preview" class="turn-navigation-preview" role="tooltip" hidden></div>
         <section id="history-boundary" class="history-boundary" role="status" aria-live="polite" hidden>
           <span id="history-boundary-text"></span>
           <button id="history-load-older" type="button">Load older messages</button>

@@ -10,7 +10,7 @@ export interface TurnNavigationMarker {
   current?: boolean
 }
 
-export const MAX_TURN_NAVIGATION_MARKERS = 20
+export const MAX_TURN_NAVIGATION_MARKERS = 80
 
 /** Keeps long transcripts navigable without allowing the marker rail to grow past the viewport. */
 export function boundedTurnNavigationMarkers(markers: readonly TurnNavigationMarker[], limit = MAX_TURN_NAVIGATION_MARKERS): TurnNavigationMarker[] {

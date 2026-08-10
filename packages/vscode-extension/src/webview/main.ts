@@ -46,6 +46,7 @@ const transport = new WorkbenchProtocolClient<WebviewToHostMessage, NonNullable<
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const messages = element<HTMLElement>("messages")
 const turnNavigation = element<HTMLElement>("turn-navigation")
+const turnNavigationPreview = element<HTMLElement>("turn-navigation-preview")
 const jumpLatest = element<HTMLButtonElement>("jump-latest")
 const jumpLatestCount = element<HTMLElement>("jump-latest-count")
 const historyBoundary = element<HTMLElement>("history-boundary")
@@ -798,15 +799,72 @@ function renderTranscript(session: NonNullable<ChatSnapshot["session"]>, active:
   conversationView.render(session, active, forcedPrependAnchor)
 }
 
+let turnNavigationObserver: IntersectionObserver | undefined
+const visibleTurnTargets = new Set<string>()
+
+function markerTargetElement(value: string | undefined): HTMLElement | undefined {
+  const [kind, ...idParts] = value?.split(":") ?? []
+  const id = idParts.join(":")
+  const selector = kind === "message" ? `[data-message-id="${CSS.escape(id)}"]` : kind === "permission" ? `[data-request-id="${CSS.escape(id)}"]` : kind === "question" ? `[data-question-request="${CSS.escape(id)}"]` : ""
+  return selector ? document.querySelector<HTMLElement>(selector) ?? undefined : undefined
+}
+
+function syncVisibleTurnMarkers(): void {
+  const buttons = [...turnNavigation.querySelectorAll<HTMLButtonElement>("[data-marker-target]")]
+  const visibleButtons = buttons.filter((button) => visibleTurnTargets.has(button.dataset.markerTarget ?? ""))
+  if (!visibleButtons.length) return
+  for (const button of buttons) {
+    if (visibleTurnTargets.has(button.dataset.markerTarget ?? "")) button.setAttribute("aria-current", "true")
+    else button.removeAttribute("aria-current")
+  }
+  const first = visibleButtons[0]!
+  const top = first.offsetTop
+  const bottom = top + first.offsetHeight
+  if (top < turnNavigation.scrollTop) turnNavigation.scrollTop = top
+  else if (bottom > turnNavigation.scrollTop + turnNavigation.clientHeight) turnNavigation.scrollTop = bottom - turnNavigation.clientHeight
+}
+
+function observeTurnMarkers(): void {
+  turnNavigationObserver?.disconnect()
+  turnNavigationObserver = undefined
+  visibleTurnTargets.clear()
+  if (typeof IntersectionObserver === "undefined" || turnNavigation.hidden) return
+  const targets = new Map<Element, string>()
+  for (const button of turnNavigation.querySelectorAll<HTMLButtonElement>("[data-marker-target]")) {
+    const value = button.dataset.markerTarget
+    const target = markerTargetElement(value)
+    if (value && target && target.closest("#messages")) targets.set(target, value)
+  }
+  turnNavigationObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const value = targets.get(entry.target)
+      if (!value) continue
+      if (entry.isIntersecting) visibleTurnTargets.add(value)
+      else visibleTurnTargets.delete(value)
+    }
+    syncVisibleTurnMarkers()
+  }, { root: messages, rootMargin: "-16px 0px -16px 0px" })
+  for (const target of targets.keys()) turnNavigationObserver.observe(target)
+}
+
 function renderTurnNavigation(session?: NonNullable<ChatSnapshot["session"]>): void {
+  turnNavigationObserver?.disconnect()
+  turnNavigationObserver = undefined
+  visibleTurnTargets.clear()
   if (!session) {
     turnNavigation.hidden = true
     turnNavigation.replaceChildren()
+    turnNavigationPreview.hidden = true
     return
   }
   const markers = turnNavigationMarkers(session)
-  turnNavigation.hidden = markers.length < 2
-  turnNavigation.innerHTML = markers.map((marker, index) => `<button type="button" data-marker-target="${escapeHtml(marker.target)}" title="${escapeHtml(marker.label)}" aria-label="${escapeHtml(marker.label)}"${marker.current ? ` aria-current="true"` : ""} tabindex="${index === markers.length - 1 ? 0 : -1}"></button>`).join("")
+  const promptCount = markers.filter((marker) => marker.id.startsWith("message:")).length
+  turnNavigation.hidden = promptCount < 4
+  turnNavigationPreview.hidden = true
+  const currentIndex = markers.findIndex((marker) => marker.current)
+  const rovingIndex = currentIndex >= 0 ? currentIndex : Math.max(0, markers.length - 1)
+  turnNavigation.innerHTML = markers.map((marker, index) => `<button type="button" data-marker-target="${escapeHtml(marker.target)}" data-marker-label="${escapeHtml(marker.label)}" aria-label="${escapeHtml(marker.label)}"${marker.current ? ` aria-current="true"` : ""} tabindex="${index === rovingIndex ? 0 : -1}"><span aria-hidden="true"></span></button>`).join("")
+  observeTurnMarkers()
 }
 
 function renderSessionChangeSummary(session?: NonNullable<ChatSnapshot["session"]>, active = false): void {
@@ -2839,13 +2897,40 @@ inspectorPanel.addEventListener("submit", (event) => {
 })
 turnNavigation.addEventListener("click", (event) => {
   const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-marker-target]") : undefined
-  const [kind, ...idParts] = button?.dataset.markerTarget?.split(":") ?? []
-  const id = idParts.join(":")
-  const selector = kind === "message" ? `[data-message-id="${CSS.escape(id)}"]` : kind === "permission" ? `[data-request-id="${CSS.escape(id)}"]` : kind === "question" ? `[data-question-request="${CSS.escape(id)}"]` : ""
-  const target = selector ? document.querySelector<HTMLElement>(selector) : undefined
+  const target = markerTargetElement(button?.dataset.markerTarget)
   if (!target) return
-  target.scrollIntoView({ block: "center" })
+  const reduceMotion = document.body.classList.contains("vscode-reduce-motion") || window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" })
   target.querySelector<HTMLElement>("button, input, summary")?.focus()
+})
+function showTurnNavigationPreview(button: HTMLButtonElement): void {
+  turnNavigationPreview.textContent = button.dataset.markerLabel ?? button.getAttribute("aria-label") ?? "Conversation turn"
+  const columnRect = turnNavigation.parentElement?.getBoundingClientRect()
+  const buttonRect = button.getBoundingClientRect()
+  const columnHeight = columnRect?.height ?? 0
+  turnNavigationPreview.style.top = `${Math.max(20, Math.min(columnHeight - 20, buttonRect.top - (columnRect?.top ?? 0) + buttonRect.height / 2))}px`
+  turnNavigationPreview.hidden = false
+  button.setAttribute("aria-describedby", "turn-navigation-preview")
+}
+function hideTurnNavigationPreview(button?: HTMLButtonElement): void {
+  button?.removeAttribute("aria-describedby")
+  turnNavigationPreview.hidden = true
+}
+turnNavigation.addEventListener("pointerover", (event) => {
+  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-marker-target]") : undefined
+  if (button) showTurnNavigationPreview(button)
+})
+turnNavigation.addEventListener("pointerout", (event) => {
+  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-marker-target]") : undefined
+  if (button && !(event.relatedTarget instanceof Node && button.contains(event.relatedTarget))) hideTurnNavigationPreview(button)
+})
+turnNavigation.addEventListener("focusin", (event) => {
+  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-marker-target]") : undefined
+  if (button) showTurnNavigationPreview(button)
+})
+turnNavigation.addEventListener("focusout", (event) => {
+  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-marker-target]") : undefined
+  if (button) hideTurnNavigationPreview(button)
 })
 turnNavigation.addEventListener("keydown", (event) => {
   if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return
@@ -3617,6 +3702,7 @@ transport.listen((message) => {
     if (!session) return
     let active = session.status.type === "busy" || session.status.type === "retry"
     const wasNearBottom = transcriptNearBottom()
+    const previousTurnNavigation = JSON.stringify(turnNavigationMarkers(session))
     let changed = false
     let addedMessages = 0
     let historyDelta = 0
@@ -3668,6 +3754,7 @@ transport.listen((message) => {
       }
       if (!wasNearBottom) conversationView.addUnseen(addedMessages)
       renderTranscript(session, active)
+      if (JSON.stringify(turnNavigationMarkers(session)) !== previousTurnNavigation) renderTurnNavigation(session)
       renderHistoryBoundary(session)
       updatePrimaryAction()
       syncAnimationTimers(active)

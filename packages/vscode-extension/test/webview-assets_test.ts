@@ -225,9 +225,14 @@ Deno.test("failed run and worktree launches become stable attention items", () =
   ]) if (!chatView.includes(marker)) throw new Error(`Run attention derivation is missing: ${marker}`)
 })
 
-Deno.test("turn markers provide a usable pointer target", () => {
-  if (!/\.turn-navigation button\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;/.test(css) ||
-    !css.includes(".turn-navigation button::before")) throw new Error("Session markers still use an 8px hit target")
+Deno.test("turn navigation follows the compact Codex prompt-rail interaction", () => {
+  for (const marker of ["max-height: min(70%, 640px)", "overflow-y: auto", "width: 36px", "height: 10px", ".turn-navigation-preview", 'promptCount < 4']) {
+    if (!(css + webview).includes(marker)) throw new Error(`Conversation turn rail omits ${marker}`)
+  }
+  for (const marker of ["IntersectionObserver", "visibleTurnTargets", "data-marker-label", 'behavior: reduceMotion ? "auto" : "smooth"']) {
+    if (!webview.includes(marker)) throw new Error(`Conversation turn rail behavior omits ${marker}`)
+  }
+  if (!turnNavigationView.includes("MAX_TURN_NAVIGATION_MARKERS = 80")) throw new Error("Conversation turn rail does not retain a useful bounded history")
   if (!turnNavigationView.includes("Forked or delegated session boundary") || !turnNavigationView.includes("Goal checkpoint recorded") ||
     !turnNavigationView.includes('part.tool === "update_goal_checkpoint"')) throw new Error("Fork or goal-checkpoint navigation markers are missing")
 })
@@ -431,8 +436,8 @@ Deno.test("chat chrome prioritizes useful actions, health, sessions, and bounded
   for (const marker of ["healthWorkspaceDetail()", "workspace-health-dot", "OpenCode health", "session-change-summary", "data-session-changes-review"]) {
     if (!(webview + css + chatView).includes(marker)) throw new Error(`Chat chrome omits ${marker}`)
   }
-  if (!turnNavigationView.includes("MAX_TURN_NAVIGATION_MARKERS = 20") || !css.includes("justify-content: space-evenly")) {
-    throw new Error("Long transcript navigation is not bounded to the viewport")
+  if (!turnNavigationView.includes("MAX_TURN_NAVIGATION_MARKERS = 80") || !css.includes("max-height: min(70%, 640px)")) {
+    throw new Error("Long transcript navigation is not bounded in its own compact rail")
   }
 })
 
