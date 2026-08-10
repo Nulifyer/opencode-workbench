@@ -55,7 +55,7 @@ AHP/native columns are discovery status only; there is no production native mode
 | Editor bridge | Supported, exact managed affinity, bounded allowlist | Plugin loads; ACP bridge affinity is unknown | Unknown | Native client tools may replace portions | Details/context receipt | Must avoid duplicate context and ambiguous roots | bridge/security tests |
 | Sidebar and editor surfaces | Supported and synchronized | Not a UI transport | Unknown | Native chat/Agents available only in future | Stable mode remains | Do not regress either surface | protocol/communication tests |
 | Persistence/privacy | Supported boundaries documented in invariants | Recorder isolates HOME/XDG, removes temp state, commits only normalized fixture | Unknown | Unknown | Privacy diagnostics | Prompt seam must stay opt-in | security tests; fixture sanitization test |
-| Session settlement | Missing canonical barrier; goal/plugin logic handles narrower cases | Unknown after visible prompt response | Unknown | Unknown | Required status | Blocking lifecycle gap | goal continuation and stale-generation tests |
+| Session settlement | Ordinary prompts wait for explicit idle/error or a native status probe after step/compaction completion; shared lifecycle model covers blockers | Unknown after visible prompt response | Unknown | Unknown | Supplemental status detail | One universal cross-feature barrier is not yet wired | lifecycle, goal-continuation, queued-follow-up, and stale-generation tests |
 
 ## Discovery conclusion
 

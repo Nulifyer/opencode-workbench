@@ -107,7 +107,7 @@ const INITIALIZE_PARAMS = {
   clientInfo: {
     name: "opencode-workbench-contract-recorder",
     title: "OpenCode Workbench ACP Contract Recorder",
-    version: "0.4.6",
+    version: "0.4.7",
   },
 }
 

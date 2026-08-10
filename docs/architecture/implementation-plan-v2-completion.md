@@ -1,6 +1,6 @@
 # Implementation plan v2 completion report
 
-- Date: 2026-08-09
+- Date: 2026-08-10
 - Plan: `planning/OPENCODE_WORKBENCH_IMPLEMENTATION_PLAN_V2.md`
 - Stable authority: OpenCode HTTP/SSE plus the bundled companion plugin
 - Native decision: `defer-native` under ADR 0003
@@ -76,24 +76,25 @@ Code API, or additional harness adapter was introduced.
 
 ## Verification results
 
-All commands completed successfully on 2026-08-09 against the final integrated
+All commands completed successfully on 2026-08-10 against the final integrated
 workspace:
 
 | Command | Exact result |
 |---|---|
 | `deno task release` | Passed the complete verify, synthetic-integration, Harness UX, repeated-stress, packaging, release-metadata, and checksum rehearsal. |
-| `deno task verify` | Static/generated/type checks passed; synthetic suite **425 passed, 0 failed**; VSIX packaged. |
-| `deno task test:harness:ux` | **272 passed, 0 failed** across the provider-free scenarios, protocol/recovery paths, GitHub-context contracts, and accessibility interactions. |
-| `deno task test:integration:synthetic` | **16 passed, 0 failed**. |
-| `deno task test:stress` | **12 passed, 0 failed**, including the 20,000-event pipeline and aggregate UTF-8 snapshot bound. |
-| `deno task test:stress:repeat` | **12 test definitions × 5 repetitions (60 executions), 0 failed**. |
+| `deno task verify` | Static/generated/type checks passed; synthetic suite **543 passed, 0 failed**; production VSIX packaged. |
+| `deno task test:harness:ux` | **394 passed, 0 failed** across the provider-free scenarios, protocol/recovery paths, GitHub-context contracts, and accessibility interactions. |
+| `deno task test:integration:synthetic` | **17 passed, 0 failed**. |
+| `deno task test:stress` | **15 passed, 0 failed**, including the 20,000-event pipeline and aggregate UTF-8 snapshot bound. |
+| `deno task test:stress:repeat` | **15 test definitions × 5 repetitions (75 executions), 0 failed**. |
 | `OPENCODE_INTEGRATION_EXECUTABLE=/usr/bin/opencode OPENCODE_INTEGRATION_VERSION=1.18.15 deno task test:integration:real` | **1 passed, 0 failed** without a model request. |
 | `OPENCODE_ACP_EXECUTABLE=/usr/bin/opencode OPENCODE_ACP_VERSION=1.18.15 deno task test:integration:acp` | **4 passed, 0 failed** against installed OpenCode 1.18.15. |
 | `OPENCODE_VERIFIER_EXECUTABLE=/usr/bin/opencode OPENCODE_VERIFIER_VERSION=1.18.15 deno task test:integration:verifier` | **3 passed, 0 failed**. |
 | `VSCODE_PRODUCT_JSON=/usr/share/code/resources/app/product.json VSCODE_EXECUTABLE=/usr/bin/code deno task test:integration:agent-host` | **3 passed, 0 failed** against installed VS Code 1.131.0 and reconfirmed the native registration stop condition. |
 | `git diff --check` | Passed. |
+| Project-owner live testing | Completed before `v0.4.7` release preparation. |
 
-The distributable is `dist/opencode-workbench-vscode-0.4.6.vsix`.
+The distributable is `dist/opencode-workbench-vscode-0.4.7.vsix`.
 
 ## Verified limitations
 

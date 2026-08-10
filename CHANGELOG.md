@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.7 - 2026-08-10
 
 ### Added
 
@@ -15,6 +15,11 @@
 - Added bounded GitHub issue/PR handoff through VS Code sign-in and explicit
   diagnostic, debug, terminal/task excerpt, screenshot, and approved-URL
   context capture.
+- Added OpenCode-native session lineage, child-session and PTY jobs, pinned and
+  archived session organization, objective run comparison, recovery previews,
+  and durable metadata-only task artifacts.
+- Added syntax-highlighted edited-file previews, attachment previews, contextual
+  session-work guidance, and bounded long-conversation navigation.
 
 ### Changed
 
@@ -26,6 +31,15 @@
   status, reduced motion, forced colors, and both sidebar and editor surfaces.
 - Made isolated run status, pending input, failures, receipts, and evidence
   update across worktrees without requiring an unrelated chat refresh.
+- Reworked the editor experience into a theme-native two-column session-work
+  and Sessions layout. Session work is contextual, starts closed, remembers its
+  last visibility, and restores across extension-host reloads.
+- Consolidated Plan, Goal, Context, changes/review/evidence, jobs/runs/lineage,
+  and health information into clearer contextual destinations with concise
+  explanations instead of a permanently open secondary sidebar.
+- Replaced the overflowing dot rail with bounded turn navigation and explicit
+  older-history loading, and reordered the chat actions around the primary
+  new-session, attention, help, workbench, editor, and Sessions workflows.
 
 ### Fixed
 
@@ -41,6 +55,25 @@
   inputs change.
 - Surfaced Command Palette workflow failures as bounded, redacted VS Code error
   messages instead of requiring users to discover them in Output.
+- Recovered from malformed optional snapshot projections without discarding the
+  authoritative conversation, and distinguished Workbench synchronization
+  failures from OpenCode request failures.
+- Kept one stable prompt ID through composer, queue, admission, transcript, and
+  retry. V2 delivery now requires an exact OpenCode receipt, while ambiguous
+  legacy delivery is reconciled without duplicating the prompt.
+- Stopped treating provider-step or compaction completion as session settlement;
+  queued follow-ups now wait for OpenCode's authoritative runner status.
+- Hid OpenCode's native post-compaction continuation from the authored chat and
+  turn navigator instead of presenting it as a failed unsaved message.
+- Refreshed generated OpenCode titles after settled turns, restored bottom-scroll
+  intent when returning to a session, stabilized resizable Sessions width, and
+  cleared selection when deleting the active session.
+- Corrected Needs Attention routing and clearing, anchored menus and health
+  popovers in the browser top layer, added copy confirmation, and aligned action
+  and goal controls with VS Code theme tokens.
+- Preserved editor/selection ownership across browser-context capture and review
+  generation, and returned only the canonical file URI that passed containment
+  checks when reopening context receipt sources.
 
 ### Security
 

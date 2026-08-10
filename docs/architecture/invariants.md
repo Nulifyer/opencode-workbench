@@ -1,7 +1,7 @@
 # OpenCode Workbench invariants
 
 This document defines the non-negotiable authority, persistence, and privacy
-boundaries of Workbench `v0.4.6`. It describes current behavior and constrains
+boundaries of Workbench `v0.4.7`. It describes current behavior and constrains
 later UI evolution.
 
 ## Ownership
@@ -224,7 +224,9 @@ Evidence: `protocol_test.ts`, `protocol_v2_test.ts`, `event_stream_test.ts`,
 
 - Protocol cancellation is cooperative: a handler that does not observe its
   abort signal can finish upstream work after its surface is disposed.
-- A canonical session settlement barrier remains incomplete.
+- Ordinary HTTP/SSE prompt settlement now follows OpenCode's authoritative
+  status projection. The shared lifecycle reducer is not yet wired as one
+  universal barrier across every supplemental goal, run, and reload workflow.
 - `SessionController` and `webview/main.ts` remain concentration points.
 - `OpenCodeConnection` has one directory; run-group and worktree identities do
   not exist in `WorkbenchState`.

@@ -1,7 +1,6 @@
 # Current architecture and contracts
 
-This is the implementation map for OpenCode Workbench `v0.4.6` at
-`c6c415221a3c1d2ba893efae9a14136231cd37ea`.
+This is the implementation map for the OpenCode Workbench `v0.4.7` release.
 
 ## Compatibility
 
@@ -10,7 +9,7 @@ This is the implementation map for OpenCode Workbench `v0.4.6` at
 | VS Code | Extension engine `^1.106.0`; stable code uses no proposed API |
 | OpenCode managed mode | `>=1.18.11` and `<1.19.0` |
 | OpenCode used for ACP fixture | `1.18.15`, ACP SDK `0.21.0`, protocol version `1` |
-| Extension | `0.4.6` |
+| Extension | `0.4.7` |
 | Runtime | Extension bundle targets Node 20; webview targets ES2022 |
 
 Managed compatibility is enforced by `managed-server.ts` and
