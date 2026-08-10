@@ -58,19 +58,25 @@ const ICONS = {
   back: icon("m9.8 3.2 1 1L7 8l3.8 3.8-1 1L5 8l4.8-4.8Z"),
 }
 
-const INSPECTOR_TABS: ReadonlyArray<{ id: WorkbenchInspectorTab; label: string }> = [
-  { id: "activity", label: "Activity" },
-  { id: "plan", label: "Plan" },
-  { id: "changes", label: "Changes" },
-  { id: "review", label: "Review" },
-  { id: "evidence", label: "Evidence" },
-  { id: "goal", label: "Goal" },
-  { id: "jobs", label: "Jobs" },
-  { id: "lineage", label: "Lineage" },
-  { id: "runs", label: "Runs" },
-  { id: "context", label: "Context" },
-  { id: "walkthrough", label: "Walkthrough" },
-  { id: "health", label: "Health" },
+const INSPECTOR_TAB_GROUPS: ReadonlyArray<{ label: string; tabs: ReadonlyArray<{ id: WorkbenchInspectorTab; label: string }> }> = [
+  { label: "Task", tabs: [
+    { id: "activity", label: "Activity" },
+    { id: "plan", label: "Plan" },
+    { id: "goal", label: "Goal" },
+    { id: "context", label: "Context" },
+  ] },
+  { label: "Artifacts", tabs: [
+    { id: "changes", label: "Changes" },
+    { id: "review", label: "Review" },
+    { id: "evidence", label: "Evidence" },
+    { id: "walkthrough", label: "Walkthrough" },
+  ] },
+  { label: "Execution", tabs: [
+    { id: "jobs", label: "Jobs" },
+    { id: "runs", label: "Runs" },
+    { id: "lineage", label: "Lineage" },
+    { id: "health", label: "Health" },
+  ] },
 ]
 
 interface StoredContextAttachment {
@@ -256,6 +262,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (this.panel) {
       this.panel.reveal()
       if (tab) void this.postTo(this.panel.webview, { type: "navigateWorkbench", tab, focus: true })
+      this.closeVisibleSidebar()
       return
     }
     this.pendingEditorTab = tab
@@ -267,6 +274,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")] },
     )
     this.attachEditorPanel(panel)
+    this.closeVisibleSidebar()
+  }
+
+  private closeVisibleSidebar(): void {
+    if (this.view?.visible) void vscode.commands.executeCommand("workbench.action.closeSidebar")
   }
 
   captureEditorSelection(): BrowserEditorSelection | undefined {
@@ -614,12 +626,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         </footer>
       </section>
 
-      <div id="artifact-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize task artifacts" aria-valuemin="300" aria-valuemax="900" aria-valuenow="420" tabindex="0"></div>
+      <div id="artifact-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize task artifacts" aria-valuemin="420" aria-valuemax="900" aria-valuenow="500" tabindex="0"></div>
 
       <aside id="inspector" class="inspector" aria-label="OpenCode inspector" hidden>
         <div class="inspector-header"><strong>Task Workbench</strong><button id="inspector-close" class="icon-action" type="button" aria-label="Close task workbench">${ICONS.close}</button></div>
         <div id="inspector-tabs" class="inspector-tabs" role="tablist" aria-label="Inspector sections">
-          ${INSPECTOR_TABS.map((tab, index) => `<button id="inspector-tab-${tab.id}" type="button" role="tab" data-inspector-tab="${tab.id}" aria-controls="inspector-panel" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}">${tab.label}</button>`).join("")}
+          ${INSPECTOR_TAB_GROUPS.map((group, groupIndex) => `<div class="inspector-tab-group" role="presentation"><span class="inspector-tab-group-label" aria-hidden="true">${group.label}</span>${group.tabs.map((tab, tabIndex) => `<button id="inspector-tab-${tab.id}" type="button" role="tab" data-inspector-tab="${tab.id}" aria-controls="inspector-panel" aria-selected="${groupIndex === 0 && tabIndex === 0}" tabindex="${groupIndex === 0 && tabIndex === 0 ? 0 : -1}">${tab.label}</button>`).join("")}</div>`).join("")}
         </div>
         <section id="inspector-panel" class="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-activity" tabindex="0"></section>
       </aside>

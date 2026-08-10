@@ -2042,7 +2042,7 @@ function openHistory(): void {
 }
 
 function narrowWorkbench(): boolean {
-  return document.body.dataset.mode === "editor" && window.innerWidth <= 900
+  return document.body.dataset.mode === "editor" && window.innerWidth <= 1120
 }
 
 function persistRail(open: boolean): void {
@@ -2618,10 +2618,11 @@ inspectorTabs.addEventListener("click", (event) => {
   selectInspectorTab(tab.dataset.inspectorTab, false)
 })
 inspectorTabs.addEventListener("keydown", (event) => {
-  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return
   const tabs = [...inspectorTabs.querySelectorAll<HTMLButtonElement>("[data-inspector-tab]")]
   const current = tabs.findIndex((tab) => tab.dataset.inspectorTab === inspectorTab)
-  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length
+  const forward = event.key === "ArrowRight" || event.key === "ArrowDown"
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (forward ? 1 : tabs.length - 1)) % tabs.length
   event.preventDefault()
   selectInspectorTab(tabs[next]!.dataset.inspectorTab!)
 })
@@ -3628,10 +3629,10 @@ if (document.body.dataset.mode === "editor") {
         key: "artifactWidth",
         separator: artifactSplitter,
         cssProperty: "--artifact-pane-width",
-        initialWidth: storedState?.layout?.artifactWidth ?? 420,
-        minimumWidth: 300,
+        initialWidth: storedState?.layout?.artifactWidth ?? 500,
+        minimumWidth: 420,
         maximumWidth: 900,
-        availableWidth: () => Math.max(300, Math.floor(window.innerWidth * 0.55)),
+        availableWidth: () => Math.max(420, Math.floor(window.innerWidth * 0.6)),
         edge: "right",
       },
       {
@@ -3651,7 +3652,7 @@ if (document.body.dataset.mode === "editor") {
     },
   })
   const restoreRail = storedState?.layout?.sessionsOpen
-  if (restoreRail === true || (restoreRail === undefined && window.innerWidth > 900)) showRail(false)
+  if (restoreRail === true || (restoreRail === undefined && window.innerWidth > 1120)) showRail(false)
   else {
     closeRail(false, false)
     if (window.innerWidth <= 650 && inspectorOpen) {

@@ -58,7 +58,7 @@ Deno.test("webview exposes the screen-reader and keyboard interaction contract",
   ]) if (!chatView.includes(marker)) throw new Error(`Missing accessibility marker: ${marker}`)
   for (const behavior of [
     'tab.tabIndex = selected ? 0 : -1',
-    'if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return',
+    'if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return',
     'announce("OpenCode response complete")',
     'focusController.trapTab',
   ]) if (!webview.includes(behavior)) throw new Error(`Missing keyboard or announcement behavior: ${behavior}`)
@@ -367,11 +367,31 @@ Deno.test("responsive and forced-color hardening covers the Task Workbench contr
   for (const marker of [".header-actions", ".goal-limit-controls", ".history-panel", ".recovery-panel"]) {
     if (!compact.includes(marker)) throw new Error(`Compact responsive layout omits ${marker}`)
   }
-  for (const marker of ["function narrowWorkbench()", "conversationColumn.inert = true", "focusController.trapTab(event, rightRail)", 'message.type === "workbenchControl"', "window.innerWidth > 900"]) {
+  for (const marker of ["function narrowWorkbench()", "conversationColumn.inert = true", "focusController.trapTab(event, rightRail)", 'message.type === "workbenchControl"', "window.innerWidth > 1120"]) {
     if (!webview.includes(marker)) throw new Error(`One-pane Workbench behavior omits ${marker}`)
   }
-  if (!css.includes('@media (max-width: 900px)') || !css.includes('body[data-mode="editor"].rail-open .right-rail')) {
+  if (!css.includes('@media (max-width: 1120px)') || !css.includes('body[data-mode="editor"].rail-open .right-rail')) {
     throw new Error("Sessions drawer is not collapsed below the editor breakpoint")
+  }
+})
+
+Deno.test("editor transition closes the originating sidebar and modernizes the Workbench shell", () => {
+  for (const marker of [
+    "this.closeVisibleSidebar()",
+    'vscode.commands.executeCommand("workbench.action.closeSidebar")',
+    'class="inspector-tab-group" role="presentation"',
+    'aria-valuemin="420" aria-valuemax="900" aria-valuenow="500"',
+  ]) if (!chatView.includes(marker)) throw new Error(`Editor surface transition or grouped navigation omits: ${marker}`)
+  for (const marker of [
+    ".inspector-filters",
+    ".activity-hero, .health-hero",
+    ".health-event-list",
+    ".inspector-card",
+    ".inspector-tab-group-label",
+    "grid-template-columns: 104px minmax(0, 1fr)",
+  ]) if (!css.includes(marker)) throw new Error(`Modern Workbench styling omits: ${marker}`)
+  for (const marker of ["health-hero", "activity-hero", "job-filters", "review-filters", "inspector-view-"]) {
+    if (!inspectorPresentation.includes(marker)) throw new Error(`Inspector presentation omits: ${marker}`)
   }
 })
 
