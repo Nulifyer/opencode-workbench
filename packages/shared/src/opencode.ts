@@ -86,6 +86,22 @@ export interface MessageBundle {
   parts: MessagePart[]
 }
 
+/**
+ * OpenCode persists an internal user turn after automatic compaction so its
+ * runner can resume without asking the user to submit another prompt. Clients
+ * should treat this as lifecycle plumbing, not as authored or missing input.
+ */
+export function isNativeCompactionContinuationMessage(message: MessageBundle): boolean {
+  if (message.info.role !== "user") return false
+  return message.parts.some((part) => {
+    if (part.type !== "text" || part.synthetic !== true || typeof part.text !== "string") return false
+    const metadata = part.metadata
+    if (typeof metadata === "object" && metadata !== null && !Array.isArray(metadata) &&
+      (metadata as Record<string, unknown>).compaction_continue === true) return true
+    return part.text.trimEnd().endsWith("Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.")
+  })
+}
+
 export interface AgentOption {
   name: string
   description?: string

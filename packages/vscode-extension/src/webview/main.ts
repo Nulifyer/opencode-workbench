@@ -1,6 +1,6 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
 import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RecoveryPreview, type RuntimeService, type TranscriptHistoryPage, type WebviewToHostMessage, type WorkbenchCapabilities, type WorkbenchCapability } from "@opencode-workbench/shared"
-import { activityVisualState, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionLoadPhase, shouldCollapsePaste, stripTerminalSequences, terminalAnsiMarkup, toolKind, workspaceMentionReference } from "./presentation.js"
+import { activityVisualState, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, isNativeCompactionContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionLoadPhase, shouldCollapsePaste, stripTerminalSequences, terminalAnsiMarkup, toolKind, workspaceMentionReference } from "./presentation.js"
 import { renderMarkdown } from "./markdown.js"
 import { WorkbenchProtocolClient } from "./transport/protocol-v2-client.js"
 import { parseWithProtocolV1Adapter } from "./transport/protocol-v1-adapter.js"
@@ -37,7 +37,7 @@ const transport = new WorkbenchProtocolClient<WebviewToHostMessage, NonNullable<
   extensionVersion: document.body.dataset.extensionVersion ?? "unknown",
   legacyReady: { type: "ready" },
   parseInbound: (value) => parseWithProtocolV1Adapter(value, parseHostMessage),
-  protocolError: (message) => ({ type: "error", message }),
+  protocolError: (message) => ({ type: "error", message: `Workbench protocol: ${message}` }),
   onReady: (ready) => {
     negotiatedCapabilities = ready.capabilities
     applyCapabilityControls()
@@ -786,6 +786,9 @@ function userHtml(message: MessageBundle): string {
   }
   if (isGoalContinuationMessage(message)) {
     return `<div class="compaction-divider goal-continuation-divider" data-message-id="${escapeHtml(message.info.id)}" role="separator"><span>Goal continued automatically</span></div>`
+  }
+  if (isNativeCompactionContinuationMessage(message)) {
+    return `<div class="native-compaction-continuation" data-message-id="${escapeHtml(message.info.id)}" aria-hidden="true" hidden></div>`
   }
   const textParts = message.parts.filter((part) => !part.synthetic && part.type === "text" && part.text)
   const text = textParts.map((part) => part.text).join("\n")
@@ -3582,7 +3585,7 @@ transport.listen((message) => {
     }
     status.textContent = message.message
     status.title = message.message
-    showNotice("error", "OpenCode request failed", message.message)
+    showNotice("error", message.message.startsWith("Workbench protocol:") ? "Workbench UI synchronization failed" : "OpenCode request failed", message.message)
     permissionSignature = ""
     questionSignature = ""
     if (snapshot.session) {

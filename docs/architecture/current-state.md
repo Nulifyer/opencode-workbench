@@ -204,7 +204,17 @@ global.disposed
 
 Queue count, text, attachment count, and aggregate character limits are defined
 in shared state. Attachment bytes are held in `promptFiles` only until admission
-or cleanup. Durable history is checked after ambiguous failures.
+or cleanup. V2 admission requires an exact OpenCode receipt. Legacy HTTP
+acceptance is confirmed by the matching persisted message or admission event;
+durable history is checked after ambiguous failures without changing the
+original message ID.
+
+Step and compaction completion events close one unit of activity but do not
+prove that the native runner is idle. The controller keeps the session busy and
+probes OpenCode's combined v2/legacy status until it is terminal before draining
+follow-ups. OpenCode's synthetic post-compaction continuation remains in native
+history but is intentionally absent from the user-visible transcript and turn
+navigator.
 
 ## Reconciliation and reconnect
 

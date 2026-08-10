@@ -551,6 +551,15 @@ Deno.test("synthetic goal continuations render as timeline markers instead of se
   }
 })
 
+Deno.test("native compaction continuations stay hidden instead of rendering failed sent messages", () => {
+  const marker = webview.indexOf("if (isNativeCompactionContinuationMessage(message))")
+  const placeholder = webview.indexOf("Message failed before its content was saved")
+  if (marker < 0 || placeholder < 0 || marker > placeholder || !webview.includes('class="native-compaction-continuation"') ||
+    !turnNavigationView.includes("!isNativeCompactionContinuationMessage(message)")) {
+    throw new Error("Native compaction continuations can still appear as failed prompts or navigation turns")
+  }
+})
+
 Deno.test("empty messages and session failures expose actionable explanations", () => {
   if (!webview.includes("Saving message…") || !webview.includes("Message failed before its content was saved") ||
     !webview.includes("Error: ${escapeHtml(statusError)}") || !css.includes("#status.error") || !css.includes(".message-failure")) {

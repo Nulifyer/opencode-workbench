@@ -1,5 +1,5 @@
 import type { ChatSnapshot } from "@opencode-workbench/shared"
-import { isGoalContinuationMessage } from "../presentation.js"
+import { isGoalContinuationMessage, isNativeCompactionContinuationMessage } from "../presentation.js"
 
 type SessionSnapshot = NonNullable<ChatSnapshot["session"]>
 
@@ -38,10 +38,10 @@ export function turnNavigationMarkers(session: SessionSnapshot): TurnNavigationM
     target: `message:${firstMessage.info.id}`,
     label: "Forked or delegated session boundary",
   })
-  const userMessages = session.messages.filter((message) => message.info.role === "user")
+  const userMessages = session.messages.filter((message) => message.info.role === "user" && !isNativeCompactionContinuationMessage(message))
   const currentUserID = userMessages.at(-1)?.info.id
   for (const message of session.messages) {
-    if (message.info.role === "user") {
+    if (message.info.role === "user" && !isNativeCompactionContinuationMessage(message)) {
       const goal = isGoalContinuationMessage(message)
       const text = message.parts.find((part) => part.type === "text")?.text?.replace(/\s+/g, " ").trim()
       markers.push({

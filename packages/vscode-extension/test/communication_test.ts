@@ -99,7 +99,16 @@ Deno.test("controller communicates with OpenCode over authenticated HTTP and SSE
         { id: promptBody.id, type: "user", time: { created: 2 }, text: prompt.text },
         { id: "msg_assistant", type: "assistant", time: { created: 3, completed: 4 }, content: [{ id: "text", type: "text", text: "Hello from OpenCode" }], finish: "stop" },
       ]
-      json({ data: {} })
+      json({
+        data: {
+          admittedSeq: 1,
+          id: promptBody.id,
+          sessionID: "ses_network",
+          delivery: promptBody.delivery,
+          timeCreated: 2,
+          prompt: promptBody.prompt,
+        },
+      })
       setTimeout(() => {
         const events = [
           { type: "session.next.step.started", properties: { sessionID: "ses_network", assistantMessageID: "msg_assistant", timestamp: 3 } },
@@ -142,7 +151,7 @@ Deno.test("controller communicates with OpenCode over authenticated HTTP and SSE
     if (sessionID !== "ses_network" || !isOpenCodeMessageID(prompt?.id) || prompt?.prompt?.text !== "Ping" || prompt.delivery !== "steer" || prompt.resume !== true) {
       throw new Error(`Controller did not submit the expected OpenCode prompt contract: ${JSON.stringify(prompt)}`)
     }
-    if (controller.chatSnapshot().session?.status.type !== "idle") throw new Error("Terminal SSE event did not return the session to idle")
+    await eventually(() => controller.chatSnapshot().session?.status.type === "idle")
     await controller.deleteSession(sessionID)
     if (controller.snapshot.sessions[sessionID]) throw new Error("Successful OpenCode deletion did not update controller state")
     if (unhandled.length || errors.length) throw new Error(`Communication produced errors: ${[...unhandled, ...errors].join(", ")}`)

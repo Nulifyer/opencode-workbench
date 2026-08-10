@@ -794,6 +794,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.reportError?.(`Omitted invalid optional Workbench snapshot field: ${field}`)
       return candidate
     }
+    // More than one optional producer can be temporarily inconsistent during
+    // startup/reconnect. Preserve the authoritative conversation instead of
+    // publishing an invalid all-or-nothing snapshot.
+    const withoutOptionalTopLevel = { ...message.snapshot }
+    const removedTopLevel: string[] = []
+    for (const field of optionalSnapshotFields) {
+      if (!Object.hasOwn(withoutOptionalTopLevel, field)) continue
+      delete (withoutOptionalTopLevel as unknown as Record<string, unknown>)[field]
+      removedTopLevel.push(field)
+    }
+    const topLevelCandidate: HostToWebviewMessage = { type: "snapshot", snapshot: withoutOptionalTopLevel }
+    if (parseHostMessage(topLevelCandidate)) {
+      this.reportError?.(`Omitted invalid optional Workbench snapshot fields: ${removedTopLevel.join(", ")}`)
+      return topLevelCandidate
+    }
     if (!message.snapshot.session) return undefined
     const optionalSessionFields = [
       "parentID", "directory", "agent", "model", "variant", "queue", "inFlightPromptID", "permissions", "questions", "todos",
@@ -808,6 +823,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (!parseHostMessage(candidate)) continue
       this.reportError?.(`Omitted invalid optional Workbench session field: ${field}`)
       return candidate
+    }
+    const session = { ...message.snapshot.session }
+    const removedSession: string[] = []
+    for (const field of optionalSessionFields) {
+      if (!Object.hasOwn(session, field)) continue
+      delete (session as unknown as Record<string, unknown>)[field]
+      removedSession.push(field)
+    }
+    const sessionCandidate: HostToWebviewMessage = { type: "snapshot", snapshot: { ...withoutOptionalTopLevel, session } }
+    if (parseHostMessage(sessionCandidate)) {
+      this.reportError?.(`Omitted invalid optional Workbench snapshot/session fields: ${[...removedTopLevel, ...removedSession.map((field) => `session.${field}`)].join(", ")}`)
+      return sessionCandidate
     }
     return undefined
   }

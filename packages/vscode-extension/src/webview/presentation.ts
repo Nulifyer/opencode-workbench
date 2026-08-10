@@ -1,4 +1,4 @@
-import type { ChatSnapshot, ConnectionState, MessageBundle, MessagePart, PermissionRequest, RuntimeService } from "@opencode-workbench/shared"
+import { isNativeCompactionContinuationMessage as sharedIsNativeCompactionContinuationMessage, type ChatSnapshot, type ConnectionState, type MessageBundle, type MessagePart, type PermissionRequest, type RuntimeService } from "@opencode-workbench/shared"
 
 export type SessionGroup = "Needs input" | "Working" | "Completed" | "Today" | "Yesterday" | "Previous 7 days" | "Older"
 
@@ -45,6 +45,8 @@ export function runtimeServicePresentation(service: RuntimeService, kind: "lsp" 
 export function isCompactionMessage(message: MessageBundle): boolean {
   return message.info.role === "user" && message.parts.some((part) => part.type === "compaction")
 }
+
+export const isNativeCompactionContinuationMessage = sharedIsNativeCompactionContinuationMessage
 
 export function isGoalContinuationMessage(message: MessageBundle): boolean {
   if (message.info.role !== "user") return false

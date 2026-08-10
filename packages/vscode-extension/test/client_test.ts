@@ -472,11 +472,20 @@ Deno.test("v2 prompt admission preserves IDs, delivery, preferences, and file pa
     const url = new URL(input instanceof Request ? input.url : input.toString())
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
     requests.push({ path: url.pathname, body })
-    return url.pathname.endsWith("/prompt") ? new Response(JSON.stringify({ data: {} })) : new Response(null, { status: 204 })
+    return url.pathname.endsWith("/prompt")
+      ? new Response(JSON.stringify({ data: {
+        admittedSeq: 42,
+        id: "msg_018bcfe568001234567890abcd",
+        sessionID: "session",
+        prompt: { text: "Review these", files: [] },
+        delivery: "queue",
+        timeCreated: 1_700_000_000_000,
+      } }))
+      : new Response(null, { status: 204 })
   }
   try {
     const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
-    await client.sendPrompt("session", "msg_018bcfe568001234567890abcd", "Review these", "queue", "build", "acme/model", "high", [
+    const admission = await client.sendPrompt("session", "msg_018bcfe568001234567890abcd", "Review these", "queue", "build", "acme/model", "high", [
       { type: "file", mime: "text/plain", url: "file:///work/src/main.ts?start=4&end=8", filename: "main.ts" },
       { type: "file", mime: "image/png", url: "data:image/png;base64,eA==", filename: "image.png" },
     ])
@@ -486,6 +495,51 @@ Deno.test("v2 prompt admission preserves IDs, delivery, preferences, and file pa
       prompt.id !== "msg_018bcfe568001234567890abcd" || prompt.delivery !== "queue" || prompt.prompt?.files?.[0]?.uri !== "file:///work/src/main.ts?start=4&end=8" ||
       prompt.prompt?.files?.[1]?.uri !== "data:image/png;base64,eA==" || model.model?.variant !== "high") {
       throw new Error("V2 prompt admission omitted durable or structured fields")
+    }
+    if (admission.admittedSeq !== 42 || admission.id !== prompt.id || admission.delivery !== "queue" || admission.timeCreated !== 1_700_000_000_000) {
+      throw new Error(`V2 prompt admission receipt was not validated: ${JSON.stringify(admission)}`)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("v2 prompt admission rejects malformed and mismatched receipts", async () => {
+  const originalFetch = globalThis.fetch
+  let response: unknown = { data: {} }
+  globalThis.fetch = (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    return Promise.resolve(url.pathname.endsWith("/prompt") ? new Response(JSON.stringify(response)) : new Response(null, { status: 204 }))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const send = () => client.sendPrompt("session", "msg_018bcfe568001234567890abcd", "hello", "steer")
+    await rejects(send, /malformed or mismatched prompt admission receipt/)
+    response = { data: { admittedSeq: 1, id: "msg_018bcfe568001234567890abcd", sessionID: "other", delivery: "steer", timeCreated: 2 } }
+    await rejects(send, /malformed or mismatched prompt admission receipt/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("native manual compaction validates its durable receipt", async () => {
+  const originalFetch = globalThis.fetch
+  let body: unknown
+  globalThis.fetch = (_input, init) => {
+    body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
+    return Promise.resolve(new Response(JSON.stringify({ data: {
+      admittedSeq: 7,
+      id: "msg_018bcfe568001234567890abcd",
+      sessionID: "session",
+      timeCreated: 123,
+      type: "compaction",
+    } })))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const admission = await client.compactSessionV2("session", "msg_018bcfe568001234567890abcd")
+    if (JSON.stringify(body) !== JSON.stringify({ id: "msg_018bcfe568001234567890abcd" }) || admission.type !== "compaction" || admission.admittedSeq !== 7) {
+      throw new Error(`Native compaction did not preserve its exact admission contract: ${JSON.stringify({ body, admission })}`)
     }
   } finally {
     globalThis.fetch = originalFetch
@@ -507,6 +561,25 @@ Deno.test("legacy async prompts preserve custom provider model and variant", asy
     if (request?.path !== "/session/session/prompt_async" || body.agent !== "caveboss" || body.model?.providerID !== "openai" ||
       body.model.modelID !== "gpt-5.6-sol" || body.variant !== "high" || body.messageID !== "msg_018bcfe568001234567890abcd") {
       throw new Error("Legacy async prompt omitted its stable ID or custom provider selection")
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("structured verifier prompts declare their legacy transport with a stable OpenCode ID", async () => {
+  const originalFetch = globalThis.fetch
+  let body: Record<string, unknown> | undefined
+  globalThis.fetch = (_input, init) => {
+    body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
+    return Promise.resolve(new Response(null, { status: 204 }))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const messageID = await client.sendStructuredPrompt("verifier", "verify", { schema: { type: "object" }, retryCount: 2 })
+    if (!/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(messageID) || body?.messageID !== messageID ||
+      (body?.format as { type?: string } | undefined)?.type !== "json_schema" || (body?.tools as Record<string, unknown> | undefined)?.["*"] !== false) {
+      throw new Error(`Structured prompt lost its explicit OpenCode legacy contract: ${JSON.stringify({ messageID, body })}`)
     }
   } finally {
     globalThis.fetch = originalFetch
@@ -560,6 +633,8 @@ Deno.test("v2 projected messages expose durable prompts and assistant output", a
           tokens: { input: 1, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
         },
         { id: "msg_compaction", type: "compaction", time: { created: 4, completed: 5 }, summary: "internal summary" },
+        { id: "msg_system", type: "system", time: { created: 6 }, text: "internal context" },
+        { id: "msg_synthetic", type: "synthetic", time: { created: 7 }, sessionID: "session", text: "internal lifecycle input" },
       ],
       cursor: {},
     })))
@@ -580,7 +655,8 @@ Deno.test("v2 projected messages expose durable prompts and assistant output", a
       assistant?.parts.find((part) => part.id === "reasoning")?.text !== "Detailed provider thinking" || assistant.parts.find((part) => part.id === "text")?.text !== "hi" ||
       assistant.parts.find((part) => part.id === "tool")?.state?.output !== "/work" || !JSON.stringify(assistant.parts.find((part) => part.id === "tool")?.state?.metadata).includes("kept") ||
       !assistant.parts.some((part) => part.id === "legacy-patch") || assistant.info.providerID !== "acme" || assistant.info.modelID !== "model" ||
-      messages.find((message) => message.info.id === "msg_compaction")?.parts[0]?.type !== "compaction") {
+      messages.find((message) => message.info.id === "msg_compaction")?.parts[0]?.type !== "compaction" ||
+      messages.some((message) => ["msg_system", "msg_synthetic"].includes(message.info.id))) {
       throw new Error(`V2 projected messages were not converted or merged with legacy history: ${JSON.stringify(messages)}`)
     }
   } finally {

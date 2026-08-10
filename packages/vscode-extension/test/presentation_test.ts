@@ -1,4 +1,4 @@
-import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, terminalAnsiMarkup, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, isNativeCompactionContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, terminalAnsiMarkup, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
@@ -30,6 +30,27 @@ Deno.test("recognizes tagged and legacy goal continuations without hiding ordina
     isGoalContinuationMessage(message({ text: "Continue working autonomously toward the active goal.", synthetic: false })) ||
     isGoalContinuationMessage(message({ text: "Continue working autonomously toward the active goal.", synthetic: true }, "assistant"))) {
     throw new Error("An ordinary or non-user message was classified as a goal continuation")
+  }
+})
+
+Deno.test("recognizes native OpenCode compaction continuations without hiding ordinary synthetic context", () => {
+  const message = (part: Record<string, unknown>, role: "user" | "assistant" = "user") => ({
+    info: { id: "message", sessionID: "session", role },
+    parts: [{ id: "part", messageID: "message", sessionID: "session", type: "text", ...part }],
+  })
+  if (!isNativeCompactionContinuationMessage(message({
+    text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+    synthetic: true,
+    metadata: { compaction_continue: true },
+  }))) throw new Error("Tagged native compaction continuation was treated as authored input")
+  if (!isNativeCompactionContinuationMessage(message({
+    text: "Media context was removed.\n\nContinue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+    synthetic: true,
+  }))) throw new Error("Legacy native compaction continuation was not recognized")
+  if (isNativeCompactionContinuationMessage(message({ text: "Internal context", synthetic: true })) ||
+    isNativeCompactionContinuationMessage(message({ text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.", synthetic: false })) ||
+    isNativeCompactionContinuationMessage(message({ text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.", synthetic: true }, "assistant"))) {
+    throw new Error("An ordinary or non-user message was classified as a native compaction continuation")
   }
 })
 

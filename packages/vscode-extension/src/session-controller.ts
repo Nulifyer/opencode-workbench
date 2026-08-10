@@ -1,4 +1,4 @@
-import { createOpenCodeMessageID, isOpenCodeMessageID } from "@opencode-workbench/shared"
+import { createOpenCodeMessageID, isNativeCompactionContinuationMessage, isOpenCodeMessageID } from "@opencode-workbench/shared"
 import type {
   AttentionItem,
   AgentOption,
@@ -81,6 +81,12 @@ function record(value: unknown): value is JsonRecord {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function nativeCompactionUnavailable(error: unknown): boolean {
+  const detail = message(error)
+  return /OpenCode POST \/api\/session\/[^ ]+\/compact(?:\?[^ ]*)? failed \((?:404|405|501|503)\)/.test(detail) ||
+    /session compact is not available yet|session\.compact/i.test(detail)
 }
 
 function automaticSessionTitle(session: WorkbenchState["sessions"][string]): string | undefined {
@@ -208,6 +214,10 @@ export class SessionController {
   private runtimeRefreshTimer?: NodeJS.Timeout
   private catalogRefreshTimer?: NodeJS.Timeout
   private sessionListRefreshTimer?: NodeJS.Timeout
+  private readonly settlementProbeTimers = new Map<string, NodeJS.Timeout>()
+  private readonly settlementProbeGenerations = new Map<string, number>()
+  private readonly settlementProbeFailures = new Set<string>()
+  private readonly reportedPromptAdmissions = new Set<string>()
   private reconcileGeneration = 0
   private sessionRevision = 0
   private statusRevision = 0
@@ -374,6 +384,11 @@ export class SessionController {
     if (this.runtimeRefreshTimer) clearTimeout(this.runtimeRefreshTimer)
     if (this.catalogRefreshTimer) clearTimeout(this.catalogRefreshTimer)
     if (this.sessionListRefreshTimer) clearTimeout(this.sessionListRefreshTimer)
+    for (const timer of this.settlementProbeTimers.values()) clearTimeout(timer)
+    this.settlementProbeTimers.clear()
+    this.settlementProbeGenerations.clear()
+    this.settlementProbeFailures.clear()
+    this.reportedPromptAdmissions.clear()
     this.transcripts.dispose()
     this.prompts.dispose()
     this.settlements.dispose()
@@ -396,6 +411,61 @@ export class SessionController {
         .then(() => sessionID ? this.ensureAutomaticTitle(sessionID) : undefined)
         .catch((error) => this.callbacks.error(`Could not refresh OpenCode session metadata: ${message(error)}`))
     }, 400)
+  }
+
+  private cancelSettlementProbe(sessionID: string): void {
+    const timer = this.settlementProbeTimers.get(sessionID)
+    if (timer) clearTimeout(timer)
+    this.settlementProbeTimers.delete(sessionID)
+    this.settlementProbeGenerations.set(sessionID, (this.settlementProbeGenerations.get(sessionID) ?? 0) + 1)
+    this.settlementProbeFailures.delete(sessionID)
+  }
+
+  private scheduleSettlementProbe(sessionID: string, delayMilliseconds = 25, generation?: number): void {
+    if (this.disposed || !Object.hasOwn(this.state.sessions, sessionID)) return
+    const currentGeneration = generation ?? (this.settlementProbeGenerations.get(sessionID) ?? 0) + 1
+    if (generation === undefined) {
+      const previous = this.settlementProbeTimers.get(sessionID)
+      if (previous) clearTimeout(previous)
+      this.settlementProbeGenerations.set(sessionID, currentGeneration)
+    }
+    this.settlementProbeTimers.set(sessionID, setTimeout(() => {
+      this.settlementProbeTimers.delete(sessionID)
+      void this.probeSettlement(sessionID, currentGeneration, delayMilliseconds).catch((error) => {
+        if (this.disposed || this.settlementProbeGenerations.get(sessionID) !== currentGeneration) return
+        if (!this.settlementProbeFailures.has(sessionID)) {
+          this.settlementProbeFailures.add(sessionID)
+          this.callbacks.error(`Could not confirm OpenCode session settlement: ${message(error)}`)
+        }
+        this.scheduleSettlementProbe(sessionID, Math.min(1_000, Math.max(100, delayMilliseconds * 2)), currentGeneration)
+      })
+    }, delayMilliseconds))
+  }
+
+  private async probeSettlement(sessionID: string, generation: number, previousDelay: number): Promise<void> {
+    const statuses = await this.client.sessionStatuses()
+    if (this.disposed || this.settlementProbeGenerations.get(sessionID) !== generation || !Object.hasOwn(this.state.sessions, sessionID)) return
+    this.settlementProbeFailures.delete(sessionID)
+    const authoritative = statuses[sessionID] ?? { type: "idle" as const }
+    const failure = this.sessionFailures.get(sessionID)
+    const status: SessionStatus = authoritative.type === "idle" && failure ? { type: "error", message: failure } : authoritative
+    this.statusRevision += 1
+    this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status } } })
+    if (status.type === "busy" || status.type === "retry") {
+      this.scheduleSettlementProbe(sessionID, Math.min(1_000, Math.max(100, previousDelay * 2)), generation)
+      return
+    }
+    this.settlementProbeGenerations.delete(sessionID)
+    this.scheduleSessionListRefresh(sessionID)
+    void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
+  }
+
+  private confirmPromptAdmission(messageID: string, admittedAt: number): void {
+    const sessionID = this.pendingPromptSessions.get(messageID)
+    if (!sessionID || this.reportedPromptAdmissions.has(messageID)) return
+    this.reportedPromptAdmissions.add(messageID)
+    while (this.reportedPromptAdmissions.size > 2_000) this.reportedPromptAdmissions.delete(this.reportedPromptAdmissions.values().next().value!)
+    this.callbacks.promptAdmitted?.(sessionID, messageID, Number.isSafeInteger(admittedAt) && admittedAt >= 0 ? admittedAt : Date.now())
   }
 
   private async ensureAutomaticTitle(sessionID: string): Promise<void> {
@@ -552,16 +622,20 @@ export class SessionController {
     return this.catalogService.modelForAgent(agent)
   }
 
-  private requiresLegacyPromptTransport(sessionID: string, agent?: string, model?: string): boolean {
+  private sessionTransport(sessionID: string, agent?: string, model?: string): "legacy" | "v2" {
     const history = this.messageHistories.get(sessionID)
-    if (history?.legacyMessageIDs.size) return true
-    if (history?.v2MessageIDs.size) return false
+    if (history?.legacyMessageIDs.size) return "legacy"
+    if (history?.v2MessageIDs.size) return "v2"
     const effectiveAgent = this.validAgent(agent) ? agent : this.currentAgent ?? this.defaultAgent
     const effectiveModel = this.validModel(model) ? model : this.modelForAgent(effectiveAgent)
     const separator = effectiveModel?.indexOf("/") ?? -1
-    if (!effectiveModel || separator <= 0) return false
+    if (!effectiveModel || separator <= 0) return "v2"
     const providerID = effectiveModel.slice(0, separator)
-    return this.providers.find((provider) => provider.id === providerID)?.source === "custom"
+    return this.providers.find((provider) => provider.id === providerID)?.source === "custom" ? "legacy" : "v2"
+  }
+
+  private requiresLegacyPromptTransport(sessionID: string, agent?: string, model?: string): boolean {
+    return this.sessionTransport(sessionID, agent, model) === "legacy"
   }
 
   private async readMessageHistory(sessionID: string): Promise<SessionMessageHistory> {
@@ -940,13 +1014,15 @@ export class SessionController {
   }
 
   private async retryPromptAdmission(sessionID: string, promptID: string, legacy: boolean): Promise<"accepted" | "absent" | "unknown"> {
-    if (legacy) return "unknown"
     try {
-      if (typeof this.client.hasPromptAdmission === "function") {
+      if (!legacy && typeof this.client.hasPromptAdmission === "function") {
         const admitted = await this.client.hasPromptAdmission(sessionID, promptID)
         return admitted === undefined ? "unknown" : admitted ? "accepted" : "absent"
       }
-      return (await this.client.messages(sessionID)).some((entry) => entry.info.id === promptID) ? "accepted" : "absent"
+      const persisted = (await this.client.messages(sessionID)).some((entry) => entry.info.id === promptID)
+      // V1 prompt_async can still be running after its HTTP connection has
+      // failed, so immediate absence is ambiguous rather than proof of loss.
+      return persisted ? "accepted" : legacy ? "unknown" : "absent"
     } catch {
       return "unknown"
     }
@@ -962,6 +1038,22 @@ export class SessionController {
 
   async compactSession(sessionID: string): Promise<void> {
     const session = this.requireSession(sessionID)
+    if (!this.requiresLegacyPromptTransport(sessionID, session.agent, session.model)) {
+      if (typeof this.client.compactSessionV2 !== "function") throw new Error("This OpenCode client does not expose native session compaction")
+      const compactionID = createOpenCodeMessageID()
+      try {
+        await this.client.compactSessionV2(sessionID, compactionID)
+      } catch (error) {
+        if (nativeCompactionUnavailable(error)) {
+          throw new Error("This OpenCode version does not support native manual compaction for this v2 session. Automatic compaction remains OpenCode-managed.", { cause: error })
+        }
+        throw error
+      }
+      this.statusRevision += 1
+      this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } } })
+      this.scheduleSettlementProbe(sessionID, 250)
+      return
+    }
     const model = session.model
     const separator = model?.indexOf("/") ?? -1
     if (!model || separator <= 0 || separator === model.length - 1) throw new Error("Select a model before compacting this session")
@@ -1089,6 +1181,7 @@ export class SessionController {
       const serverHasText = serverMessage?.parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text)) ?? false
       const serverFiles = serverMessage?.parts.filter((part) => part.type === "file").length ?? 0
       if (serverMessage && (((!expectedText && retainedText === undefined) || serverHasText) && serverFiles >= expectedFiles)) {
+        this.confirmPromptAdmission(promptID, serverMessage.info.time?.created ?? Date.now())
         this.pendingPromptSessions.delete(promptID)
         this.pendingPromptTexts.delete(promptID)
         this.pendingPromptFileCounts.delete(promptID)
@@ -1116,7 +1209,7 @@ export class SessionController {
     if (current.status.type === "idle" && persistedFailure) {
       this.statusRevision += 1
       this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "error", message: persistedFailure } } } })
-    } else if (current.status.type === "idle" && lastMessage?.info.role === "user" &&
+    } else if (current.status.type === "idle" && lastMessage?.info.role === "user" && !isNativeCompactionContinuationMessage(lastMessage) &&
       !current.queue.length && !this.sendingPrompts.has(sessionID) && !this.pendingPromptSessions.has(lastMessage.info.id)) {
       this.statusRevision += 1
       this.dispatch({
@@ -1305,6 +1398,7 @@ export class SessionController {
   }
 
   private cleanupSession(sessionID: string): void {
+    this.cancelSettlementProbe(sessionID)
     const session = this.state.sessions[sessionID]
     if (this.rootSessionID(sessionID) === sessionID) this.permissionGrants.delete(sessionID)
     for (const prompt of session?.queue ?? []) this.promptFiles.delete(prompt.id)
@@ -1322,6 +1416,7 @@ export class SessionController {
       this.pendingPromptSessions.delete(promptID)
       this.pendingPromptTexts.delete(promptID)
       this.pendingPromptFileCounts.delete(promptID)
+      this.reportedPromptAdmissions.delete(promptID)
     }
     this.sendGenerations.delete(sessionID)
     this.sessionFailures.delete(sessionID)
@@ -1367,7 +1462,10 @@ export class SessionController {
       if (command) await this.client.sendCommand(sessionID, command[1]!, command[2] ?? "", prompt.agent, prompt.model, prompt.variant, this.promptFiles.get(prompt.id) ?? [], prompt.id)
       else {
         const files = this.promptFiles.get(prompt.id) ?? []
-        const admittedMessageID = legacy ? createOpenCodeMessageID() : prompt.id
+        // Keep one stable ID from composer through OpenCode persistence. V2
+        // returns an exact durable receipt; V1 is confirmed later by the
+        // matching transcript/event rather than treating its 204 as durable.
+        const admittedMessageID = prompt.id
         this.pendingPromptSessions.set(admittedMessageID, sessionID)
         if (prompt.text.trim()) this.pendingPromptTexts.set(admittedMessageID, prompt.text)
         if (files.length) this.pendingPromptFileCounts.set(admittedMessageID, files.length)
@@ -1377,8 +1475,26 @@ export class SessionController {
           this.pendingPromptTexts.delete(oldest)
           this.pendingPromptFileCounts.delete(oldest)
         }
-        if (legacy) await this.client.sendAsync(sessionID, prompt.text, prompt.agent, prompt.model, prompt.variant, files, admittedMessageID)
-        else await this.client.sendPrompt(sessionID, prompt.id, prompt.text, delivery, prompt.agent, prompt.model, prompt.variant, files, this.promptAgents.get(prompt.id) ?? [])
+        try {
+          if (legacy) await this.client.sendAsync(sessionID, prompt.text, prompt.agent, prompt.model, prompt.variant, files, admittedMessageID)
+          else {
+            const admission = await this.client.sendPrompt(sessionID, prompt.id, prompt.text, delivery, prompt.agent, prompt.model, prompt.variant, files, this.promptAgents.get(prompt.id) ?? [])
+            // Test doubles predating admission receipts may return undefined;
+            // the real OpenCodeClient rejects any missing or mismatched receipt.
+            if (admission) this.confirmPromptAdmission(admission.id, admission.timeCreated)
+          }
+        } catch (error) {
+          const admission = this.reportedPromptAdmissions.has(prompt.id)
+            ? "accepted"
+            : await this.retryPromptAdmission(sessionID, prompt.id, legacy)
+          if (admission !== "accepted") {
+            if (admission === "unknown") {
+              throw new Error("Prompt delivery could not be confirmed; the prompt remains queued with its original ID so it can be retried safely", { cause: error })
+            }
+            throw error
+          }
+          this.confirmPromptAdmission(prompt.id, Date.now())
+        }
         if (!legacy) {
           const slash = prompt.model?.indexOf("/") ?? -1
           this.eventBus.emit({
@@ -1407,7 +1523,6 @@ export class SessionController {
         this.scheduleTranscriptRefresh(sessionID)
       }
       accepted = true
-      this.callbacks.promptAdmitted?.(sessionID, prompt.id, Date.now())
       if (this.sendGenerations.get(sessionID) === generation) {
         this.promptFiles.delete(prompt.id)
         this.promptAgents.delete(prompt.id)
@@ -1437,6 +1552,7 @@ export class SessionController {
   private async abortSession(sessionID: string): Promise<void> {
     const accepted = await this.client.abort(sessionID)
     if (!accepted) throw new Error("OpenCode did not accept the stop request")
+    this.cancelSettlementProbe(sessionID)
     this.statusRevision += 1
     this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "idle" } } } })
   }
@@ -1781,6 +1897,15 @@ export class SessionController {
       : part && typeof part === "object" && "sessionID" in part && typeof part.sessionID === "string"
       ? part.sessionID
       : undefined
+    if (sessionID && event.type === "session.next.prompt.admitted" && typeof event.properties.messageID === "string") {
+      this.confirmPromptAdmission(event.properties.messageID, typeof event.properties.timestamp === "number" ? event.properties.timestamp : Date.now())
+    }
+    if (sessionID && event.type === "message.updated" && record(info) && info.role === "user" && typeof info.id === "string") {
+      const created = record(info.time) && typeof info.time.created === "number" ? info.time.created : Date.now()
+      this.confirmPromptAdmission(info.id, created)
+    }
+    if (sessionID && event.type === "session.status" && record(event.properties.status) &&
+      ["busy", "retry"].includes(String(event.properties.status.type))) this.cancelSettlementProbe(sessionID)
     if (sessionID && event.type === "session.error") {
       this.sessionFailures.set(sessionID, errorDetail(event.properties.error) ?? "Session failed")
     } else if (sessionID && event.type === "session.next.step.failed") {
@@ -1915,18 +2040,28 @@ export class SessionController {
       if (NEXT_EVENTS_REQUIRING_TRANSCRIPT_REFRESH.has(event.type)) this.scheduleTranscriptRefresh(sessionID)
       let status: SessionStatus | undefined
       if (event.type === "session.next.retried") {
+        this.cancelSettlementProbe(sessionID)
         const error = record(event.properties.error) && typeof event.properties.error.message === "string" ? event.properties.error.message : undefined
         status = { type: "retry", attempt: typeof event.properties.attempt === "number" ? event.properties.attempt : undefined, message: error }
       } else if (event.type === "session.next.step.failed") {
+        this.cancelSettlementProbe(sessionID)
         const error = record(event.properties.error) && typeof event.properties.error.message === "string" ? event.properties.error.message : "OpenCode response failed"
         status = { type: "error", message: error }
       } else if (event.type === "session.next.step.ended") {
-        status = event.properties.finish === "tool-calls" ? { type: "busy" } : { type: "idle" }
-      } else if (["session.next.prompt.admitted", "session.next.prompted", "session.next.step.started"].includes(event.type)) {
+        // A provider step ending is not the same as the OpenCode runner
+        // settling. Tools, steering, queued input, and compaction may all
+        // continue inside the same active drain.
+        status = { type: "busy" }
+        this.scheduleSettlementProbe(sessionID)
+      } else if (event.type === "session.next.compaction.ended") {
+        status = { type: "busy" }
+        this.scheduleSettlementProbe(sessionID)
+      } else if (["session.next.prompt.admitted", "session.next.prompted", "session.next.step.started", "session.next.compaction.started"].includes(event.type)) {
+        this.cancelSettlementProbe(sessionID)
         status = { type: "busy" }
       }
       if (status) this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status } } })
-      if (status?.type === "idle" || status?.type === "error") {
+      if (status?.type === "error") {
         this.scheduleSessionListRefresh(sessionID)
         void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
       }
@@ -1959,11 +2094,16 @@ export class SessionController {
     }
     if (sessionID && (event.type === "session.idle" ||
       (event.type === "session.status" && record(event.properties.status) && event.properties.status.type === "idle"))) {
+      this.cancelSettlementProbe(sessionID)
       // OpenCode can generate a session title without publishing a matching
       // session.updated event. Refresh its authoritative session list once the
       // turn settles so title, summary, cost, share, and archive state converge.
       this.scheduleSessionListRefresh(sessionID)
       void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
+    }
+    if (sessionID && (event.type === "session.error" ||
+      (event.type === "session.status" && record(event.properties.status) && event.properties.status.type === "error"))) {
+      this.cancelSettlementProbe(sessionID)
     }
     const permission = parsePermission(event)
     if (permission) this.storePermission(permission)

@@ -8,6 +8,7 @@ import { historyPresentation, mergeHistoryPage } from "../src/webview/views/hist
 import { MAX_TURN_NAVIGATION_MARKERS, turnNavigationMarkers } from "../src/webview/views/turn-navigation.ts"
 import { parseWithProtocolV1Adapter } from "../src/webview/transport/protocol-v1-adapter.ts"
 import { FocusController } from "../src/webview/controllers/focus-controller.ts"
+import { projectConversationTurns } from "../src/webview/views/conversation.ts"
 
 Deno.test("webview store and legacy adapter preserve one validated snapshot path", () => {
   const store = new WorkbenchWebviewStore()
@@ -71,6 +72,29 @@ Deno.test("turn navigation derives truthful fork and completed goal-checkpoint m
   assertEquals(markers[0]?.target, "message:prompt")
   assertEquals(markers[1]?.current, true)
   assertEquals(markers[2]?.label, "Goal checkpoint recorded")
+})
+
+Deno.test("turn navigation omits OpenCode's internal post-compaction prompt", () => {
+  const session = {
+    id: "compact", title: "Compacted", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const,
+    messages: [
+      { info: { id: "prompt", sessionID: "compact", role: "user" as const }, parts: [{ id: "prompt-text", sessionID: "compact", messageID: "prompt", type: "text", text: "Do the work" }] },
+      { info: { id: "continuation", sessionID: "compact", role: "user" as const }, parts: [{
+        id: "continuation-text",
+        sessionID: "compact",
+        messageID: "continuation",
+        type: "text",
+        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+        synthetic: true,
+        metadata: { compaction_continue: true },
+      }] },
+    ],
+    messageRevisions: { prompt: 1, continuation: 1 },
+  }
+  const markers = turnNavigationMarkers(session)
+  assertEquals(markers.map((marker) => marker.id), ["message:prompt"])
+  assertEquals(markers[0]?.current, true)
+  assertEquals(projectConversationTurns(session, false).map((turn) => turn.key), ["user:prompt"])
 })
 
 Deno.test("turn navigation bounds long histories while retaining the current turn", () => {

@@ -4,7 +4,7 @@ import { sessionTurnOutcome } from "./session-turn-outcome.js"
 
 export interface OpenCodeGoalVerifierRuntime {
   createSession(title: string): Promise<{ id: string }>
-  sendStructuredPrompt(sessionID: string, prompt: string, input: { agent?: string; model?: string; schema: Record<string, unknown>; retryCount?: number }, signal: AbortSignal): Promise<void>
+  sendStructuredPrompt(sessionID: string, prompt: string, input: { agent?: string; model?: string; schema: Record<string, unknown>; retryCount?: number }, signal: AbortSignal): Promise<unknown>
   sessionStatuses(): Promise<Record<string, SessionStatus>>
   listSessions(): Promise<Array<{ id: string }>>
   messages(sessionID: string): Promise<MessageBundle[]>

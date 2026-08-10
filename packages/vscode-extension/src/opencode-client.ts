@@ -1,4 +1,5 @@
 import {
+  createOpenCodeMessageID,
   PERMISSION_AGGREGATE_CHARACTER_LIMIT,
   PERMISSION_METADATA_CHARACTER_LIMIT,
   permissionRequestCharacters,
@@ -71,6 +72,25 @@ export interface PromptFilePart {
   filename: string
 }
 
+/** Exact durable receipt returned by OpenCode's v2 prompt inbox. */
+export interface PromptAdmission {
+  admittedSeq: number
+  id: string
+  sessionID: string
+  delivery: "steer" | "queue"
+  timeCreated: number
+  promotedSeq?: number
+}
+
+/** Exact durable receipt returned by OpenCode's v2 manual-compaction inbox. */
+export interface CompactionAdmission {
+  admittedSeq: number
+  id: string
+  sessionID: string
+  timeCreated: number
+  type: "compaction"
+}
+
 export interface SessionMessageHistory {
   messages: MessageBundle[]
   legacyMessageIDs: string[]
@@ -112,6 +132,47 @@ async function readLimitedText(response: Response, limit: number): Promise<strin
 
 function boundedString(value: unknown, limit: number): value is string {
   return typeof value === "string" && value.length <= limit
+}
+
+function admissionRecord(value: unknown): JsonRecord | undefined {
+  if (!isRecord(value)) return undefined
+  return isRecord(value.data) ? value.data : value
+}
+
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0
+}
+
+function parsePromptAdmission(value: unknown, expected: { id: string; sessionID: string; delivery: "steer" | "queue" }): PromptAdmission {
+  const admitted = admissionRecord(value)
+  if (!admitted || admitted.id !== expected.id || admitted.sessionID !== expected.sessionID || admitted.delivery !== expected.delivery ||
+    !nonNegativeSafeInteger(admitted.admittedSeq) || !nonNegativeSafeInteger(admitted.timeCreated) ||
+    (admitted.promotedSeq !== undefined && !nonNegativeSafeInteger(admitted.promotedSeq))) {
+    throw new Error("OpenCode returned a malformed or mismatched prompt admission receipt")
+  }
+  return {
+    admittedSeq: Number(admitted.admittedSeq),
+    id: expected.id,
+    sessionID: expected.sessionID,
+    delivery: expected.delivery,
+    timeCreated: Number(admitted.timeCreated),
+    ...(admitted.promotedSeq === undefined ? {} : { promotedSeq: Number(admitted.promotedSeq) }),
+  }
+}
+
+function parseCompactionAdmission(value: unknown, expected: { id: string; sessionID: string }): CompactionAdmission {
+  const admitted = admissionRecord(value)
+  if (!admitted || admitted.id !== expected.id || admitted.sessionID !== expected.sessionID || admitted.type !== "compaction" ||
+    !nonNegativeSafeInteger(admitted.admittedSeq) || !nonNegativeSafeInteger(admitted.timeCreated)) {
+    throw new Error("OpenCode returned a malformed or mismatched compaction admission receipt")
+  }
+  return {
+    admittedSeq: Number(admitted.admittedSeq),
+    id: expected.id,
+    sessionID: expected.sessionID,
+    timeCreated: Number(admitted.timeCreated),
+    type: "compaction",
+  }
 }
 
 interface MetadataBudget {
@@ -453,6 +514,10 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
       })
       continue
     }
+    // System/context/switch/synthetic records are durable OpenCode lifecycle
+    // state, not assistant-authored chat output. Projecting them as empty
+    // assistant articles corrupts turn grouping and navigation.
+    if (["system", "synthetic", "agent-switched", "model-switched"].includes(String(item.type))) continue
     const text = typeof item.text === "string" ? item.text
       : undefined
     if (text !== undefined) messages.push({
@@ -1131,7 +1196,7 @@ export class OpenCodeClient {
     variant?: string,
     files: PromptFilePart[] = [],
     agents: string[] = [],
-  ): Promise<void> {
+  ): Promise<PromptAdmission> {
     const encodedSessionID = encodeURIComponent(sessionID)
     if (agent) await this.request("POST", this.locationPath(`/api/session/${encodedSessionID}/agent`), { agent })
     if (model) {
@@ -1141,7 +1206,7 @@ export class OpenCodeClient {
         model: { providerID: model.slice(0, slash), id: model.slice(slash + 1), ...(variant ? { variant } : {}) },
       })
     }
-    await this.request("POST", this.locationPath(`/api/session/${encodedSessionID}/prompt`), {
+    const value = await this.request<unknown>("POST", this.locationPath(`/api/session/${encodedSessionID}/prompt`), {
       id: promptID,
       prompt: {
         text,
@@ -1151,17 +1216,31 @@ export class OpenCodeClient {
       delivery,
       resume: true,
     })
+    return parsePromptAdmission(value, { id: promptID, sessionID, delivery })
   }
 
-  async sendStructuredPrompt(sessionID: string, text: string, input: { agent?: string; model?: string; schema: Record<string, unknown>; retryCount?: number }, signal?: AbortSignal): Promise<void> {
+  async compactSessionV2(sessionID: string, compactionID: string): Promise<CompactionAdmission> {
+    const encodedSessionID = encodeURIComponent(sessionID)
+    const value = await this.request<unknown>("POST", this.locationPath(`/api/session/${encodedSessionID}/compact`), { id: compactionID })
+    return parseCompactionAdmission(value, { id: compactionID, sessionID })
+  }
+
+  async sendStructuredPrompt(sessionID: string, text: string, input: { agent?: string; model?: string; schema: Record<string, unknown>; retryCount?: number }, signal?: AbortSignal): Promise<string> {
     const model = input.model && input.model.includes("/") ? { providerID: input.model.slice(0, input.model.indexOf("/")), modelID: input.model.slice(input.model.indexOf("/") + 1) } : undefined
+    const messageID = createOpenCodeMessageID()
+    // OpenCode 1.18.x exposes JSON-schema response formatting only on its V1
+    // prompt contract. This dedicated verifier session therefore stays
+    // explicitly legacy instead of silently mixing V1 and V2 conversation
+    // operations inside an implementation session.
     await this.request("POST", `/session/${encodeURIComponent(sessionID)}/prompt_async`, {
+      messageID,
       agent: input.agent,
       model,
       tools: { "*": false },
       format: { type: "json_schema", schema: input.schema, retryCount: Math.min(3, Math.max(0, input.retryCount ?? 1)) },
       parts: [{ type: "text", text }],
     }, signal)
+    return messageID
   }
 
   async structuredOutput(sessionID: string): Promise<unknown> {

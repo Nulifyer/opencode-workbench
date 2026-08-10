@@ -7,7 +7,7 @@ import { sessionTurnOutcome } from "./session-turn-outcome.js"
 
 export interface RunRuntime {
   createSession(title: string): Promise<{ id: string }>
-  sendPrompt(sessionID: string, promptID: string, text: string, delivery: "steer" | "queue", agent?: string, model?: string, variant?: string, files?: PromptFilePart[]): Promise<void>
+  sendPrompt(sessionID: string, promptID: string, text: string, delivery: "steer" | "queue", agent?: string, model?: string, variant?: string, files?: PromptFilePart[]): Promise<unknown>
   abort(sessionID: string): Promise<boolean>
   statuses(): Promise<Record<string, SessionStatus>>
   needsInput?(sessionID: string): Promise<boolean>

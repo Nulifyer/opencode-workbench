@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import type { ChatSnapshot, MessageBundle } from "@opencode-workbench/shared"
+import { isNativeCompactionContinuationMessage, type ChatSnapshot, type MessageBundle } from "@opencode-workbench/shared"
 import { activityCollapsed, activityWorking, turnContent } from "../presentation.js"
 import { ScrollController, type ScrollAnchor, type ScrollViewport } from "../controllers/scroll-controller.js"
 
@@ -54,6 +54,7 @@ function projectConversationTurnsWithCache(
   const order: string[] = []
   let turnKey: string | undefined
   for (const message of session.messages) {
+    if (isNativeCompactionContinuationMessage(message)) continue
     if (message.info.role === "user") {
       turnKey = `user:${message.info.id}`
       order.push(turnKey)

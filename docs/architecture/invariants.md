@@ -30,28 +30,37 @@ adapter or Agent Host authority.
 ## Lifecycle
 
 Prompt admission, turn activity, visible turn completion, and a truly settled
-session are different concepts. The current implementation partially exposes
-the first three; it does **not** have a canonical settlement contract.
+session are different concepts. Workbench preserves those boundaries instead
+of inferring one state from another.
 
 - A submitted prompt receives a client-generated `msg_...` ID before transport.
-- The v2 endpoint admits `{ id, prompt, delivery, resume: true }`. A successful
-  request means admission, not completion.
+- The v2 endpoint admits `{ id, prompt, delivery, resume: true }`. Workbench
+  accepts only an exact receipt for that message, session, and delivery. A
+  successful receipt means admission, not completion.
+- Compatible legacy async delivery keeps the same message ID, but its HTTP 204
+  is not treated as durable admission. The matching OpenCode message/event must
+  confirm it; ambiguous failures retain the original queue entry and ID.
 - A busy stable-mode session may retain the prompt in the extension queue. A
   queued entry is not admitted until `drainQueue()` successfully delivers it.
 - `steer` asks OpenCode to yield at its next opportunity. `queue` waits for the
   session to become terminal. `replace` first aborts, then sends.
 - OpenCode `busy`, `retry`, `idle`, error, `session.next.*`, message, permission,
   and question events may re-enter after a visible message update.
+- `session.next.step.ended` and `session.next.compaction.ended` are activity
+  boundaries, not settlement. Workbench polls OpenCode's native active/status
+  projection and drains follow-ups only after that authority reports terminal.
+- Native post-compaction continuation records remain part of OpenCode history
+  but are omitted from the user conversation and turn navigator.
 - Goal continuation is reserved and admitted by the companion plugin after an
   idle event-loop boundary. The extension does not duplicate that loop.
 - Unknown or ambiguous prompt-admission failures retain visible prompt text and
   reconcile against durable OpenCode history before retry/rollback decisions.
 
-Until the lifecycle foundation work lands, no consumer may interpret a single
-assistant message, `session.next.step.ended`, or `session.idle` event as a
-general `sessionSettled` guarantee. This gap is proven by the goal-continuation
-and stale-event tests in `goal_integration_test.ts` and
-`session-controller_test.ts`.
+No consumer may interpret a single assistant message or
+`session.next.step.ended` as a general `sessionSettled` guarantee. Explicit
+OpenCode idle/error status, or a native status probe after a terminal activity
+boundary, is the settlement authority. Goal-continuation, queued-follow-up,
+compaction, ambiguous-admission, and stale-event tests cover that rule.
 
 ## Identity and ordering
 

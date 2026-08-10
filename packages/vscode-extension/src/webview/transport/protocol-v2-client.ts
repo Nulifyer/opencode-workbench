@@ -309,7 +309,11 @@ export class WorkbenchProtocolClient<TOutbound, TInbound, TState = unknown> {
       return;
     }
     const message = this.options.parseInbound(payload.message);
-    if (message === undefined) throw new Error("Invalid Workbench event payload");
+    if (message === undefined) {
+      const type = record(payload.message) && typeof payload.message.type === "string" ? payload.message.type : "unknown";
+      const keys = record(payload.message) ? Object.keys(payload.message).slice(0, 20).sort().join(",") : typeof payload.message;
+      throw new Error(`Invalid Workbench ${type} event payload (keys: ${keys || "none"})`);
+    }
     this.handler?.(message);
   }
 

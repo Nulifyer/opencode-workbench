@@ -932,7 +932,7 @@ Deno.test("sending a retained queued prompt now stops before legacy delivery", a
   await controller.send("retained", undefined, "openai/model", undefined, [], [], promptID)
   if (controller.snapshot.sessions.one?.queue[0]?.id !== promptID || events.length) throw new Error("Busy legacy prompt was not retained in the queue")
   await controller.sendQueuedNow("one", promptID)
-  if (events.join(",") !== "abort,send:retained" || controller.snapshot.sessions.one?.queue.length || !isOpenCodeMessageID(deliveredID) || deliveredID === promptID) {
+  if (events.join(",") !== "abort,send:retained" || controller.snapshot.sessions.one?.queue.length || !isOpenCodeMessageID(deliveredID) || deliveredID !== promptID) {
     throw new Error("Queued send-now did not stop before sending or retained the prompt")
   }
   controller.dispose()
@@ -1248,6 +1248,106 @@ Deno.test("transcript refresh preserves admitted prompt text until the server pr
   controller.dispose()
 })
 
+Deno.test("idle native compaction continuation is not reported as an unanswered user prompt", async () => {
+  const messages: MessageBundle[] = [
+    {
+      info: { id: "compact", sessionID: "one", role: "user" },
+      parts: [{ id: "compact-part", sessionID: "one", messageID: "compact", type: "compaction" }],
+    },
+    {
+      info: { id: "summary", sessionID: "one", role: "assistant", parentID: "compact", summary: true, finish: "stop" },
+      parts: [{ id: "summary-part", sessionID: "one", messageID: "summary", type: "text", text: "Compacted context" }],
+    },
+    {
+      info: { id: "continue", sessionID: "one", role: "user" },
+      parts: [{
+        id: "continue-part",
+        sessionID: "one",
+        messageID: "continue",
+        type: "text",
+        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+        synthetic: true,
+        metadata: { compaction_continue: true },
+      }],
+    },
+  ]
+  const errors: string[] = []
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => messages,
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: (error) => errors.push(error) })
+  await controller.reconcile()
+  const selected = controller.chatSnapshot().session
+  if (selected?.status.type !== "idle" || errors.length) {
+    throw new Error("A persisted native compaction continuation was reported as a failed user turn")
+  }
+  controller.dispose()
+})
+
+Deno.test("manual compaction follows the owning session transport without mixing protocols", async () => {
+  let native = 0
+  let legacy = 0
+  const user: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "user", time: { created: 1 } },
+    parts: [{ id: "text", sessionID: "one", messageID: "msg_018bcfe568001234567890abcd", type: "text", text: "hello" }],
+  }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messageHistory: async () => ({ messages: [user], legacyMessageIDs: [], v2MessageIDs: [user.info.id] }),
+    compactSessionV2: async (sessionID: string, id: string) => {
+      native += 1
+      return { admittedSeq: 2, id, sessionID, type: "compaction" as const, timeCreated: 3 }
+    },
+    summarizeSession: async () => {
+      legacy += 1
+      return true
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.compactSession("one")
+  if (native !== 1 || legacy !== 0 || controller.chatSnapshot().session?.status.type !== "busy") {
+    throw new Error("V2 session compaction crossed into the legacy summarizer")
+  }
+  controller.dispose()
+})
+
+Deno.test("unsupported native manual compaction fails honestly instead of mutating legacy state", async () => {
+  let legacy = 0
+  const user: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "user", time: { created: 1 } },
+    parts: [{ id: "text", sessionID: "one", messageID: "msg_018bcfe568001234567890abcd", type: "text", text: "hello" }],
+  }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messageHistory: async () => ({ messages: [user], legacyMessageIDs: [], v2MessageIDs: [user.info.id] }),
+    compactSessionV2: async () => {
+      throw new Error("OpenCode POST /api/session/one/compact failed (503): session.compact is not available yet")
+    },
+    summarizeSession: async () => {
+      legacy += 1
+      return true
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  let rejected = false
+  try {
+    await controller.compactSession("one")
+  } catch (error) {
+    rejected = /does not support native manual compaction/.test(error instanceof Error ? error.message : String(error))
+  }
+  if (!rejected || legacy !== 0) throw new Error("Unavailable V2 compaction silently fell back to the legacy transcript")
+  controller.dispose()
+})
+
 Deno.test("pending prompt text fills an info-only server event before admission completes", async () => {
   const promptID = "msg_018bcfe568001234567890abcd"
   const admission = deferred<void>()
@@ -1292,9 +1392,12 @@ Deno.test("ambiguous prompt failure retains visible text from the queued prompt"
   const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
   emitInfo = () => internal.handleEvent({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user" } } })
 
-  await controller.send("Still visible after failure", undefined, undefined, undefined, [], [], promptID).catch(() => undefined)
+  let rejected = false
+  await controller.send("Still visible after failure", undefined, undefined, undefined, [], [], promptID).catch(() => { rejected = true })
   const message = controller.chatSnapshot().session?.messages.find((entry) => entry.info.id === promptID)
-  if (message?.parts[0]?.text !== "Still visible after failure") throw new Error("Ambiguous admission reverted to the Message sent placeholder")
+  if (rejected || Number(controller.chatSnapshot().session?.queue?.length ?? 0) !== 0 || message?.parts[0]?.text !== "Still visible after failure") {
+    throw new Error("Durably confirmed admission remained failed, queued, or reverted to a placeholder")
+  }
   controller.dispose()
 })
 
@@ -1454,7 +1557,8 @@ Deno.test("reload pause rejects new prompts and resumes retained queues", async 
 })
 
 Deno.test("custom providers use compatible legacy prompt transport", async () => {
-  const calls: Array<{ text: string; agent?: string; model?: string; variant?: string }> = []
+  const calls: Array<{ text: string; agent?: string; model?: string; variant?: string; messageID?: string }> = []
+  const admissions: Array<{ sessionID: string; promptID: string; admittedAt: number }> = []
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
@@ -1464,16 +1568,27 @@ Deno.test("custom providers use compatible legacy prompt transport", async () =>
       models: [{ id: "gpt-5.6-sol", providerID: "openai", name: "GPT-5.6 Sol", variants: ["high"] }],
     }),
     messages: async () => [],
-    sendAsync: async (_sessionID: string, text: string, agent?: string, model?: string, variant?: string) => calls.push({ text, agent, model, variant }),
+    sendAsync: async (_sessionID: string, text: string, agent?: string, model?: string, variant?: string, _files?: unknown[], messageID?: string) => calls.push({ text, agent, model, variant, messageID }),
     sendPrompt: () => {
       throw new Error("Custom provider used incompatible v2 transport")
     },
   } as unknown as OpenCodeClient
-  const controller = new SessionController(fake, { error: () => undefined })
+  const controller = new SessionController(fake, {
+    error: () => undefined,
+    promptAdmitted: (sessionID, promptID, admittedAt) => admissions.push({ sessionID, promptID, admittedAt }),
+  })
   await controller.reconcile()
-  await controller.send("hello", "caveboss", "openai/gpt-5.6-sol", "high")
-  if (calls.length !== 1 || calls[0]?.text !== "hello" || calls[0].agent !== "caveboss" || calls[0].model !== "openai/gpt-5.6-sol" || calls[0].variant !== "high") {
+  const promptID = "msg_018bcfe568001234567890abcd"
+  await controller.send("hello", "caveboss", "openai/gpt-5.6-sol", "high", [], [], promptID)
+  if (calls.length !== 1 || calls[0]?.text !== "hello" || calls[0].agent !== "caveboss" || calls[0].model !== "openai/gpt-5.6-sol" || calls[0].variant !== "high" || calls[0].messageID !== promptID) {
     throw new Error("Custom provider prompt did not preserve composer selection")
+  }
+  if (admissions.length) throw new Error("Legacy prompt_async HTTP acceptance was reported as durable admission")
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user", time: { created: 123 } } } })
+  internal.handleEvent({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user", time: { created: 123 } } } })
+  if (admissions.length !== 1 || admissions[0]?.promptID !== promptID || admissions[0].admittedAt !== 123) {
+    throw new Error(`Legacy durable admission was not confirmed exactly once: ${JSON.stringify(admissions)}`)
   }
   controller.dispose()
 })
@@ -1683,6 +1798,38 @@ Deno.test("v2 session events refresh projected output and terminal status", asyn
   if (snapshot?.status.type !== "error" || snapshot.status.message !== "Provider failed" || snapshot.messages[0]?.info.id !== "assistant") {
     throw new Error("V2 terminal event did not refresh projected output and error status")
   }
+  controller.dispose()
+})
+
+Deno.test("v2 step completion waits for authoritative runner settlement and preserves queue delivery", async () => {
+  let active = true
+  const deliveries: string[] = []
+  let statusCalls = 0
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => {
+      statusCalls += 1
+      return active ? { one: { type: "busy" as const } } : {}
+    },
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    sendPrompt: async (sessionID: string, id: string, _text: string, delivery: "queue" | "steer") => {
+      deliveries.push(delivery)
+      return { admittedSeq: 1, id, sessionID, delivery, timeCreated: 123 }
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "session.next.step.ended", properties: { sessionID: "one", assistantMessageID: "assistant", finish: "stop" } })
+  if (controller.chatSnapshot().session?.status.type !== "busy") throw new Error("A provider step end was mistaken for complete session settlement")
+  await controller.send("Follow up while the runner is still draining")
+  if (deliveries.join(",") !== "queue") throw new Error(`False idle changed a follow-up into ${deliveries.join(",") || "no delivery"}`)
+  await new Promise((resolve) => setTimeout(resolve, 45))
+  if (controller.chatSnapshot().session?.status.type !== "busy" || statusCalls < 2) throw new Error("Active OpenCode runner was marked idle by the settlement probe")
+  active = false
+  await new Promise((resolve) => setTimeout(resolve, 140))
+  if (controller.chatSnapshot().session?.status.type !== "idle") throw new Error("Inactive OpenCode runner did not settle the Workbench session")
   controller.dispose()
 })
 
