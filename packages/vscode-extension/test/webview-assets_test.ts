@@ -483,12 +483,21 @@ Deno.test("permission Allow menu uses a centered down-chevron icon", () => {
   }
 })
 
-Deno.test("workspace detail popovers escape the muted status stacking context", () => {
+Deno.test("anchored menus render in the browser top layer above sticky Workbench regions", () => {
   const stripRule = /\.workspace-strip\s*\{([^}]*)\}/.exec(css)?.[1] ?? ""
   if (/\bopacity\s*:/.test(stripRule)) throw new Error("Workspace strip opacity traps detail popovers behind the composer stacking context")
   if (!css.includes(".workspace-left, .workspace-right > span, .workspace-detail > summary { opacity: .78; }") ||
-    !/\.workspace-detail-popover\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*30;/.test(css)) {
+    !/\.workspace-detail-popover\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*auto;/.test(css)) {
     throw new Error("Workspace status text or detail popover stacking is not configured correctly")
+  }
+  for (const marker of ['class="workspace-detail-popover" popover="auto"', 'class="permission-allow-options" role="menu" popover="auto"', 'class="send-options-popover" role="menu" popover="auto"']) {
+    if (!(webview + chatView).includes(marker)) throw new Error(`Anchored top-layer menu omits ${marker}`)
+  }
+  for (const marker of ["showPopover()", "hidePopover()", '":popover-open"', "positionDetailsPopover", 'interactionRegion.addEventListener("scroll"']) {
+    if (!webview.includes(marker)) throw new Error(`Top-layer menu controller omits ${marker}`)
+  }
+  if (!css.includes(".workspace-detail-popover::backdrop") || !css.includes("background: transparent")) {
+    throw new Error("Non-modal top-layer menus incorrectly obscure the Workbench")
   }
   for (const kind of ["lsp", "formatter", "mcp", "context"]) {
     if (!webview.includes(`workspaceDetail("${kind}"`)) throw new Error(`Workspace ${kind} detail popover is missing`)

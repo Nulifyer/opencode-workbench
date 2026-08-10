@@ -333,7 +333,7 @@ a { color: var(--vscode-textLink-foreground); }
 .permission-card .permission-allow-menu > summary::-webkit-details-marker { display: none; }
 .permission-card .permission-allow-menu > summary svg { width: 14px; height: 14px; display: block; fill: currentColor; }
 .permission-card .permission-allow-menu > summary:hover { background: var(--vscode-button-hoverBackground); }
-.permission-allow-options { position: absolute; right: 0; bottom: calc(100% + 4px); z-index: 30; width: max-content; max-width: min(380px, calc(100vw - 32px)); display: grid; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); border-radius: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); }
+.permission-allow-options { position: fixed; inset: auto; width: max-content; max-width: min(380px, calc(100vw - 32px)); margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); border-radius: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); }
 .permission-allow-options button { width: 100%; min-height: 26px; overflow: hidden; border: 0; color: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .permission-allow-options button:hover, .permission-allow-options button:focus { color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground)); background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground)); }
 .permission-allow-options code { color: inherit; }
@@ -713,7 +713,8 @@ body[data-progress-motion="static"] .header-active-indicator::before, body[data-
 .send-group > details > summary { box-sizing: border-box; width: 18px; height: 28px; display: grid; place-items: center; border-left: 1px solid color-mix(in srgb, var(--vscode-button-foreground) 35%, transparent); border-radius: 0 14px 14px 0; color: var(--vscode-button-foreground); background: var(--vscode-button-background); cursor: pointer; list-style: none; }
 .send-group > details > summary::-webkit-details-marker { display: none; }
 .send-group > details > summary:hover { background: var(--vscode-button-hoverBackground); }
-.send-group > details > div { position: absolute; right: 0; bottom: calc(100% + 5px); z-index: 30; width: min(320px, calc(100vw - 24px)); display: grid; gap: 1px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); border-radius: 6px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); }
+.send-group > details > div { position: fixed; inset: auto; width: min(320px, calc(100vw - 24px)); gap: 1px; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); border-radius: 6px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); }
+.permission-allow-options:popover-open, .send-options-popover:popover-open { display: grid; }
 .send-group > details > div button { min-width: 0; display: grid; gap: 2px; padding: 6px 8px; overflow: hidden; border: 0; border-radius: 4px; color: inherit; background: transparent; text-align: left; }
 .send-group > details > div button:hover, .send-group > details > div button:focus { color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground)); background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground)); }
 .send-group > details > div strong, .send-group > details > div small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -754,7 +755,8 @@ body[data-progress-motion="static"] .header-active-indicator::before, body[data-
 .workspace-detail > summary { cursor: pointer; list-style: none; }
 .workspace-detail > summary::-webkit-details-marker { display: none; }
 .workspace-detail > summary:hover, .workspace-detail > summary:focus-visible, .workspace-detail[open] > summary { color: var(--vscode-foreground); opacity: 1; }
-.workspace-detail-popover { position: fixed; z-index: 30; right: 8px; bottom: 30px; width: min(350px, calc(100vw - 16px)); max-height: min(55vh, 420px); overflow-y: auto; padding: 9px; border: 1px solid var(--vscode-widget-border); border-radius: 7px; color: var(--vscode-foreground); background: var(--vscode-editorWidget-background); box-shadow: 0 8px 24px var(--vscode-widget-shadow); }
+.workspace-detail-popover { position: fixed; inset: auto; width: min(350px, calc(100vw - 16px)); max-height: min(55vh, 420px); margin: 0; overflow-y: auto; padding: 9px; border: 1px solid var(--vscode-widget-border); border-radius: 7px; color: var(--vscode-foreground); background: var(--vscode-editorWidget-background); box-shadow: 0 8px 24px var(--vscode-widget-shadow); }
+.workspace-detail-popover::backdrop, .permission-allow-options::backdrop, .send-options-popover::backdrop { background: transparent; }
 .workspace-detail-popover > strong { display: block; margin-bottom: 7px; }
 .workspace-detail-popover p { margin: 0; color: var(--vscode-descriptionForeground); }
 .workspace-service-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }

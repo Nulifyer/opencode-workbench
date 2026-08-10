@@ -45,6 +45,7 @@ const transport = new WorkbenchProtocolClient<WebviewToHostMessage, NonNullable<
 })
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const messages = element<HTMLElement>("messages")
+const interactionRegion = document.querySelector<HTMLElement>(".interaction-region")!
 const turnNavigation = element<HTMLElement>("turn-navigation")
 const turnNavigationPreview = element<HTMLElement>("turn-navigation-preview")
 const jumpLatest = element<HTMLButtonElement>("jump-latest")
@@ -1107,7 +1108,7 @@ function renderPermissions(session: NonNullable<ChatSnapshot["session"]>): void 
     const scopeActions = reusableScopes.map((candidate) => candidate === "*"
       ? `<button type="button" role="menuitem" data-permission="scope" data-permission-scope="*">Allow All Shell Commands in this Session</button>`
       : `<button type="button" role="menuitem" data-permission="scope" data-permission-scope="${escapeHtml(candidate)}">Allow <code>${escapeHtml(candidate.replace(/ \*$/, " …"))}</code> in this Session</button>`).join("")
-    const allowMenu = !incomplete && (exactAction || scopeActions) ? `<details class="permission-allow-menu"><summary aria-label="More allow options" title="More allow options">${CHEVRON_DOWN_ICON}</summary><div class="permission-allow-options" role="menu">${exactAction}${scopeActions}</div></details>` : ""
+    const allowMenu = !incomplete && (exactAction || scopeActions) ? `<details class="permission-allow-menu"><summary aria-label="More allow options" title="More allow options">${CHEVRON_DOWN_ICON}</summary><div class="permission-allow-options" role="menu" popover="auto">${exactAction}${scopeActions}</div></details>` : ""
     const incompleteDetails = incomplete ? `<details class="permission-raw"><summary>Available request data</summary><pre>${escapeHtml(incompletePermissionDetails(request))}</pre></details><p class="permission-warning">Some request metadata was truncated. Review the available data and reject this request.</p>` : ""
     return `<article class="permission-card${incomplete ? " permission-incomplete" : ""}" data-request-id="${escapeHtml(request.id)}" data-request-session="${escapeHtml(request.sessionID)}" data-request-protocol="${request.protocol}"><div class="permission-heading"><span class="permission-request-icon" aria-hidden="true">${escapeHtml(presentation.icon)}</span><span class="permission-heading-copy"><strong>${escapeHtml(presentation.title)}</strong><small>${escapeHtml(origin)}</small></span></div>${summary}${changes}${incompleteDetails}<details class="permission-feedback"><summary>Explain rejection <small>(optional)</small></summary><label class="custom-answer"><span>Feedback</span><input type="text" data-permission-feedback maxlength="20000" autocomplete="off"></label></details><div class="permission-actions"><button type="button" data-permission="reject">Reject</button><div class="permission-allow-group"><button type="button" data-permission="once" class="primary-action" title="Allow once"${disabled}>Allow</button>${allowMenu}</div></div></article>`
   }).join("")
@@ -1176,7 +1177,7 @@ function serviceList(services: RuntimeService[], kind: "lsp" | "formatter" | "mc
 }
 
 function workspaceDetail(kind: string, label: string, title: string, content: string, tooltip: string): string {
-  return `<details class="workspace-detail workspace-${kind}"><summary title="${escapeHtml(tooltip)}">${escapeHtml(label)}</summary><div class="workspace-detail-popover"><strong>${escapeHtml(title)}</strong>${content}</div></details>`
+  return `<details class="workspace-detail workspace-${kind}"><summary title="${escapeHtml(tooltip)}">${escapeHtml(label)}</summary><div class="workspace-detail-popover" popover="auto"><strong>${escapeHtml(title)}</strong>${content}</div></details>`
 }
 
 function healthWorkspaceDetail(): string {
@@ -1196,7 +1197,7 @@ function healthWorkspaceDetail(): string {
     ["Request queue", String(health.requestQueueDepth)],
   ] : [["Status", state]]
   const content = `<dl class="workspace-context-list">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label!)}</dt><dd>${escapeHtml(value!)}</dd></div>`).join("")}</dl>`
-  return `<details class="workspace-detail workspace-health"><summary title="${escapeHtml(tooltip)}" aria-label="OpenCode health: ${escapeHtml(state)}"><span class="workspace-health-dot ${tone}" aria-hidden="true"></span><span>OpenCode</span></summary><div class="workspace-detail-popover"><strong>OpenCode health</strong>${content}</div></details>`
+  return `<details class="workspace-detail workspace-health"><summary title="${escapeHtml(tooltip)}" aria-label="OpenCode health: ${escapeHtml(state)}"><span class="workspace-health-dot ${tone}" aria-hidden="true"></span><span>OpenCode</span></summary><div class="workspace-detail-popover" popover="auto"><strong>OpenCode health</strong>${content}</div></details>`
 }
 
 function contextDetails(context: NonNullable<NonNullable<ChatSnapshot["session"]>["context"]>): string {
@@ -3277,13 +3278,57 @@ todoDock.addEventListener("click", (event) => {
   if (list) list.hidden = !todoExpanded
   vscode.setState({ ...(vscode.getState() ?? {}), todoExpanded })
 })
-workspaceStrip.addEventListener("toggle", (event) => {
-  const opened = event.target instanceof HTMLDetailsElement ? event.target : undefined
-  if (!opened?.open || !opened.classList.contains("workspace-detail")) return
-  for (const detail of workspaceStrip.querySelectorAll<HTMLDetailsElement>(".workspace-detail[open]")) {
-    if (detail !== opened) detail.open = false
+function detailsPopover(owner: HTMLDetailsElement): HTMLElement | undefined {
+  return owner.querySelector<HTMLElement>(":scope > [popover]") ?? undefined
+}
+
+function positionDetailsPopover(owner: HTMLDetailsElement, popover: HTMLElement): void {
+  const anchor = owner.querySelector<HTMLElement>(":scope > summary")
+  if (!anchor) return
+  const anchorRect = anchor.getBoundingClientRect()
+  const popoverRect = popover.getBoundingClientRect()
+  const edge = 8
+  const gap = 6
+  const alignEnd = owner === sendOptions || owner.classList.contains("permission-allow-menu") || owner.closest(".workspace-right") !== null
+  const desiredLeft = alignEnd ? anchorRect.right - popoverRect.width : anchorRect.left
+  const above = anchorRect.top - popoverRect.height - gap
+  const below = anchorRect.bottom + gap
+  const desiredTop = above >= edge || anchorRect.top >= window.innerHeight - anchorRect.bottom ? above : below
+  popover.style.left = `${Math.max(edge, Math.min(desiredLeft, window.innerWidth - popoverRect.width - edge))}px`
+  popover.style.top = `${Math.max(edge, Math.min(desiredTop, window.innerHeight - popoverRect.height - edge))}px`
+}
+
+function syncDetailsPopover(owner: HTMLDetailsElement): void {
+  const popover = detailsPopover(owner)
+  if (!popover || typeof popover.showPopover !== "function") return
+  const visible = popover.matches(":popover-open")
+  if (owner.open && !visible) popover.showPopover()
+  else if (!owner.open && visible) popover.hidePopover()
+  if (owner.open) positionDetailsPopover(owner, popover)
+}
+
+document.addEventListener("toggle", (event) => {
+  const target = event.target
+  if (target instanceof HTMLDetailsElement && detailsPopover(target)) {
+    syncDetailsPopover(target)
+    return
   }
+  if (!(target instanceof HTMLElement) || !target.matches("[popover]")) return
+  const owner = target.closest<HTMLDetailsElement>("details")
+  if (owner?.open && !target.matches(":popover-open")) owner.open = false
 }, true)
+interactionRegion.addEventListener("scroll", () => {
+  for (const owner of document.querySelectorAll<HTMLDetailsElement>("details[open]")) {
+    const popover = detailsPopover(owner)
+    if (popover?.matches(":popover-open")) positionDetailsPopover(owner, popover)
+  }
+}, { passive: true })
+window.addEventListener("resize", () => {
+  for (const owner of document.querySelectorAll<HTMLDetailsElement>("details[open]")) {
+    const popover = detailsPopover(owner)
+    if (popover?.matches(":popover-open")) positionDetailsPopover(owner, popover)
+  }
+})
 railToggle.addEventListener("click", () => {
   if (document.body.classList.contains("rail-open")) closeRail()
   else showRail()

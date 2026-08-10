@@ -608,7 +608,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                   <button id="send" class="round-action send-action" type="button" title="Send (Enter)" aria-label="Send message">${ICONS.send}</button>
                   <details id="send-options" hidden>
                     <summary aria-label="More send options" title="More send options">⌄</summary>
-                    <div role="menu">
+                    <div class="send-options-popover" role="menu" popover="auto">
                       <button type="button" role="menuitem" data-send-delivery="steer"><strong>Steer current work</strong><small>Deliver at OpenCode's next safe boundary.</small></button>
                       <button type="button" role="menuitem" data-send-delivery="queue"><strong>Follow up after completion</strong><small>Wait until the current work would otherwise stop.</small></button>
                       <button type="button" role="menuitem" data-send-delivery="replace"><strong>Replace queued instruction</strong><small>Cancel current work and admit this instruction next.</small></button>
