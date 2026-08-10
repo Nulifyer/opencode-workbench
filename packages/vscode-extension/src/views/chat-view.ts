@@ -1583,7 +1583,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       artifacts: selectedSessionID ? selectedArtifacts.map(taskArtifactSummary) : undefined,
       reviewFindings: selectedSessionID ? reviewFindings : undefined,
       evidence: selectedSessionID ? this.workbench.evidence?.list({ sessionID: selectedSessionID }) : undefined,
-      runComparisons: this.workbench.artifacts ? runComparisons : undefined,
+      // Comparison snapshots are protocol-scoped to a selected OpenCode
+      // session. During startup reconciliation there is briefly no selection;
+      // omit the field instead of publishing an unanchored empty collection.
+      runComparisons: this.workbench.artifacts && selectedSessionID ? runComparisons : undefined,
       health: this.workbench.health?.(),
       trace: this.workbench.trace?.(),
       composer: { enterBehavior: vscode.workspace.getConfiguration("opencodeWorkbench").get<"send" | "newline">("enterBehavior", "send") },

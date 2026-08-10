@@ -416,6 +416,12 @@ Deno.test("Task Workbench tabs explain their purpose and Health uses the availab
   }
 })
 
+Deno.test("startup snapshots omit session-scoped comparisons until OpenCode selects a session", () => {
+  if (!chatView.includes("runComparisons: this.workbench.artifacts && selectedSessionID ? runComparisons : undefined")) {
+    throw new Error("Startup can publish run comparisons without a selected OpenCode session")
+  }
+})
+
 Deno.test("permission Allow menu uses a centered down-chevron icon", () => {
   if (!webview.includes("${CHEVRON_DOWN_ICON}</summary>") || webview.includes(">⌄</summary>")) {
     throw new Error("Permission Allow menu still uses a text arrow")
