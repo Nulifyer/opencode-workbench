@@ -62,6 +62,13 @@
     "onWebviewPanel:opencodeWorkbench.chatEditor",
     "onCommand:opencodeWorkbench.openChat",
     "onCommand:opencodeWorkbench.openChatInEditor",
+    "onCommand:opencodeWorkbench.focusComposer",
+    "onCommand:opencodeWorkbench.toggleTaskWorkbench",
+    "onCommand:opencodeWorkbench.toggleSessions",
+    "onCommand:opencodeWorkbench.toggleJobs",
+    "onCommand:opencodeWorkbench.showAttention",
+    "onCommand:opencodeWorkbench.nextAttention",
+    "onCommand:opencodeWorkbench.openHelp",
     "onCommand:opencodeWorkbench.newSession",
     "onCommand:opencodeWorkbench.planTask",
     "onCommand:opencodeWorkbench.handoffPlan",
@@ -98,6 +105,13 @@
     "commands": [
       { "command": "opencodeWorkbench.openChat", "title": "OpenCode: Open Chat", "icon": "$(sparkle)" },
       { "command": "opencodeWorkbench.openChatInEditor", "title": "OpenCode: Open Chat in Editor", "icon": "$(open-preview)" },
+      { "command": "opencodeWorkbench.focusComposer", "title": "OpenCode: Focus Composer", "icon": "$(edit)" },
+      { "command": "opencodeWorkbench.toggleTaskWorkbench", "title": "OpenCode: Toggle Task Workbench", "icon": "$(layout-sidebar-right)" },
+      { "command": "opencodeWorkbench.toggleSessions", "title": "OpenCode: Toggle Sessions", "icon": "$(list-tree)" },
+      { "command": "opencodeWorkbench.toggleJobs", "title": "OpenCode: Toggle Jobs", "icon": "$(server-process)" },
+      { "command": "opencodeWorkbench.showAttention", "title": "OpenCode: Show Needs Attention", "icon": "$(bell-dot)" },
+      { "command": "opencodeWorkbench.nextAttention", "title": "OpenCode: Go to Next Attention Item", "icon": "$(arrow-down)" },
+      { "command": "opencodeWorkbench.openHelp", "title": "OpenCode: Open Workbench Help", "icon": "$(question)" },
       { "command": "opencodeWorkbench.newSession", "title": "OpenCode: New Session", "icon": "$(add)", "enablement": "workspaceFolderCount > 0" },
       { "command": "opencodeWorkbench.planTask", "title": "OpenCode: Plan Task", "icon": "$(notebook)", "enablement": "workspaceFolderCount > 0" },
       { "command": "opencodeWorkbench.handoffPlan", "title": "OpenCode: Handoff Approved Plan", "icon": "$(run-all)", "enablement": "workspaceFolderCount > 0 && editorLangId == markdown" },
@@ -186,6 +200,20 @@
           "enumDescriptions": ["Enter sends and Shift+Enter inserts a newline.", "Enter inserts a newline and Ctrl/Cmd+Enter sends."],
           "default": "send",
           "description": "Controls how Enter behaves in the Workbench composer."
+        },
+        "opencodeWorkbench.transcriptDensity": {
+          "type": "string",
+          "enum": ["full", "answers"],
+          "enumDescriptions": ["Show answers, reasoning, tools, and progress.", "Show user messages and final OpenCode answers while keeping controls and errors visible."],
+          "default": "full",
+          "description": "Controls transcript detail in OpenCode Workbench."
+        },
+        "opencodeWorkbench.progressMotion": {
+          "type": "string",
+          "enum": ["system", "animated", "static"],
+          "enumDescriptions": ["Follow VS Code and operating-system motion preferences.", "Use Workbench progress animation unless reduced motion is required by the system.", "Use fully static progress indicators."],
+          "default": "system",
+          "description": "Controls progress animation in OpenCode Workbench."
         }
       }
     },
@@ -202,12 +230,69 @@
         ]
       }
     ],
+    "walkthroughs": [
+      {
+        "id": "opencodeWorkbench.gettingStarted",
+        "title": "Get started with OpenCode Workbench",
+        "description": "Plan, run, review, and verify work through your OpenCode installation.",
+        "steps": [
+          {
+            "id": "opencodeWorkbench.gettingStarted.health",
+            "title": "Connect and check OpenCode health",
+            "description": "Confirm the selected OpenCode installation, connection, and sanitized runtime diagnostics in the editor Workbench.\n[Open Health](command:opencodeWorkbench.showHealth)",
+            "completionEvents": ["onCommand:opencodeWorkbench.showHealth"]
+          },
+          {
+            "id": "opencodeWorkbench.gettingStarted.chatContext",
+            "title": "Chat with explicit context",
+            "description": "Create an OpenCode session, then attach only the editor, browser, debug, diagnostic, or file context you choose.\n[Create a session](command:opencodeWorkbench.newSession) · [Attach browser/debug context](command:opencodeWorkbench.captureBrowserContext)",
+            "completionEvents": ["onCommand:opencodeWorkbench.newSession"]
+          },
+          {
+            "id": "opencodeWorkbench.gettingStarted.planHandoff",
+            "title": "Plan and hand off",
+            "description": "Ask OpenCode for an editable plan, save and approve its exact revision, then hand it to an OpenCode implementation workflow.\n[Plan a task](command:opencodeWorkbench.planTask) · [Hand off an approved plan](command:opencodeWorkbench.handoffPlan)",
+            "completionEvents": ["onCommand:opencodeWorkbench.planTask"]
+          },
+          {
+            "id": "opencodeWorkbench.gettingStarted.reviewEvidence",
+            "title": "Review and capture evidence",
+            "description": "Generate a bounded OpenCode review, triage findings, and retain deterministic task evidence beside the owning session.\n[Review changes](command:opencodeWorkbench.reviewChanges) · [Capture task evidence](command:opencodeWorkbench.captureTaskEvidence)",
+            "completionEvents": ["onCommand:opencodeWorkbench.reviewChanges"]
+          },
+          {
+            "id": "opencodeWorkbench.gettingStarted.isolatedRunsGoals",
+            "title": "Use isolated runs and goals",
+            "description": "Create an isolated OpenCode session, compare objective run evidence without an inferred winner, or verify an active OpenCode goal.\n[Create an isolated session](command:opencodeWorkbench.newIsolatedSession) · [Compare models](command:opencodeWorkbench.compareModels) · [Verify a goal](command:opencodeWorkbench.verifyGoal)",
+            "completionEvents": ["onCommand:opencodeWorkbench.newIsolatedSession"]
+          }
+        ]
+      }
+    ],
     "keybindings": [
       {
         "command": "opencodeWorkbench.newSession",
         "key": "ctrl+alt+n",
         "mac": "ctrl+alt+n",
         "when": "workspaceFolderCount > 0 && (focusedView == opencodeWorkbench.chat || activeWebviewPanelId == opencodeWorkbench.chatEditor)"
+      },
+      {
+        "command": "opencodeWorkbench.openChatInEditor",
+        "key": "ctrl+shift+o",
+        "mac": "cmd+shift+o",
+        "when": "workspaceFolderCount > 0 && focusedView == opencodeWorkbench.chat"
+      },
+      {
+        "command": "opencodeWorkbench.focusComposer",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "workspaceFolderCount > 0 && (focusedView == opencodeWorkbench.chat || activeWebviewPanelId == opencodeWorkbench.chatEditor)"
+      },
+      {
+        "command": "opencodeWorkbench.abortSession",
+        "key": "escape",
+        "mac": "escape",
+        "when": "workspaceFolderCount > 0 && opencodeWorkbench.sessionBusy && (focusedView == opencodeWorkbench.chat || activeWebviewPanelId == opencodeWorkbench.chatEditor)"
       }
     ],
     "viewsContainers": {

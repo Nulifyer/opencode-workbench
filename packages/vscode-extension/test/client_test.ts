@@ -1,6 +1,6 @@
 import { PERMISSION_AGGREGATE_CHARACTER_LIMIT, parseHostMessage } from "@opencode-workbench/shared"
 import { GOAL_CONTINUATION_PROMPT } from "../../opencode-plugin/src/goal-prompts.ts"
-import { OpenCodeClient, parseChanges, parseCommands, parsePermission, parsePermissions, parseQuestion, parseQuestions, parseTodos, validateServerUrl } from "../src/opencode-client.ts"
+import { OpenCodeClient, parseChanges, parseCommands, parseOpenCodePty, parsePermission, parsePermissions, parseQuestion, parseQuestions, parseTodos, validateServerUrl } from "../src/opencode-client.ts"
 
 function throws(operation: () => void, pattern: RegExp): void {
   try {
@@ -10,6 +10,16 @@ function throws(operation: () => void, pattern: RegExp): void {
     throw error
   }
   throw new Error("Expected operation to throw")
+}
+
+async function rejects(operation: () => Promise<unknown>, pattern: RegExp): Promise<void> {
+  try {
+    await operation()
+  } catch (error) {
+    if (pattern.test(error instanceof Error ? error.message : String(error))) return
+    throw error
+  }
+  throw new Error("Expected operation to reject")
 }
 
 Deno.test("server URL accepts loopback HTTP and remote HTTPS", () => {
@@ -22,6 +32,236 @@ Deno.test("server URL rejects credential leaks and remote cleartext", () => {
   throws(() => validateServerUrl("http://192.168.1.20:4096"), /numeric loopback/)
   throws(() => validateServerUrl("http://localhost:4096"), /numeric loopback/)
   throws(() => validateServerUrl("https://user:secret@example.test"), /must not contain credentials/)
+})
+
+Deno.test("native session metadata and archive/share operations stay OpenCode-authoritative", async () => {
+  const originalFetch = globalThis.fetch
+  const requests: Array<{ method: string; url: URL; body?: unknown }> = []
+  const session = (overrides: Record<string, unknown> = {}) => ({
+    id: "ses-native",
+    title: "Native session",
+    directory: "/work",
+    time: { created: 1, updated: 2, archived: 3 },
+    parentID: "ses-parent",
+    agent: "build",
+    model: { providerID: "provider", id: "model", variant: "high" },
+    cost: 1.25,
+    tokens: { input: 10, output: 20, reasoning: 5, cache: { read: 7, write: 3 } },
+    summary: { additions: 4, deletions: 2, files: 1 },
+    share: { url: "https://share.example.test/ses-native" },
+    revert: { messageID: "msg-one", partID: "part-one" },
+    ...overrides,
+  })
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    const encoded = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
+    requests.push({ method: init?.method ?? "GET", url, body: encoded })
+    if (url.pathname === "/session" && (init?.method ?? "GET") === "GET") {
+      return new Response(JSON.stringify([
+        session(),
+        session({ id: "ses-private", share: { url: "https://user:secret@share.example.test/leak" } }),
+      ]))
+    }
+    if (url.pathname === "/session/ses-native" && init?.method === "PATCH") return new Response(JSON.stringify(session()))
+    if (url.pathname === "/session/ses-native/share" && init?.method === "POST") return new Response(JSON.stringify(session()))
+    if (url.pathname === "/session/ses-native/share" && init?.method === "DELETE") return new Response(JSON.stringify(session({ share: undefined })))
+    return new Response("{}", { status: 404 })
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const sessions = await client.listSessions()
+    const native = sessions[0]
+    if (!native || native.parentID !== "ses-parent" || native.time.archived !== 3 || native.share?.url !== "https://share.example.test/ses-native" ||
+      native.summary?.files !== 1 || native.revert?.partID !== "part-one" || native.model?.variant !== "high" || native.tokens?.cache.read !== 7) {
+      throw new Error("OpenCode native session metadata was not preserved")
+    }
+    if (sessions[1]?.share !== undefined) throw new Error("Credential-bearing OpenCode share URL was exposed")
+    const list = requests.find((request) => request.method === "GET" && request.url.pathname === "/session")
+    if (!list || list.url.searchParams.get("limit") !== "10000" || list.url.searchParams.has("roots")) {
+      throw new Error(`Default OpenCode session hydration did not request every root and descendant: ${list?.url}`)
+    }
+    await client.archiveSession("ses-native", 123)
+    if ((await client.shareSession("ses-native")).share?.url !== "https://share.example.test/ses-native") throw new Error("Native OpenCode share response was not preserved")
+    if ((await client.unshareSession("ses-native")).share !== undefined) throw new Error("Native OpenCode unshare response was not preserved")
+    const archive = requests.find((request) => request.method === "PATCH")
+    if (archive?.url.pathname !== "/session/ses-native" || JSON.stringify(archive.body) !== JSON.stringify({ time: { archived: 123 } })) {
+      throw new Error(`Archive did not use the native OpenCode PATCH contract: ${JSON.stringify(archive)}`)
+    }
+    if (requests.filter((request) => request.url.pathname === "/session/ses-native/share").map((request) => request.method).join(",") !== "POST,DELETE") {
+      throw new Error("Share and unshare did not use the native OpenCode endpoints")
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("bounded experimental session search uses OpenCode and falls back compatibly", async () => {
+  const originalFetch = globalThis.fetch
+  const requests: URL[] = []
+  let experimentalStatus = 200
+  const session = (id: string, title: string, parentID?: string, archived?: number) => ({ id, title, parentID, directory: "/work", time: { created: 1, updated: 2, archived } })
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    requests.push(url)
+    if (url.pathname === "/experimental/session") {
+      if (experimentalStatus !== 200) return new Response("missing", { status: experimentalStatus })
+      return new Response(JSON.stringify([session("ses-result", "Search result", url.searchParams.has("roots") ? undefined : "ses-parent")]))
+    }
+    if (url.pathname === "/session") return new Response(JSON.stringify([
+      session("ses-root", "Matching root"),
+      session("ses-child", "Matching child", "ses-root"),
+      session("ses-archived", "Matching archived", undefined, 3),
+    ]))
+    return new Response("{}", { status: 404 })
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const native = await client.listSessions({ search: "result", roots: true, archived: false, start: 10, cursor: 20, limit: 25 })
+    if (native[0]?.id !== "ses-result") throw new Error("Experimental OpenCode session result was not parsed")
+    const query = requests[0]!
+    if (query.searchParams.get("search") !== "result" || query.searchParams.get("roots") !== "true" || query.searchParams.get("archived") !== "false" ||
+      query.searchParams.get("start") !== "10" || query.searchParams.get("cursor") !== "20" || query.searchParams.get("limit") !== "25") throw new Error(`Experimental session query was malformed: ${query}`)
+
+    const descendants = await client.listSessions({ limit: 25 })
+    if (descendants[0]?.parentID !== "ses-parent" || requests[1]?.searchParams.has("roots")) {
+      throw new Error("Default experimental session hydration omitted or flattened an OpenCode descendant")
+    }
+
+    experimentalStatus = 404
+    const fallback = await client.listSessions({ search: "matching", roots: true, archived: false, limit: 10 })
+    if (fallback.map((entry) => entry.id).join(",") !== "ses-root") throw new Error("Legacy session fallback did not preserve bounded root/archive/search filters")
+    const unfilteredFallback = await client.listSessions({ roots: false, archived: true, limit: 10 })
+    if (unfilteredFallback.map((entry) => entry.id).join(",") !== "ses-root,ses-child,ses-archived") {
+      throw new Error("Legacy session fallback did not preserve OpenCode's inclusive roots/archive flags")
+    }
+    const defaultFallback = await client.listSessions({ limit: 10 })
+    if (defaultFallback.map((entry) => entry.id).join(",") !== "ses-root,ses-child") {
+      throw new Error("Legacy session fallback did not preserve OpenCode's default archived-session exclusion")
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("experimental session search enforces the SDK response and paging boundaries", async () => {
+  const originalFetch = globalThis.fetch
+  const requests: URL[] = []
+  let response: "envelope" | 400 | 404 = "envelope"
+  globalThis.fetch = (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    requests.push(url)
+    if (url.pathname === "/experimental/session") {
+      if (response === "envelope") return Promise.resolve(new Response(JSON.stringify({ data: [] })))
+      return Promise.resolve(new Response("unavailable", { status: response }))
+    }
+    if (url.pathname === "/session") return Promise.resolve(new Response("[]"))
+    return Promise.resolve(new Response("missing", { status: 404 }))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    await rejects(() => client.listSessions({ search: "strict" }), /malformed experimental session list/)
+
+    response = 400
+    await rejects(() => client.listSessions({ search: "bad request" }), /failed \(400\)/)
+    if (requests.some((request) => request.pathname === "/session")) throw new Error("A supported endpoint's bad request incorrectly used the legacy fallback")
+
+    response = 404
+    await rejects(() => client.listSessions({ cursor: 20 }), /does not support paged session search/)
+    if (requests.some((request) => request.pathname === "/session")) throw new Error("Paged search incorrectly used the unpaged legacy fallback")
+
+    const requestCount = requests.length
+    await rejects(() => client.listSessions({ start: -1 }), /session start is invalid/)
+    await rejects(() => client.listSessions({ cursor: -1 }), /session cursor is invalid/)
+    await rejects(() => client.listSessions({ limit: 5_001 }), /session limit/)
+    if (requests.length !== requestCount) throw new Error("Invalid experimental session options reached OpenCode")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("native PTY parsing is strict, bounded, and clone-safe", () => {
+  const source = { id: "pty-one", title: "Tests", command: "deno", args: ["test"], cwd: "/work", status: "running", pid: 42 }
+  const pty = parseOpenCodePty(source)
+  if (!pty || pty.id !== "pty-one" || pty.args[0] !== "test" || pty.exitCode !== undefined) throw new Error("Valid OpenCode PTY metadata was rejected")
+  source.args[0] = "mutated"
+  if (pty.args[0] !== "test") throw new Error("OpenCode PTY arguments were not cloned")
+  for (const malformed of [
+    { ...source, id: "bad\npty" },
+    { ...source, status: "unknown" },
+    { ...source, pid: 1.5 },
+    { ...source, args: [1] },
+    { ...source, args: Array.from({ length: 257 }, () => "x") },
+    { ...source, exitCode: Number.NaN },
+  ]) {
+    if (parseOpenCodePty(malformed)) throw new Error(`Malformed OpenCode PTY metadata was accepted: ${JSON.stringify(malformed).slice(0, 200)}`)
+  }
+})
+
+Deno.test("native PTY and background-child methods use strict OpenCode endpoints", async () => {
+  const originalFetch = globalThis.fetch
+  const requests: Array<{ method: string; url: URL }> = []
+  globalThis.fetch = (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    requests.push({ method: init?.method ?? "GET", url })
+    if (url.pathname === "/pty") return Promise.resolve(new Response(JSON.stringify([
+      { id: "pty-one", title: "Tests", command: "deno", args: ["test"], cwd: "/work", status: "running", pid: 42 },
+      { id: "pty-two", title: "Build", command: "deno", args: ["task", "build"], cwd: "/work", status: "exited", pid: 43, exitCode: 0 },
+    ])))
+    if (url.pathname === "/pty/pty-one") return Promise.resolve(new Response("true"))
+    if (url.pathname === "/experimental/session/ses-parent/background") return Promise.resolve(new Response("true"))
+    return Promise.resolve(new Response("false", { status: 404 }))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const ptys = await client.listPtys()
+    if (ptys.length !== 2 || ptys[1]?.exitCode !== 0 || !await client.deletePty("pty-one") || !await client.backgroundChildSessions("ses-parent")) {
+      throw new Error("OpenCode PTY/background responses were not preserved")
+    }
+    if (requests.map((request) => `${request.method} ${request.url.pathname}`).join(",") !== "GET /pty,DELETE /pty/pty-one,POST /experimental/session/ses-parent/background" ||
+      requests.some((request) => request.url.searchParams.get("directory") !== "/work")) {
+      throw new Error(`OpenCode PTY/background endpoints were incorrect: ${requests.map((request) => `${request.method} ${request.url}`).join(",")}`)
+    }
+    globalThis.fetch = () => Promise.resolve(new Response("{}"))
+    let malformedDeleteRejected = false
+    let unsafeSessionRejected = false
+    try {
+      await client.deletePty("pty-two")
+    } catch (error) {
+      malformedDeleteRejected = /deletion data/.test(error instanceof Error ? error.message : String(error))
+    }
+    try {
+      await client.backgroundChildSessions("bad\nsession")
+    } catch (error) {
+      unsafeSessionRejected = /session ID/.test(error instanceof Error ? error.message : String(error))
+    }
+    if (!malformedDeleteRejected || !unsafeSessionRejected) throw new Error("Malformed PTY deletion or unsafe background-session input was accepted")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+Deno.test("native PTY lists reject malformed, duplicate, and oversized server state", async () => {
+  const originalFetch = globalThis.fetch
+  const responses: unknown[] = [
+    [{ id: "duplicate", title: "One", command: "sh", args: [], cwd: "/work", status: "running", pid: 1 }, { id: "duplicate", title: "Two", command: "sh", args: [], cwd: "/work", status: "running", pid: 2 }],
+    [{ id: "invalid", title: "Invalid", command: "sh", args: [1], cwd: "/work", status: "running", pid: 1 }],
+    Array.from({ length: 501 }, (_, index) => ({ id: `pty-${index}`, title: "PTY", command: "sh", args: [], cwd: "/work", status: "running", pid: index })),
+  ]
+  globalThis.fetch = () => Promise.resolve(new Response(JSON.stringify(responses.shift())))
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let rejected = false
+      try {
+        await client.listPtys()
+      } catch (error) {
+        rejected = /PTY/.test(error instanceof Error ? error.message : String(error))
+      }
+      if (!rejected) throw new Error(`Malformed PTY list ${attempt} was accepted`)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 Deno.test("event stream treats instance disposal as a clean end and bounds unfinished frames", async () => {

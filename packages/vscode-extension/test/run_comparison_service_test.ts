@@ -1,6 +1,6 @@
-import { assertEquals, assertMatch, assertStringIncludes } from "jsr:@std/assert"
-import { RunComparisonService } from "../src/application/run-comparison-service.ts"
-import type { EvidenceReference, RunGroup } from "@opencode-workbench/shared"
+import { assertEquals, assertMatch, assertStringIncludes, assertThrows } from "jsr:@std/assert"
+import { exactRunComparisonMarkdown, RunComparisonService, runComparisonMarkdown } from "../src/application/run-comparison-service.ts"
+import { TASK_ARTIFACT_SCHEMA_VERSION, type EvidenceReference, type RunComparisonRow, type RunGroup, type TaskArtifact } from "@opencode-workbench/shared"
 
 const group: RunGroup = { id: "group", title: "Compare", repository: "/repo", baseRef: "main", promptReceiptID: "receipt", isolation: "worktree", createdAt: 1, runs: [{ id: "one", model: "provider/model", phase: "completed", startedAt: 1, completedAt: 1_001, session: { sessionID: "session", directory: "/run", worktreeID: "wt", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } }] }
 
@@ -20,8 +20,8 @@ Deno.test("objective comparison reports exact Git numstat and labels unavailable
   assertEquals(rows[0]?.taskOutcomes, "passed")
   assertEquals(rows[0]?.diagnostics, "clean")
   assertEquals(rows[0]?.tokens, 25)
-  assertMatch(service.markdown(group, rows), /No AI winner/)
-  assertMatch(service.markdown(group, rows), /Goal \/ verifier/)
+  assertMatch(service.markdown(group, rows), /No winner or score/)
+  assertMatch(service.markdown(group, rows), /Verifier/)
 })
 
 Deno.test("objective comparison reports diagnostics only when their state is proven", async () => {
@@ -43,6 +43,23 @@ Deno.test("objective comparison reports diagnostics only when their state is pro
   assertEquals(await diagnostics([evidence("passed", 10), evidence("failed", 20)]), "has-errors")
 })
 
+Deno.test("pending runs never compare the main checkout as run output", async () => {
+  let gitCalls = 0
+  const pending: RunGroup = {
+    ...group,
+    runs: [{ ...group.runs[0]!, phase: "preparing", session: { ...group.runs[0]!.session, sessionID: "pending", directory: group.repository } }],
+  }
+  const rows = await new RunComparisonService({ run: async () => {
+    gitCalls += 1
+    return { stdout: "", stderr: "" }
+  } }).compare(pending)
+
+  assertEquals(gitCalls, 0)
+  assertEquals(rows[0]?.changedFiles, 0)
+  assertEquals(rows[0]?.complete, false)
+  assertEquals(rows[0]?.limitation, "Run directory was not created")
+})
+
 Deno.test("objective comparison bounds and redacts Git failure details", async () => {
   const secret = "Authorization: \"Bearer auth-secret\"\nProxy-Authorization: 'Basic proxy-secret'\nCookie: session=cookie-secret\nhttps://user:pass@example.com/path " + "x".repeat(3_000)
   const service = new RunComparisonService({ run: async () => { throw new Error(secret) } })
@@ -54,4 +71,52 @@ Deno.test("objective comparison bounds and redacts Git failure details", async (
   assertStringIncludes(limitation, "Cookie: [redacted]")
   assertStringIncludes(limitation, "https://[redacted]@example.com/path")
   for (const value of ["auth-secret", "proxy-secret", "cookie-secret", "user:pass"]) assertEquals(limitation.includes(value), false)
+})
+
+Deno.test("comparison Markdown exports exact stored rows without scoring or a model turn", () => {
+  const row: RunComparisonRow = {
+    runID: "run|one",
+    status: "completed",
+    model: "provider/model",
+    agent: "build",
+    elapsedMilliseconds: 1_234,
+    changedFiles: 2,
+    additions: 7,
+    deletions: 3,
+    taskOutcomes: "passed",
+    diagnostics: "clean",
+    verifierState: "verified|deterministically",
+    tokens: 42,
+    cost: 0.125,
+    complete: true,
+    blocker: "line one\nline|two",
+  }
+  const markdown = runComparisonMarkdown({ ...group, title: "Compare | exact" }, [row])
+  assertStringIncludes(markdown, "# Run comparison: Compare \\| exact")
+  assertStringIncludes(markdown, "| run\\|one | completed | provider/model / build | 1234 | 2 | 7 | 3 |")
+  assertStringIncludes(markdown, "verified\\|deterministically")
+  assertStringIncludes(markdown, "line one<br>line\\|two")
+  assertStringIncludes(markdown, "No winner or score is inferred, and this export invokes no model.")
+  assertEquals(markdown.includes("| Winner |"), false)
+  assertEquals(markdown.includes("| Score |"), false)
+})
+
+Deno.test("exact comparison export binds artifact identity, revision, group, and active lifecycle", () => {
+  const row: RunComparisonRow = { runID: "one", status: "completed", model: "provider/model", changedFiles: 0, additions: 0, deletions: 0, taskOutcomes: "not-recorded", diagnostics: "not-recorded", complete: true }
+  const artifact: TaskArtifact = {
+    schemaVersion: TASK_ARTIFACT_SCHEMA_VERSION,
+    id: "artifact",
+    revision: 3,
+    createdAt: 1,
+    updatedAt: 2,
+    sessionID: "session",
+    lifecycle: "active",
+    kind: "run-comparison",
+    payload: { groupID: group.id, rows: [row] },
+  }
+  const reference = { groupID: group.id, artifactID: artifact.id, revision: artifact.revision }
+  assertEquals(exactRunComparisonMarkdown(group, [artifact], reference), runComparisonMarkdown(group, [row]))
+  assertThrows(() => exactRunComparisonMarkdown(group, [artifact], { ...reference, revision: 2 }), Error, "changed")
+  assertThrows(() => exactRunComparisonMarkdown(group, [artifact], { ...reference, groupID: "other" }), Error, "group changed")
+  assertThrows(() => exactRunComparisonMarkdown(group, [{ ...artifact, lifecycle: "archived" }], reference), Error, "no longer available")
 })

@@ -13,12 +13,14 @@ import type {
   MessagePatch,
   ModelOption,
   OpenCodeEvent,
+  OpenCodePty,
   PermissionRequest,
   ProviderOption,
   QuestionRequest,
   ResourceOption,
   RuntimeService,
   RuntimeStatus,
+  SessionInfo,
   SessionStatus,
   TodoItem,
   TranscriptHistoryPage,
@@ -35,7 +37,7 @@ import {
   permissionRequestCharacters,
   reusablePermissionScopes,
 } from "@opencode-workbench/shared"
-import { OpenCodeClient, TRANSCRIPT_MESSAGE_LIMIT, parseChanges, parsePermission, parseQuestion, parseTodos, type PromptFilePart, type SessionMessageHistory } from "./opencode-client.js"
+import { OPENCODE_PTY_LIMIT, OpenCodeClient, TRANSCRIPT_MESSAGE_LIMIT, parseChanges, parseOpenCodePty, parsePermission, parseQuestion, parseTodos, type PromptFilePart, type SessionMessageHistory } from "./opencode-client.js"
 import { OrderedEventBus } from "./ordered-event-bus.js"
 import { ConnectionCoordinator } from "./session/connection-coordinator.js"
 import { SessionRepository } from "./application/session-repository.js"
@@ -80,6 +82,12 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function sessionTokenTotal(tokens: SessionInfo["tokens"]): number | undefined {
+  if (!tokens) return undefined
+  const total = tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+  return Number.isSafeInteger(total) && total >= 0 ? total : undefined
+}
+
 function errorDetail(value: unknown): string | undefined {
   if (!record(value)) return undefined
   if (typeof value.message === "string" && value.message.trim()) return value.message.slice(0, 20_000)
@@ -95,6 +103,24 @@ function persistedAssistantFailure(entry?: MessageBundle): string | undefined {
   return entry.info.finish === "unknown" && !hasResponse
     ? "The selected model or provider ended the turn without returning a response. Retry the turn or choose another model."
     : undefined
+}
+
+function clonePty(pty: OpenCodePty): OpenCodePty {
+  return { ...pty, args: [...pty.args] }
+}
+
+function samePty(left: OpenCodePty, right: OpenCodePty): boolean {
+  return left.id === right.id && left.title === right.title && left.command === right.command && left.cwd === right.cwd &&
+    left.status === right.status && left.pid === right.pid && left.exitCode === right.exitCode &&
+    left.args.length === right.args.length && left.args.every((argument, index) => argument === right.args[index])
+}
+
+function ptyEventID(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 1_024 && !/[\u0000-\u001f\u007f]/.test(value) ? value : undefined
+}
+
+function ptyEventExitCode(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && Number(value) >= -2_147_483_648 && Number(value) <= 2_147_483_647 ? Number(value) : undefined
 }
 
 export { permissionPatternMatches } from "@opencode-workbench/shared"
@@ -171,6 +197,9 @@ export class SessionController {
   private reconcileGeneration = 0
   private sessionRevision = 0
   private statusRevision = 0
+  private ptyRevision = 0
+  private ptyGeneration = 0
+  private readonly ptyState = new Map<string, OpenCodePty>()
   private readonly unknownEventTypes = new Set<string>()
   private readonly recoveredSessions = new Map<string, string>()
   private readonly recoveringSessions = new Set<string>()
@@ -265,6 +294,11 @@ export class SessionController {
     return this.repository.snapshot
   }
 
+  /** Clone-safe read-only projection of OpenCode-owned PTY metadata. */
+  ptys(): OpenCodePty[] {
+    return [...this.ptyState.values()].map(clonePty)
+  }
+
   private get state(): WorkbenchState { return this.repository.snapshot }
 
   canAttachWorkspaceFiles(): boolean {
@@ -306,6 +340,7 @@ export class SessionController {
     this.reconcileGeneration += 1
     this.permissionGeneration += 1
     this.questionGeneration += 1
+    this.ptyGeneration += 1
     for (const [sessionID, generation] of this.transcriptGenerations) {
       this.transcriptGenerations.set(sessionID, generation + 1)
     }
@@ -318,6 +353,7 @@ export class SessionController {
     this.eventBus.dispose()
     this.permissionGeneration += 1
     this.questionGeneration += 1
+    this.ptyGeneration += 1
     this.connectionCoordinator.dispose()
     this.client.cancelPendingRequests?.()
     if (this.runtimeRefreshTimer) clearTimeout(this.runtimeRefreshTimer)
@@ -327,6 +363,7 @@ export class SessionController {
     this.settlements.dispose()
     this.permissions.dispose()
     this.questions.dispose()
+    this.ptyState.clear()
     this.repository.dispose()
   }
 
@@ -351,6 +388,65 @@ export class SessionController {
     if (this.disposed || generation !== this.runtimeGeneration) return
     this.runtime = runtime
     this.repository.notify({ type: "connected", connected: this.state.connected })
+  }
+
+  async reconcilePtys(): Promise<void> {
+    if (typeof this.client.listPtys !== "function") return
+    const generation = ++this.ptyGeneration
+    const revision = this.ptyRevision
+    const values = await this.client.listPtys()
+    if (this.disposed || generation !== this.ptyGeneration) return
+    if (revision !== this.ptyRevision) {
+      void this.reconcilePtys().catch((error) => this.callbacks.error(`Could not reconcile OpenCode PTYs: ${message(error)}`))
+      return
+    }
+    const next = new Map<string, OpenCodePty>()
+    for (const pty of values) {
+      if (next.size >= OPENCODE_PTY_LIMIT) break
+      if (!next.has(pty.id)) next.set(pty.id, clonePty(pty))
+    }
+    const current = [...this.ptyState.values()]
+    const projected = [...next.values()]
+    if (current.length === projected.length && current.every((pty, index) => samePty(pty, projected[index]!))) return
+    this.ptyState.clear()
+    for (const pty of projected) this.ptyState.set(pty.id, pty)
+    this.repository.notify({ type: "connected", connected: this.state.connected })
+  }
+
+  private upsertPty(pty: OpenCodePty): boolean {
+    const previous = this.ptyState.get(pty.id)
+    if (previous && samePty(previous, pty)) return false
+    if (!previous && this.ptyState.size >= OPENCODE_PTY_LIMIT) {
+      const removable = [...this.ptyState.values()].find((candidate) => candidate.status === "exited") ?? this.ptyState.values().next().value
+      if (removable) this.ptyState.delete(removable.id)
+    }
+    this.ptyState.set(pty.id, clonePty(pty))
+    return true
+  }
+
+  private consumePtyEvent(event: OpenCodeEvent): void {
+    this.ptyRevision += 1
+    let changed = false
+    let hydrationRequired = false
+    if (event.type === "pty.created" || event.type === "pty.updated") {
+      const pty = parseOpenCodePty(event.properties.info)
+      if (pty) changed = this.upsertPty(pty)
+      else hydrationRequired = true
+    } else if (event.type === "pty.exited") {
+      const id = ptyEventID(event.properties.id)
+      const exitCode = ptyEventExitCode(event.properties.exitCode)
+      const current = id ? this.ptyState.get(id) : undefined
+      if (id && exitCode !== undefined && current) changed = this.upsertPty({ ...current, status: "exited", exitCode })
+      else if (id && exitCode !== undefined) hydrationRequired = true
+      else if (id) hydrationRequired = true
+    } else if (event.type === "pty.deleted") {
+      const id = ptyEventID(event.properties.id)
+      if (id) changed = this.ptyState.delete(id)
+    }
+    if (changed) this.repository.notify({ type: "connected", connected: this.state.connected })
+    if (hydrationRequired && typeof this.client.listPtys === "function") {
+      void this.reconcilePtys().catch((error) => this.callbacks.error(`Could not reconcile OpenCode PTYs: ${message(error)}`))
+    }
   }
 
   messageUpdateKey(update: ControllerUpdate): { sessionID: string; messageID: string } | undefined {
@@ -541,6 +637,7 @@ export class SessionController {
       }),
       this.client.commands?.().catch(() => this.commands) ?? Promise.resolve(this.commands),
       this.readRuntime(),
+      this.reconcilePtys().catch((error) => this.callbacks.error(`Could not reconcile OpenCode PTYs: ${message(error)}`)),
     ])
     if (this.disposed || generation !== this.reconcileGeneration) return
     if (sessionRevision !== this.sessionRevision) {
@@ -842,6 +939,29 @@ export class SessionController {
     const info = await this.client.unshareSession(sessionID)
     this.sessionRevision += 1
     this.dispatch({ type: "event", event: { type: "session.updated", properties: { info } } })
+  }
+
+  async archiveSession(sessionID: string): Promise<void> {
+    this.requireSession(sessionID)
+    const info = await this.client.archiveSession(sessionID)
+    this.sessionRevision += 1
+    this.dispatch({ type: "event", event: { type: "session.updated", properties: { info } } })
+  }
+
+  async cancelPty(ptyID: string): Promise<void> {
+    const expected = this.ptyState.get(ptyID)
+    if (!expected) throw new Error("Cannot cancel an unknown OpenCode PTY")
+    if (await this.client.deletePty(ptyID) !== true) throw new Error("OpenCode did not cancel the PTY")
+    this.ptyRevision += 1
+    if (this.ptyState.get(ptyID) === expected && this.ptyState.delete(ptyID)) {
+      this.repository.notify({ type: "connected", connected: this.state.connected })
+    }
+  }
+
+  async backgroundChildSessions(sessionID: string): Promise<boolean> {
+    this.requireSession(sessionID)
+    if (typeof this.client.backgroundChildSessions !== "function") throw new Error("This OpenCode server does not support background child sessions")
+    return await this.client.backgroundChildSessions(sessionID)
   }
 
   private async reloadSession(sessionID: string): Promise<void> {
@@ -1387,6 +1507,66 @@ export class SessionController {
       if (visibleRootIDs.length >= 5_000) visibleRootIDs[visibleRootIDs.length - 1] = selectedRootID
       else visibleRootIDs.push(selectedRootID)
     }
+    const recoveredSessionIDs = new Set(recovery.representative.values())
+    const depthMemo = new Map<string, number>()
+    const depthFor = (sessionID: string): number => {
+      const cached = depthMemo.get(sessionID)
+      if (cached !== undefined) return cached
+      const visited = new Set<string>()
+      let candidate = sessionID
+      let depth = 0
+      while (depth < 100) {
+        if (visited.has(candidate)) break
+        visited.add(candidate)
+        const parentID = this.state.sessions[candidate]?.info.parentID
+        if (!parentID || !this.state.sessions[parentID] || visited.has(parentID)) break
+        candidate = parentID
+        depth += 1
+      }
+      depthMemo.set(sessionID, depth)
+      return depth
+    }
+    const lineageIDs = this.state.order
+      .filter((id) => Boolean(this.state.sessions[id]) && !recovery.hidden.has(id))
+      .sort((left, right) => {
+        const leftState = this.state.sessions[left]!
+        const rightState = this.state.sessions[right]!
+        const leftSelected = selectedRootID && rootID(left) === selectedRootID ? 0 : 1
+        const rightSelected = selectedRootID && rootID(right) === selectedRootID ? 0 : 1
+        const leftAttention = (visiblePermissions.get(left)?.length ?? 0) + leftState.questions.length || ["busy", "retry", "error"].includes(leftState.status.type) ? 0 : 1
+        const rightAttention = (visiblePermissions.get(right)?.length ?? 0) + rightState.questions.length || ["busy", "retry", "error"].includes(rightState.status.type) ? 0 : 1
+        return leftSelected - rightSelected || leftAttention - rightAttention || depthFor(left) - depthFor(right) ||
+          rightState.info.time.updated - leftState.info.time.updated || left.localeCompare(right)
+      })
+      .slice(0, 5_000)
+    if (current && !lineageIDs.includes(current.info.id)) {
+      if (lineageIDs.length >= 5_000) lineageIDs[lineageIDs.length - 1] = current.info.id
+      else lineageIDs.push(current.info.id)
+    }
+    const lineage = lineageIDs.map((id) => {
+      const session = this.state.sessions[id]!
+      const parentID = session.info.parentID && this.state.sessions[session.info.parentID] ? session.info.parentID : undefined
+      return {
+        sessionID: id,
+        parentID,
+        rootID: rootID(id),
+        depth: depthFor(id),
+        relation: recoveredSessionIDs.has(id) ? "recovery" as const : parentID ? "child" as const : "root" as const,
+        title: session.info.title || "Untitled session",
+        status: session.status,
+        updatedAt: Number.isSafeInteger(session.info.time.updated) && session.info.time.updated >= 0 ? session.info.time.updated : 0,
+        directory: session.info.directory.slice(0, 8_192),
+        model: session.model ?? (session.info.model ? `${session.info.model.providerID}/${session.info.model.id}` : undefined),
+        agent: session.agent ?? session.info.agent,
+        tokens: sessionTokenTotal(session.info.tokens),
+        cost: session.info.cost,
+        attention: (visiblePermissions.get(id)?.length ?? 0) + session.questions.length,
+        questionCount: session.questions.length,
+        permissionCount: visiblePermissions.get(id)?.length ?? 0,
+        archived: session.info.time.archived !== undefined,
+        shared: Boolean(session.info.share?.url),
+      }
+    })
     const effectiveAgent = current?.agent ?? this.currentAgent ?? this.defaultAgent
     const effectiveModel = current?.model ?? this.modelForAgent(effectiveAgent)
     const selectedModel = effectiveModel
@@ -1403,7 +1583,7 @@ export class SessionController {
       for (const request of visiblePermissions.get(session.info.id) ?? []) attentionItems.push({
         id: `permission:${request.protocol}:${request.sessionID}:${request.id}`,
         kind: "permission",
-        sessionID: session.info.id,
+        sessionID: rootID(request.sessionID),
         title: request.title || "Permission required",
         detail: request.type,
         createdAt: session.info.time.updated,
@@ -1412,7 +1592,7 @@ export class SessionController {
       for (const request of session.questions) attentionItems.push({
         id: `question:${request.sessionID}:${request.id}`,
         kind: "question",
-        sessionID: session.info.id,
+        sessionID: rootID(request.sessionID),
         title: request.questions[0]?.header || request.questions[0]?.question || "Question from OpenCode",
         createdAt: session.info.time.updated,
         target: { surface: "conversation", itemID: request.id },
@@ -1469,8 +1649,19 @@ export class SessionController {
             total: session.todos.length,
           },
           changeCount: session.changes.length,
+          archived: session.info.time.archived !== undefined,
+          shared: Boolean(session.info.share?.url),
+          shareUrl: session.info.share?.url,
+          model: session.model ?? (session.info.model ? `${session.info.model.providerID}/${session.info.model.id}` : undefined),
+          agent: session.agent ?? session.info.agent,
+          tokens: sessionTokenTotal(session.info.tokens),
+          cost: session.info.cost,
+          summary: session.info.summary,
+          rootID: id,
+          depth: 0,
         }] : []
       }),
+      lineage,
       agents: this.agents,
       mentionAgents: this.mentionAgents,
       providers: this.providers,
@@ -1511,11 +1702,18 @@ export class SessionController {
         context: deriveContext(current.messages, this.models, selectedModel, current.info.cost),
         goal,
         delegations,
+        archived: current.info.time.archived !== undefined,
+        shared: Boolean(current.info.share?.url),
+        shareUrl: current.info.share?.url,
+        revertMessageID: current.info.revert?.messageID,
       } : undefined,
     }
   }
 
   private handleEvent(event: OpenCodeEvent): void {
+    if (event.type === "pty.created" || event.type === "pty.updated" || event.type === "pty.exited" || event.type === "pty.deleted") {
+      this.consumePtyEvent(event)
+    }
     if (["session.created", "session.updated", "session.deleted"].includes(event.type)) this.sessionRevision += 1
     if (["session.status", "session.idle", "session.error"].includes(event.type) || event.type.startsWith("session.next.")) this.statusRevision += 1
     const info = event.properties.info

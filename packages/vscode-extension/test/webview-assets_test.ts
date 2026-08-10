@@ -7,11 +7,22 @@ const inspectorPresentation = await Deno.readTextFile(new URL("../src/webview/vi
 const historyView = await Deno.readTextFile(new URL("../src/webview/views/history.ts", import.meta.url))
 const turnNavigationView = await Deno.readTextFile(new URL("../src/webview/views/turn-navigation.ts", import.meta.url))
 const chatView = await Deno.readTextFile(new URL("../src/views/chat-view.ts", import.meta.url))
+const extensionHost = await Deno.readTextFile(new URL("../src/extension.ts", import.meta.url))
 const manifest = JSON.parse(await Deno.readTextFile(new URL("../package.json", import.meta.url))) as {
-  contributes?: { commands?: Array<{ command: string; enablement?: string }>; keybindings?: Array<{ command: string; when?: string }> }
+  activationEvents?: string[]
+  contributes?: {
+    commands?: Array<{ command: string; enablement?: string }>
+    keybindings?: Array<{ command: string; key?: string; mac?: string; when?: string }>
+    walkthroughs?: Array<{
+      id: string
+      title: string
+      description: string
+      steps: Array<{ id: string; title: string; description: string; completionEvents?: string[] }>
+    }>
+  }
 }
 
-Deno.test("reduced motion preserves operational progress animations", () => {
+Deno.test("reduced motion replaces operational animation with legible static progress", () => {
   const reducedMotion = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"))
   if (/\*,\s*\*::before,\s*\*::after\s*\{[^}]*animation:\s*none/i.test(reducedMotion) ||
     /body\.vscode-reduce-motion\s+\*[^{}]*\{[^}]*animation:\s*none/i.test(reducedMotion)) {
@@ -22,6 +33,17 @@ Deno.test("reduced motion preserves operational progress animations", () => {
   }
   if (!reducedMotion.includes(".turn.activity-expanding .assistant-process") || !reducedMotion.includes("animation: none !important")) {
     throw new Error("Reduced-motion styles did not suppress the decorative activity expansion")
+  }
+  for (const marker of [
+    ".header-active-indicator::before",
+    ".session-loading-indicator::before",
+    ".session-row-icon.state-working::before",
+    ".todo-working .todo-state::before",
+    ".active-throbber i",
+    ".stopping-icon",
+  ]) if (!reducedMotion.includes(marker)) throw new Error(`Reduced-motion static progress omits ${marker}`)
+  if (!reducedMotion.includes('content: "●"') || !reducedMotion.includes("body.vscode-reduce-motion")) {
+    throw new Error("System and VS Code reduced-motion modes do not expose equivalent static progress")
   }
 })
 
@@ -45,6 +67,36 @@ Deno.test("webview exposes the screen-reader and keyboard interaction contract",
   if (!css.includes("@media (forced-colors: active)") || !css.includes(".message:focus-within .message-actions")) {
     throw new Error("High-contrast support or keyboard-visible message actions are missing")
   }
+})
+
+Deno.test("recovery dialog separates coupled recovery from native redo and restores focus", () => {
+  for (const marker of [
+    "Revert is one coupled OpenCode operation.",
+    "files-only and transcript-only recovery are unavailable",
+    "Fork does not revert.",
+    "leaves the current files unchanged",
+    "Fork OpenCode session here (files unchanged)",
+    "const redoOnly = preview.canRedo && !preview.canRevert && !preview.canFork",
+    "This is OpenCode's native redo.",
+    "It does not create a new revert or fork.",
+    "Native revert boundary",
+    "Current OpenCode change summary",
+    "let recoveryReturnFocus: HTMLElement | undefined",
+    "recoveryReturnFocus = active instanceof HTMLElement",
+    "if (!unavailable && returnFocus) returnFocus.focus()",
+    'button.dataset.sessionAction === "redo" ? !snapshot.session?.revertMessageID',
+  ]) if (!webview.includes(marker)) throw new Error(`Recovery dialog omits truthful action semantics: ${marker}`)
+  if (!webview.includes('messageID: preview.messageID')) throw new Error("Recovery apply does not bind every action to the displayed preview boundary")
+  for (const marker of [
+    "new RecoveryPreviewGuard<vscode.Webview>()",
+    "this.recoveryPreviews.remember(source, { input, preview })",
+    "this.recoveryPreviews.consume(source",
+    "this.recoveryPreviews.clear()",
+    "delivered.messageID",
+    'intent: "recover"',
+    'intent: "redo"',
+    'const intent = message.mode === "redo" ? "redo" : "recover"',
+  ]) if (!chatView.includes(marker)) throw new Error(`Recovery host omits exact per-surface confirmation handling: ${marker}`)
 })
 
 Deno.test("model and session pickers expose roving keyboard focus", () => {
@@ -77,6 +129,86 @@ Deno.test("attention and inspector routing preserve focus and actionable context
     !inspectorPresentation.includes("stop.explanation")) throw new Error("Inspector tabs, scroll/focus retention, or walkthrough explanations are missing")
   if (!inspectorPresentation.includes('class="run-pending-status" role="status"') || !inspectorPresentation.includes("Worktree unavailable; refresh this run group to recover.") || !webview.includes('class="rail-run-pending"')) {
     throw new Error("Pending runs still expose an unusable Open action")
+  }
+})
+
+Deno.test("new editor commands carry one bounded bootstrap control into the first HTML", () => {
+  for (const marker of [
+    'this.openInEditor(undefined, "composer-focus")',
+    'this.openInEditor(undefined, "sessions-show")',
+    'this.openInEditor(undefined, "attention-show")',
+    "this.pendingEditorControl = initialControl",
+    "this.configure(panel.webview, \"editor\", surfaceID, this.pendingEditorTab, this.pendingEditorControl)",
+    'data-initial-control="${initialControl}"',
+  ]) if (!chatView.includes(marker)) throw new Error(`First-open host control is not persisted: ${marker}`)
+  for (const marker of [
+    'new Set(["composer-focus", "sessions-toggle", "sessions-show", "attention-show"])',
+    "document.body.dataset.initialControl",
+    "if (initialWorkbenchControl) requestAnimationFrame",
+    'initialWorkbenchControl === "sessions-show"',
+    'document.body.removeAttribute("data-initial-control")',
+  ]) if (!webview.includes(marker)) throw new Error(`First-open bootstrap control is not bounded or applied: ${marker}`)
+})
+
+Deno.test("structured browser context stays bound to the selected OpenCode session", () => {
+  const hostCase = chatView.slice(chatView.indexOf('case "browserContextAction":'), chatView.indexOf('case "runAction":'))
+  if (!hostCase.includes("this.requireSelected(message.sessionID)") || !hostCase.includes("captureBrowserContext?.(message)")) {
+    throw new Error("Browser context capture is not revalidated against the selected session")
+  }
+  if (!webview.includes('post({ type: "browserContextAction", sessionID: snapshot.session.id, action: "capture" })') ||
+    !webview.includes('post({ type: "browserContextAction", sessionID: snapshot.session.id, action: "capture", task, sources')) {
+    throw new Error("Browser context controls omit their originating OpenCode session")
+  }
+})
+
+Deno.test("objective comparison controls are exact, sortable, and narrow-card compatible", () => {
+  for (const marker of [
+    'aria-sort="${ariaSort}"',
+    "data-comparison-sort-select",
+    'data-run-action="export-comparison"',
+    'data-comparison-revision="${comparison.revision}"',
+    "No winner or score is inferred.",
+  ]) if (!inspectorPresentation.includes(marker)) throw new Error(`Comparison presentation omits ${marker}`)
+  for (const marker of [
+    "const comparisonSortKeys = new Set<RunComparisonSortKey>",
+    "setComparisonSort(artifactID, key, direction)",
+    'action: "export-comparison", comparisonArtifactID: run.dataset.comparisonArtifactId, comparisonRevision: revision',
+    "comparisonSorts = Object.fromEntries",
+  ]) if (!webview.includes(marker)) throw new Error(`Comparison interaction omits ${marker}`)
+  if (!css.includes(".run-comparison thead { display: none; }") || !css.includes(".run-comparison td::before")) {
+    throw new Error("Comparison matrix does not preserve labeled narrow cards")
+  }
+  const runCase = chatView.slice(chatView.indexOf('case "runAction":'), chatView.indexOf('case "walkthroughAction":'))
+  for (const marker of [
+    "exactRunComparisonMarkdown(group, this.workbench.artifacts.list()",
+    "artifactID: message.comparisonArtifactID",
+    "revision: message.comparisonRevision",
+    'executeCommand("opencodeWorkbench.reviewChanges", run.session.directory, group.baseRef, run.session.sessionID)',
+    'run.session.sessionID === "pending" || run.discarded',
+    'run.retained) throw new Error("This run is already retained")',
+  ]) if (!runCase.includes(marker)) throw new Error(`Run host does not bind an exact eligible source: ${marker}`)
+})
+
+Deno.test("saved plan handoff remains repeatable only for the approved exact revision", () => {
+  if (!extensionHost.includes('["approved", "handed-off"].includes(planArtifactRecord.payload.phase)')) {
+    throw new Error("A handed-off plan cannot be handed off again")
+  }
+  if (!extensionHost.includes("planArtifactRecord.payload.uri !== reference.uri || planArtifactRecord.payload.revision !== reference.revision")) {
+    throw new Error("Plan handoff no longer checks the saved approved revision hash")
+  }
+})
+
+Deno.test("direct run commands reject stale identities instead of retargeting a picker", () => {
+  for (const marker of [
+    'if (directRequested && !direct) throw new Error("The requested run is no longer available to open")',
+    'if (directRequested && !direct) throw new Error("The requested run is no longer available for diff")',
+    'if (directRequested && !direct) throw new Error("The requested run is no longer safely discardable")',
+  ]) if (!extensionHost.includes(marker)) throw new Error(`Exact run command can fall through to a global picker: ${marker}`)
+})
+
+Deno.test("native Archive discloses that this pinned OpenCode version cannot unarchive", () => {
+  if (!chatView.includes("This pinned OpenCode version has no proven unarchive API, so the Workbench cannot currently undo this action.")) {
+    throw new Error("Archive confirmation implies a recovery path that OpenCode does not provide")
   }
 })
 
@@ -135,6 +267,101 @@ Deno.test("workspace commands and shortcut have contextual enablement", () => {
   const shortcut = manifest.contributes?.keybindings?.find((entry) => entry.command === "opencodeWorkbench.newSession")
   if (!shortcut?.when?.includes("focusedView == opencodeWorkbench.chat") || !shortcut.when.includes("activeWebviewPanelId == opencodeWorkbench.chatEditor")) {
     throw new Error("New Session shortcut is not scoped to Workbench chat surfaces")
+  }
+})
+
+Deno.test("onboarding walkthrough is bounded and invokes registered OpenCode commands", () => {
+  const walkthrough = manifest.contributes?.walkthroughs?.find((entry) => entry.id === "opencodeWorkbench.gettingStarted")
+  if (!walkthrough || walkthrough.steps.length !== 5) throw new Error("Getting Started must contain exactly five focused steps")
+  if (!walkthrough.description.includes("OpenCode installation")) throw new Error("Onboarding does not identify OpenCode as the execution backend")
+  const commandContributions = new Set((manifest.contributes?.commands ?? []).map((entry) => entry.command))
+  const registeredCommands = new Set([...extensionHost.matchAll(/registerCommand\("([^"]+)"/g)].map((match) => match[1]))
+  const ids = new Set<string>()
+  for (const step of walkthrough.steps) {
+    if (ids.has(step.id)) throw new Error(`Duplicate walkthrough step: ${step.id}`)
+    ids.add(step.id)
+    const command = /\(command:([^)]+)\)/.exec(step.description)?.[1]
+    if (!command || !commandContributions.has(command)) throw new Error(`${step.id} does not target a contributed command`)
+    if (!registeredCommands.has(command)) throw new Error(`${step.id} targets an unhandled host command: ${command}`)
+    if (!step.completionEvents?.includes(`onCommand:${command}`)) throw new Error(`${step.id} does not complete from its command`)
+  }
+})
+
+Deno.test("Workbench command surface has host handlers and safely scoped keybindings", () => {
+  const expected = [
+    "opencodeWorkbench.openChatInEditor",
+    "opencodeWorkbench.focusComposer",
+    "opencodeWorkbench.toggleTaskWorkbench",
+    "opencodeWorkbench.toggleSessions",
+    "opencodeWorkbench.toggleJobs",
+    "opencodeWorkbench.showAttention",
+    "opencodeWorkbench.nextAttention",
+    "opencodeWorkbench.abortSession",
+    "opencodeWorkbench.openHelp",
+  ]
+  const commands = new Set((manifest.contributes?.commands ?? []).map((entry) => entry.command))
+  const registeredCommands = new Set([...extensionHost.matchAll(/registerCommand\("([^"]+)"/g)].map((match) => match[1]))
+  for (const command of expected) {
+    if (!commands.has(command)) throw new Error(`Missing Workbench command contribution: ${command}`)
+    if (!manifest.activationEvents?.includes(`onCommand:${command}`)) throw new Error(`Missing activation event: ${command}`)
+    if (!registeredCommands.has(command)) throw new Error(`Workbench command still needs a host handler: ${command}`)
+  }
+  for (const route of ["chatProvider.toggleSessions()", "chatProvider.toggleJobs()", "chatProvider.showAttention()", "chatProvider.openNextAttention()"]) {
+    if (!extensionHost.includes(route)) throw new Error(`Workbench command is still misrouted: ${route}`)
+  }
+
+  const keybindings = new Map((manifest.contributes?.keybindings ?? []).map((entry) => [entry.command, entry]))
+  const focus = keybindings.get("opencodeWorkbench.focusComposer")
+  if (focus?.key !== "ctrl+l" || focus.mac !== "cmd+l" || !focus.when?.includes("focusedView == opencodeWorkbench.chat") ||
+    !focus.when.includes("activeWebviewPanelId == opencodeWorkbench.chatEditor")) throw new Error("Focus Composer can escape the Workbench focus scope")
+  const editor = keybindings.get("opencodeWorkbench.openChatInEditor")
+  if (editor?.key !== "ctrl+shift+o" || editor.mac !== "cmd+shift+o" || editor.when !== "workspaceFolderCount > 0 && focusedView == opencodeWorkbench.chat") {
+    throw new Error("Open-in-editor shortcut can override the editor's Go to Symbol shortcut")
+  }
+  const stop = keybindings.get("opencodeWorkbench.abortSession")
+  if (stop?.key !== "escape" || !stop.when?.includes("opencodeWorkbench.sessionBusy") ||
+    !stop.when.includes("focusedView == opencodeWorkbench.chat") || !stop.when.includes("activeWebviewPanelId == opencodeWorkbench.chatEditor")) {
+    throw new Error("Escape can stop work outside an active Workbench session")
+  }
+})
+
+Deno.test("empty-workspace onboarding keeps navigation, Help, and the native chat participant registered", () => {
+  const start = extensionHost.indexOf("if (!workspacePath)")
+  const end = extensionHost.indexOf("const canonicalWorkspace", start)
+  const branch = extensionHost.slice(start, end)
+  if (start < 0 || end < 0 || !branch.includes('createChatParticipant("opencodeWorkbench.opencode"')) {
+    throw new Error("Empty-workspace activation does not register the contributed chat participant")
+  }
+  for (const command of [
+    "opencodeWorkbench.openChat",
+    "opencodeWorkbench.openChatInEditor",
+    "opencodeWorkbench.focusComposer",
+    "opencodeWorkbench.toggleTaskWorkbench",
+    "opencodeWorkbench.toggleSessions",
+    "opencodeWorkbench.toggleJobs",
+    "opencodeWorkbench.showAttention",
+    "opencodeWorkbench.nextAttention",
+    "opencodeWorkbench.openHelp",
+  ]) {
+    if (!branch.includes(`registerCommand("${command}"`)) throw new Error(`Empty-workspace activation omits ${command}`)
+  }
+  if (!branch.includes("No model request was run in VS Code Chat")) throw new Error("Empty-workspace chat participant does not disclose that no model ran")
+})
+
+Deno.test("responsive and forced-color hardening covers the Task Workbench controls", () => {
+  const forcedColors = css.slice(css.lastIndexOf("@media (forced-colors: active)"))
+  for (const marker of [".pane-splitter", ".attention-toggle > small", ".goal-form-errors", ".message-actions"]) {
+    if (!forcedColors.includes(marker)) throw new Error(`Forced-colors hardening omits ${marker}`)
+  }
+  const compact = css.slice(css.lastIndexOf("@media (max-width: 520px)"))
+  for (const marker of [".header-actions", ".goal-limit-controls", ".history-panel", ".recovery-panel"]) {
+    if (!compact.includes(marker)) throw new Error(`Compact responsive layout omits ${marker}`)
+  }
+  for (const marker of ["function narrowWorkbench()", "conversationColumn.inert = true", "focusController.trapTab(event, rightRail)", 'message.type === "workbenchControl"', "window.innerWidth > 900"]) {
+    if (!webview.includes(marker)) throw new Error(`One-pane Workbench behavior omits ${marker}`)
+  }
+  if (!css.includes('@media (max-width: 900px)') || !css.includes('body[data-mode="editor"].rail-open .right-rail')) {
+    throw new Error("Sessions drawer is not collapsed below the editor breakpoint")
   }
 })
 
@@ -211,6 +438,59 @@ Deno.test("bounded snapshot projection is visible and names preserved durable st
   if (!inspectorPresentation.includes("stored records were not deleted") || !inspectorPresentation.includes("contextReceipts") ||
     !inspectorPresentation.includes("runGroups") || !inspectorPresentation.includes("walkthroughStops")) {
     throw new Error("Inspector does not disclose bounded durable receipt, run, or walkthrough history")
+  }
+})
+
+Deno.test("context receipt source actions stay bound to exact projected identities", () => {
+  for (const marker of [
+    '[data-context-receipt-id][data-context-receipt-item-id]',
+    'type: "contextReceiptAction"',
+    "sessionID: snapshot.session.id",
+    "receiptID: receiptSource.dataset.contextReceiptId",
+    "itemID: receiptSource.dataset.contextReceiptItemId",
+    'action: "open-source"',
+  ]) if (!webview.includes(marker)) throw new Error(`Context receipt source action is missing: ${marker}`)
+  if (!inspectorPresentation.includes('data-context-receipt-id="${escapeHtml(receipt.id)}"') ||
+    !inspectorPresentation.includes('data-context-receipt-item-id="${escapeHtml(item.id)}"') ||
+    !inspectorPresentation.includes("Source unavailable after reload")) {
+    throw new Error("Context receipts do not distinguish exact navigable source metadata from unavailable sources")
+  }
+})
+
+Deno.test("Review and Jobs filters are ephemeral DOM-only controls", () => {
+  for (const marker of [
+    "const localInspectorFilters",
+    "function applyReviewFilters",
+    "function applyJobFilters",
+    'querySelectorAll<HTMLElement>("[data-review-finding]")',
+    'querySelectorAll<HTMLElement>("[data-job-row]")',
+    "finding.hidden = !matches",
+    "row.hidden = !matches",
+  ]) if (!webview.includes(marker)) throw new Error(`Local inspector filtering is missing: ${marker}`)
+  for (const marker of [
+    'data-review-filter="severity"',
+    'data-review-filter="category"',
+    'data-review-filter="disposition"',
+    'data-job-filter="text"',
+    'data-job-filter="kind"',
+    'data-job-filter="session"',
+    'data-job-filter="run"',
+  ]) if (!inspectorPresentation.includes(marker)) throw new Error(`Inspector filter control is missing: ${marker}`)
+  if (webview.includes("vscode.setState({ ...localInspectorFilters") || webview.includes('type: "reviewFilter"') || webview.includes('type: "jobFilter"')) {
+    throw new Error("Inspector filters leak ephemeral presentation state into persistence or host protocol messages")
+  }
+})
+
+Deno.test("review generation preserves the exact originating OpenCode owner", () => {
+  const reviewCommand = extensionHost.indexOf('registerCommand("opencodeWorkbench.reviewChanges"')
+  const captureOwner = extensionHost.indexOf("const originatingSession = controller.chatSnapshot().session", reviewCommand)
+  const openSurface = extensionHost.indexOf('chatProvider.openInEditor("review")', reviewCommand)
+  const captureDiff = extensionHost.indexOf("const capture = await diffs.capture", reviewCommand)
+  if (reviewCommand < 0 || captureOwner < reviewCommand || openSurface < captureOwner || captureDiff < openSurface) {
+    throw new Error("Review generation does not capture its OpenCode owner before opening UI and capturing the diff")
+  }
+  if (!extensionHost.includes('executeCommand("opencodeWorkbench.reviewChanges", artifact.payload.repository, artifact.payload.baseRef, artifact.sessionID)')) {
+    throw new Error("Review regeneration does not preserve the exact artifact owner session")
   }
 })
 

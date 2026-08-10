@@ -46,6 +46,82 @@ async function eventually(condition: () => Promise<boolean>, milliseconds = 1_00
   }
 }
 
+Deno.test("goal configure tool applies one atomic form with generation and Plan safety", async () => {
+  const root = await Deno.makeTempDir({ prefix: "workbench-goal-configure-" })
+  const previous = Deno.env.get("XDG_DATA_HOME")
+  Deno.env.set("XDG_DATA_HOME", root)
+  let hooks: GoalHooks | undefined
+  try {
+    const client = { session: {
+      status: async () => ({ data: {}, error: undefined }),
+      promptAsync: async () => ({ data: undefined, error: undefined }),
+    } }
+    hooks = await PluginModule.server({ client, directory: "/workspace", worktree: "/workspace" } as never) as unknown as GoalHooks
+
+    const sessionID = "ses_atomic_configure"
+    const created = parsed(await hooks.tool.create_goal.execute({ objective: "Original objective" }, context(sessionID))).goal as { settlementGeneration?: number }
+    const configured = parsed(await hooks.tool.configure_goal_verification.execute({
+      objective: "Updated objective",
+      acceptance_criteria: ["Tests pass", "No diagnostics remain"],
+      token_budget: 2_000,
+      max_auto_turns: 4,
+      max_duration_seconds: 600,
+      enabled: true,
+      model: "provider/model",
+      agent: "verify",
+      repeated_block_threshold: 2,
+      expected_generation: created.settlementGeneration,
+    }, context(sessionID, "plan"))).goal as {
+      objective?: string
+      acceptanceCriteria?: string[]
+      tokenBudget?: number
+      status?: string
+      stopReason?: string
+      verifier?: { enabled?: boolean; model?: string; agent?: string; repeatedBlockThreshold?: number }
+      settlementGeneration?: number
+    }
+    if (configured.objective !== "Updated objective" || configured.acceptanceCriteria?.length !== 2 || configured.tokenBudget !== 2_000) {
+      throw new Error("Configure tool did not apply the objective and verification fields together")
+    }
+    if (configured.status !== "paused" || configured.stopReason !== "plan mode") {
+      throw new Error("Configure tool did not preserve Plan-agent pause safety")
+    }
+    if (!configured.verifier?.enabled || configured.verifier.model !== "provider/model" || configured.verifier.agent !== "verify" || configured.verifier.repeatedBlockThreshold !== 2) {
+      throw new Error("Configure tool did not forward verifier settings")
+    }
+
+    const statePath = path.join(root, "opencode-workbench", "plugin", "goals.json")
+    const beforeStale = await Deno.readTextFile(statePath)
+    let staleRejected = false
+    try {
+      await hooks.tool.configure_goal_verification.execute({
+        objective: "Stale objective",
+        acceptance_criteria: ["Stale criterion"],
+        expected_generation: created.settlementGeneration,
+      }, context(sessionID, "build"))
+    } catch (error) {
+      staleRejected = error instanceof Error && /stale/.test(error.message)
+    }
+    if (!staleRejected) throw new Error("Configure tool accepted a stale settlement generation")
+    if (await Deno.readTextFile(statePath) !== beforeStale) throw new Error("A stale configure tool call mutated persisted goal state")
+
+    const legacySessionID = "ses_legacy_configure"
+    await hooks.tool.create_goal.execute({ objective: "Keep the legacy objective" }, context(legacySessionID))
+    const legacy = parsed(await hooks.tool.configure_goal_verification.execute({
+      acceptance_criteria: ["Legacy fields remain accepted"],
+      enabled: true,
+    }, context(legacySessionID))).goal as { objective?: string; status?: string; acceptanceCriteria?: string[]; verifier?: { enabled?: boolean } }
+    if (legacy.objective !== "Keep the legacy objective" || legacy.status !== "active" || legacy.acceptanceCriteria?.[0] !== "Legacy fields remain accepted" || !legacy.verifier?.enabled) {
+      throw new Error("Legacy configure tool calls changed behavior")
+    }
+  } finally {
+    if (hooks) await hooks.dispose()
+    if (previous === undefined) Deno.env.delete("XDG_DATA_HOME")
+    else Deno.env.set("XDG_DATA_HOME", previous)
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
 Deno.test("native goal hooks integrate lifecycle, persistence, policy, compaction, and cleanup", async () => {
   const root = await Deno.makeTempDir({ prefix: "workbench-goal-integration-" })
   const previous = Deno.env.get("XDG_DATA_HOME")

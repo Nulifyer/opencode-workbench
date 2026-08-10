@@ -12,6 +12,7 @@ import type {
   MessagePart,
   ModelOption,
   OpenCodeEvent,
+  OpenCodePty,
   PermissionRequest,
   ProviderOption,
   QuestionInfo,
@@ -27,6 +28,15 @@ export interface OpenCodeConnection {
   username: string
   password: string
   directory: string
+}
+
+export interface OpenCodeSessionListOptions {
+  search?: string
+  roots?: boolean
+  archived?: boolean
+  start?: number
+  cursor?: number
+  limit?: number
 }
 
 export function validateServerUrl(value: string): void {
@@ -48,6 +58,11 @@ const REQUEST_TIMEOUT_MS = 30_000
 const LONG_REQUEST_TIMEOUT_MS = 10 * 60_000
 const SSE_FRAME_LIMIT = 8 * 1024 * 1024
 export const TRANSCRIPT_MESSAGE_LIMIT = 10_000
+export const OPENCODE_PTY_LIMIT = 500
+
+const OPENCODE_PTY_ARGUMENT_LIMIT = 256
+const OPENCODE_PTY_ARGUMENT_CHARACTER_LIMIT = 20_000
+const OPENCODE_PTY_ARGUMENT_AGGREGATE_LIMIT = 100_000
 
 export interface PromptFilePart {
   type: "file"
@@ -199,6 +214,10 @@ function timestamp(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
+function sessionTokenCount(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 1_000_000_000_000 ? Number(value) : undefined
+}
+
 function parseSessionInfo(value: unknown): SessionInfo | undefined {
   if (!isRecord(value) || !boundedString(value.id, 1_024) || !value.id || !boundedString(value.title, 20_000) ||
     !boundedString(value.directory, 8_192) || !isRecord(value.time)) return undefined
@@ -208,16 +227,48 @@ function parseSessionInfo(value: unknown): SessionInfo | undefined {
   const model = isRecord(value.model) && boundedString(value.model.id, 1_024) && value.model.id && boundedString(value.model.providerID, 1_024) && value.model.providerID
     ? { id: value.model.id, providerID: value.model.providerID, variant: boundedString(value.model.variant, 1_024) ? value.model.variant : undefined }
     : undefined
+  const archived = timestamp(value.time.archived)
+  const summary = isRecord(value.summary) && [value.summary.additions, value.summary.deletions, value.summary.files]
+      .every((entry) => Number.isSafeInteger(entry) && Number(entry) >= 0 && Number(entry) <= 1_000_000_000)
+    ? { additions: Number(value.summary.additions), deletions: Number(value.summary.deletions), files: Number(value.summary.files) }
+    : undefined
+  const tokens = (() => {
+    if (!isRecord(value.tokens) || !isRecord(value.tokens.cache)) return undefined
+    const input = sessionTokenCount(value.tokens.input)
+    const output = sessionTokenCount(value.tokens.output)
+    const reasoning = sessionTokenCount(value.tokens.reasoning)
+    const read = sessionTokenCount(value.tokens.cache.read)
+    const write = sessionTokenCount(value.tokens.cache.write)
+    return input === undefined || output === undefined || reasoning === undefined || read === undefined || write === undefined
+      ? undefined
+      : { input, output, reasoning, cache: { read, write } }
+  })()
+  const share = (() => {
+    if (!isRecord(value.share) || !boundedString(value.share.url, 8_192) || /[\u0000-\u001f\u007f]/.test(value.share.url)) return undefined
+    try {
+      const url = new URL(value.share.url)
+      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? { url: url.toString() } : undefined
+    } catch {
+      return undefined
+    }
+  })()
+  const revert = isRecord(value.revert) && boundedString(value.revert.messageID, 1_024) && value.revert.messageID
+    ? { messageID: value.revert.messageID, partID: boundedString(value.revert.partID, 1_024) ? value.revert.partID : undefined }
+    : undefined
   return {
-    ...value,
     id: value.id,
+    slug: boundedString(value.slug, 1_024) && value.slug ? value.slug : undefined,
     title: value.title,
     directory: value.directory,
-    time: { created, updated },
-    parentID: boundedString(value.parentID, 1_024) ? value.parentID : undefined,
-    agent: boundedString(value.agent, 1_024) ? value.agent : undefined,
+    time: { created, updated, archived },
+    parentID: boundedString(value.parentID, 1_024) && value.parentID ? value.parentID : undefined,
+    agent: boundedString(value.agent, 1_024) && value.agent ? value.agent : undefined,
     model,
-    cost: typeof value.cost === "number" && Number.isFinite(value.cost) ? value.cost : undefined,
+    cost: typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0 ? value.cost : undefined,
+    tokens,
+    summary,
+    share,
+    revert,
   }
 }
 
@@ -240,6 +291,45 @@ function requiredSessionInfo(value: unknown): SessionInfo {
   const session = parseSessionInfo(value)
   if (!session) throw new Error("OpenCode returned malformed session data")
   return session
+}
+
+function validPtyID(value: unknown): value is string {
+  return boundedString(value, 1_024) && value.length > 0 && !/[\u0000-\u001f\u007f]/.test(value)
+}
+
+/** Strictly projects the stable metadata returned by OpenCode's native PTY API. */
+export function parseOpenCodePty(value: unknown): OpenCodePty | undefined {
+  if (!isRecord(value) || !validPtyID(value.id) || !boundedString(value.title, 2_000) || value.title.includes("\0") ||
+    !boundedString(value.command, 8_192) || !value.command || value.command.includes("\0") ||
+    !boundedString(value.cwd, 8_192) || !value.cwd || value.cwd.includes("\0") ||
+    !Array.isArray(value.args) || value.args.length > OPENCODE_PTY_ARGUMENT_LIMIT ||
+    (value.status !== "running" && value.status !== "exited") ||
+    !Number.isSafeInteger(value.pid) || Number(value.pid) < 0 || Number(value.pid) > 2_147_483_647) return undefined
+  const args: string[] = []
+  let argumentCharacters = 0
+  for (const argument of value.args) {
+    if (!boundedString(argument, OPENCODE_PTY_ARGUMENT_CHARACTER_LIMIT) || argument.includes("\0")) return undefined
+    argumentCharacters += argument.length
+    if (argumentCharacters > OPENCODE_PTY_ARGUMENT_AGGREGATE_LIMIT) return undefined
+    args.push(argument)
+  }
+  const exitCode = value.exitCode
+  if (exitCode !== undefined && (!Number.isSafeInteger(exitCode) || Number(exitCode) < -2_147_483_648 || Number(exitCode) > 2_147_483_647)) return undefined
+  return {
+    id: value.id,
+    title: value.title,
+    command: value.command,
+    args,
+    cwd: value.cwd,
+    status: value.status,
+    pid: Number(value.pid),
+    exitCode: exitCode === undefined ? undefined : Number(exitCode),
+  }
+}
+
+function requiredControlPlaneID(value: string, label: string): string {
+  if (!validPtyID(value)) throw new Error(`Invalid OpenCode ${label} ID`)
+  return value
 }
 
 function projectedToolOutput(state: JsonRecord): string | undefined {
@@ -701,10 +791,64 @@ export class OpenCodeClient {
     return (await this.requestResponse<T>(method, pathname, body, signal, timeoutMilliseconds)).data
   }
 
-  async listSessions(): Promise<SessionInfo[]> {
+  async listSessions(options?: OpenCodeSessionListOptions): Promise<SessionInfo[]> {
+    if (options) {
+      if (options.search !== undefined && (typeof options.search !== "string" || !options.search.trim() || options.search.length > 2_000)) throw new Error("OpenCode session search must contain 1-2,000 characters")
+      if (options.roots !== undefined && typeof options.roots !== "boolean") throw new Error("OpenCode session roots filter is invalid")
+      if (options.archived !== undefined && typeof options.archived !== "boolean") throw new Error("OpenCode session archive filter is invalid")
+      if (options.start !== undefined && (!Number.isSafeInteger(options.start) || options.start < 0)) throw new Error("OpenCode session start is invalid")
+      if (options.cursor !== undefined && (!Number.isSafeInteger(options.cursor) || options.cursor < 0)) throw new Error("OpenCode session cursor is invalid")
+      if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 5_000)) throw new Error("OpenCode session limit must be between 1 and 5,000")
+      const query = new URLSearchParams()
+      if (options.search !== undefined) query.set("search", options.search.trim())
+      if (options.roots !== undefined) query.set("roots", String(options.roots))
+      if (options.archived !== undefined) query.set("archived", String(options.archived))
+      if (options.start !== undefined) query.set("start", String(options.start))
+      if (options.cursor !== undefined) query.set("cursor", String(options.cursor))
+      query.set("limit", String(options.limit ?? 500))
+      try {
+        const value = await this.request<unknown>("GET", `/experimental/session?${query}`)
+        if (!Array.isArray(value) || value.length > 5_000) throw new Error("OpenCode returned a malformed experimental session list")
+        return value.map(parseSessionInfo).filter((session): session is SessionInfo => Boolean(session))
+      } catch (error) {
+        if (!/^OpenCode GET \/experimental\/session(?:\?[^ ]*)? failed \((?:404|405|501)\)/.test(errorMessage(error))) throw error
+        if (options.start !== undefined || options.cursor !== undefined) throw new Error("This OpenCode version does not support paged session search")
+        const legacy = await this.listSessions()
+        return legacy.filter((session) => (options.roots !== true || !session.parentID) &&
+          (options.archived === true || session.time.archived === undefined) &&
+          (options.search === undefined || `${session.title}\n${session.id}`.toLocaleLowerCase().includes(options.search.trim().toLocaleLowerCase())))
+          .slice(0, options.limit ?? 500)
+      }
+    }
     const value = await this.request<unknown>("GET", "/session?limit=10000")
     if (!Array.isArray(value)) throw new Error("OpenCode returned a malformed session list")
     return value.map(parseSessionInfo).filter((session): session is SessionInfo => Boolean(session))
+  }
+
+  async listPtys(): Promise<OpenCodePty[]> {
+    const value = await this.request<unknown>("GET", "/pty")
+    if (!Array.isArray(value) || value.length > OPENCODE_PTY_LIMIT) throw new Error("OpenCode returned a malformed PTY list")
+    const ptys: OpenCodePty[] = []
+    const ids = new Set<string>()
+    for (const candidate of value) {
+      const pty = parseOpenCodePty(candidate)
+      if (!pty || ids.has(pty.id)) throw new Error("OpenCode returned malformed PTY data")
+      ids.add(pty.id)
+      ptys.push(pty)
+    }
+    return ptys
+  }
+
+  async deletePty(ptyID: string): Promise<boolean> {
+    const value = await this.request<unknown>("DELETE", `/pty/${encodeURIComponent(requiredControlPlaneID(ptyID, "PTY"))}`)
+    if (typeof value !== "boolean") throw new Error("OpenCode returned malformed PTY deletion data")
+    return value
+  }
+
+  async backgroundChildSessions(sessionID: string): Promise<boolean> {
+    const value = await this.request<unknown>("POST", `/experimental/session/${encodeURIComponent(requiredControlPlaneID(sessionID, "session"))}/background`)
+    if (typeof value !== "boolean") throw new Error("OpenCode returned malformed background-session data")
+    return value
   }
 
   async health(): Promise<{ healthy: true; version: string }> {
@@ -740,6 +884,11 @@ export class OpenCodeClient {
 
   async renameSession(sessionID: string, title: string): Promise<SessionInfo> {
     return requiredSessionInfo(await this.request<unknown>("PATCH", `/session/${encodeURIComponent(sessionID)}`, { title }))
+  }
+
+  async archiveSession(sessionID: string, archivedAt = Date.now()): Promise<SessionInfo> {
+    if (!Number.isSafeInteger(archivedAt) || archivedAt < 0) throw new Error("OpenCode archive timestamp is invalid")
+    return requiredSessionInfo(await this.request<unknown>("PATCH", `/session/${encodeURIComponent(sessionID)}`, { time: { archived: archivedAt } }))
   }
 
   async forkSession(sessionID: string, messageID?: string): Promise<SessionInfo> {

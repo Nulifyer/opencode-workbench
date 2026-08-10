@@ -82,6 +82,7 @@ Deno.test("synthetic event pipeline preserves interleaved streams under backpres
     if (request.method === "GET" && url.pathname === "/config") return json({})
     if (request.method === "GET" && url.pathname === "/experimental/resource") return json({})
     if (request.method === "GET" && url.pathname === "/command") return json([])
+    if (request.method === "GET" && url.pathname === "/pty") return json([])
     if (request.method === "GET" && ["/lsp", "/formatter", "/mcp"].includes(url.pathname)) return json([])
     if (request.method === "GET" && ["/path", "/vcs"].includes(url.pathname)) return json({})
     if (request.method === "GET" && ["/question", "/permission"].includes(url.pathname)) return json([])

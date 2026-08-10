@@ -175,6 +175,105 @@ Deno.test("goal configuration updates limits and independent verifier settings",
   equal(unlimited.maxDurationSeconds, null)
 })
 
+Deno.test("goal configuration atomically updates the objective and verification contract", () => {
+  const state = emptyGoalState()
+  createGoal(state, "atomic", {
+    objective: "Original objective",
+    acceptanceCriteria: ["Original criterion"],
+    verifier: { enabled: false },
+  }, 1)
+  recordGoalVerdict(state, "atomic", {
+    verdict: "continue",
+    reason: "More work remains",
+    missingCriteria: ["Original criterion"],
+    confidence: "high",
+  }, ["evidence:old"], 2)
+  const reserved = reserveGoalAutoContinue(state, "atomic", 3, "part-old", "message-old")!
+  const historyLength = reserved.history.length
+
+  const configured = configureGoalVerification(state, "atomic", {
+    objective: "Updated objective",
+    acceptanceCriteria: ["Tests pass", "No diagnostics remain"],
+    tokenBudget: 2_000,
+    maxAutoTurns: 4,
+    maxDurationSeconds: 600,
+    verifier: { enabled: true, model: "provider/model", agent: "verify", repeatedBlockThreshold: 2 },
+    planReference: "plan:updated",
+    runGroupReference: "run:updated",
+    expectedSettlementGeneration: reserved.settlementGeneration,
+    agent: "build",
+  }, 4)
+
+  equal(configured.objective, "Updated objective")
+  equal(configured.acceptanceCriteria, ["Tests pass", "No diagnostics remain"])
+  equal(configured.tokenBudget, 2_000)
+  equal(configured.maxAutoTurns, 4)
+  equal(configured.maxDurationSeconds, 600)
+  equal(configured.verifier.enabled, true)
+  equal(configured.verifier.model, "provider/model")
+  equal(configured.verifier.agent, "verify")
+  equal(configured.verifier.repeatedBlockThreshold, 2)
+  equal(configured.planReference, "plan:updated")
+  equal(configured.runGroupReference, "run:updated")
+  equal(configured.status, "active")
+  equal(configured.latestVerdict, null)
+  equal(configured.evidenceReferences, [])
+  equal(configured.pendingContinuation, false)
+  equal(configured.settlementGeneration, reserved.settlementGeneration + 1)
+  equal(configured.history.length, historyLength + 1)
+  equal(configured.history.at(-1)?.detail, "Goal objective and verification configuration updated.")
+})
+
+Deno.test("goal configuration rejects stale and invalid writes without mutation", async () => {
+  const state = emptyGoalState()
+  const created = createGoal(state, "stale-config", { objective: "Original objective", acceptanceCriteria: ["Original criterion"] }, 1)
+  const current = recordGoalCheckpoint(state, "stale-config", "The goal changed after the form opened.", 2)
+  const beforeStale = JSON.stringify(state)
+
+  await rejects(() => configureGoalVerification(state, "stale-config", {
+    objective: "Stale objective",
+    acceptanceCriteria: ["Stale criterion"],
+    expectedSettlementGeneration: created.settlementGeneration,
+  }, 3), /stale/)
+  equal(JSON.stringify(state), beforeStale)
+
+  const beforeInvalid = JSON.stringify(state)
+  await rejects(() => configureGoalVerification(state, "stale-config", {
+    objective: "Would otherwise be applied",
+    acceptanceCriteria: ["   "],
+    expectedSettlementGeneration: current.settlementGeneration,
+  }, 3), /Acceptance criterion/)
+  equal(JSON.stringify(state), beforeInvalid)
+})
+
+Deno.test("goal configuration preserves Plan-agent safety and legacy call behavior", async () => {
+  const planState = emptyGoalState()
+  const active = createGoal(planState, "plan-config", { objective: "Implement the design" }, 1)
+  const planned = configureGoalVerification(planState, "plan-config", {
+    objective: "Implement and verify the design",
+    acceptanceCriteria: ["The design is verified"],
+    expectedSettlementGeneration: active.settlementGeneration,
+    agent: "plan",
+  }, 2)
+  equal(planned.status, "paused")
+  equal(planned.stopReason, "plan mode")
+  equal(planned.blocker, "Goal execution is paused while the session is in Plan mode.")
+  assert(planned.lastStatus?.includes("paused in Plan mode") === true)
+  await rejects(() => setGoalStatus(planState, "plan-config", "active", "plan", 3), /Plan mode/)
+
+  const legacyState = emptyGoalState()
+  createGoal(legacyState, "legacy-config", { objective: "Keep the objective" }, 1)
+  const legacy = configureGoalVerification(legacyState, "legacy-config", {
+    acceptanceCriteria: ["Legacy configure still works"],
+    verifier: { enabled: true },
+  }, 2)
+  equal(legacy.objective, "Keep the objective")
+  equal(legacy.status, "active")
+  equal(legacy.acceptanceCriteria, ["Legacy configure still works"])
+  equal(legacy.verifier.enabled, true)
+  equal(legacy.history.at(-1)?.detail, "Goal verification configuration updated.")
+})
+
 Deno.test("goal verifier generation advances whenever verifier inputs or settlement state change", () => {
   const state = emptyGoalState()
   let goal = createGoal(state, "generation", { objective: "Original", acceptanceCriteria: ["Original criterion"] }, 1)

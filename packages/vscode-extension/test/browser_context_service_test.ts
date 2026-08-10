@@ -1,5 +1,10 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert"
-import { captureBrowserContext } from "../src/application/browser-context-service.ts"
+import {
+  assertBrowserScreenshotFileBeforeRead,
+  BROWSER_SCREENSHOT_BYTE_LIMIT,
+  captureBrowserContext,
+  requestedBrowserEditorSelection,
+} from "../src/application/browser-context-service.ts"
 
 Deno.test("browser capture includes only explicitly supplied bounded context", () => {
   const result = captureBrowserContext({
@@ -31,4 +36,27 @@ Deno.test("browser capture sends an approved URL but strips query secrets from d
   assertEquals(source.includes("access_token=do-not-store"), true)
   assertEquals(result.receiptItems[0]?.uri, "https://example.test/callback")
   assertEquals(JSON.stringify(result.receiptItems).includes("do-not-store"), false)
+})
+
+Deno.test("requested browser selection fails explicitly when the editor snapshot is unavailable", () => {
+  assertEquals(requestedBrowserEditorSelection(["diagnostics"], undefined), undefined)
+  assertThrows(
+    () => requestedBrowserEditorSelection(["selection", "diagnostics"], undefined),
+    Error,
+    "requested editor selection is unavailable",
+  )
+  const selection = { uri: "file:///work/main.ts", startLine: 1, startColumn: 1, endLine: 1, endColumn: 2, revision: "3", text: "x" }
+  assertEquals(requestedBrowserEditorSelection(["selection"], selection), selection)
+})
+
+Deno.test("browser screenshot stat is bounded and sanitized before bytes are read", () => {
+  assertBrowserScreenshotFileBeforeRead({ name: "capture.png", mime: "image/png", size: BROWSER_SCREENSHOT_BYTE_LIMIT, isFile: true })
+  assertThrows(
+    () => assertBrowserScreenshotFileBeforeRead({ name: "capture.png", mime: "image/png", size: BROWSER_SCREENSHOT_BYTE_LIMIT + 1, isFile: true }),
+    Error,
+    "no larger than 10 MiB",
+  )
+  assertThrows(() => assertBrowserScreenshotFileBeforeRead({ name: "capture.png", mime: "image/png", size: 1, isFile: false }), Error, "regular")
+  assertThrows(() => assertBrowserScreenshotFileBeforeRead({ name: "../capture.png", mime: "image/png", size: 1, isFile: true }), Error, "regular")
+  assertThrows(() => assertBrowserScreenshotFileBeforeRead({ name: "capture.png", mime: "image/jpeg", size: 1, isFile: true }), Error, "regular")
 })

@@ -6,12 +6,16 @@ All extension-owned contribution IDs, command IDs, view IDs, context values, set
 
 ## Runtime
 
-The extension host is the only UI backend. Managed mode resolves and validates
-the installed OpenCode executable, starts `opencode serve` on loopback with an
-available port and ephemeral credentials, and stops that process with the VS
-Code window. Each extension host owns its server, which avoids cross-window
-ports, credentials, and lifecycle state. External mode connects to a separately
-managed server instead.
+OpenCode is the sole agent runtime and backend. It owns sessions, transcripts,
+models, tools, prompts, child-session lineage, native PTYs, and execution. The
+extension host is only the VS Code presentation and integration control plane;
+it does not load a provider SDK, persist a parallel transcript, or run a second
+agent loop. Managed mode resolves and validates the installed OpenCode
+executable, starts `opencode serve` on loopback with an available port and
+ephemeral credentials, and stops that process with the VS Code window. Each
+extension host owns its server, which avoids cross-window ports, credentials,
+and lifecycle state. External mode connects to a separately managed server
+instead.
 
 In a multi-root window, the user selects the workspace folder owned by the
 Workbench runtime. Every OpenCode request includes that folder as the
@@ -66,14 +70,45 @@ The webview mirrors those boundaries with a capability-aware transport client
 and request registry, a v1 compatibility adapter, a single state store,
 composer/scroll/focus/overlay controllers, and focused conversation, queue,
 session-list, inspector, and composer views. The extension host remains the
-authority; a reloaded or hidden webview can only apply matching epochs and
-revisions.
+presentation-transport authority; a reloaded or hidden webview can only apply
+matching epochs and revisions.
+
+`TaskArtifactService` owns bounded, revisioned VS Code presentation/action
+metadata for plans, reviews, goal verification, run comparison, and admitted
+context capture. Every artifact is keyed to a canonical OpenCode session and,
+when AI-authored, OpenCode producer provenance. It is not a transcript store:
+plan objectives and Markdown bodies remain in OpenCode or the visible document,
+raw diffs are not retained, and prompt/attachment bodies are rejected by the
+artifact schema. `SessionPresentationService` similarly owns only bounded pins;
+archive, sharing, lineage, status, and revert remain OpenCode state.
+
+The Jobs feed is a read-only projection of OpenCode child sessions and native
+PTYs together with bounded Workbench run/worktree metadata. Needs-input state is
+derived from OpenCode questions and permissions. Canceling a PTY and
+backgrounding child sessions call OpenCode's native endpoints; the feed never
+becomes an extension-host scheduler or execution backend.
 
 Stable mode intentionally remains HTTP/SSE. ADR 0003 defers native Agent Host
 integration because a stable third-party registration and lossless ACP mapping
 are not proven. The custom rail therefore progressively groups ordinary
 sessions and Workbench RunGroups while OpenCode remains the sole session and
 transcript authority.
+
+## Session control and recovery
+
+The session rail projects native OpenCode `parentID`, `share.url`,
+`time.archived`, summary, and revert metadata. Share/unshare and archive invoke
+OpenCode directly. Pinning is explicitly local presentation state. OpenCode
+1.18.15 exposes an archive timestamp mutation but no proven clear/unarchive
+contract, so unarchive remains feature-gated instead of being emulated locally.
+
+Undo first builds a side-effect-free preview against an idle session, including
+the exact transcript tail at the selected user-message boundary and the current
+bounded changed-file summary. Apply revalidates the session and then calls
+OpenCode's coupled transcript-and-file revert endpoint; redo is available only
+while OpenCode reports a native revert marker. File totals are not claimed as
+per-message attribution, and shell commands, external services, manual edits,
+and other side effects can remain outside the recoverable boundary.
 
 ## Worktrees, runs, and review
 
@@ -111,14 +146,20 @@ cherry-picks, pushes, or publishes automatically. Walkthrough and review documen
 to an exact diff hash, and native navigation recaptures and validates that hash
 before opening an anchor.
 
+Run comparison is an objective evidence matrix: phase, exact diff totals,
+deterministic task/diagnostic/verifier outcomes, usage/cost when OpenCode reports
+them, blockers, and source actions. It deliberately assigns no score and chooses
+no AI winner. Users keep, discard, inspect, or explicitly send bounded sources
+to a new OpenCode Fusion session.
+
 ## UI Boundaries
 
 The chat is the primary view in a Secondary Side Bar container. Its header has
-a searchable session overlay. The same provider can open an editor-area
-`WebviewPanel` with a Sessions, Changes, and Details rail. Both surfaces share
-controller state and use a nonce-based content security policy with no network
-access. Both directions use discriminated message schemas and runtime validators
-from `@opencode-workbench/shared`.
+a searchable session overlay. The same provider can open a resizable
+editor-area Task Workbench with conversation, inspector, and Sessions & Jobs
+panes. Both surfaces share controller state and use a nonce-based content
+security policy with no network access. Both directions use discriminated
+message schemas and runtime validators from `@opencode-workbench/shared`.
 
 Markdown is rendered by an escaping-first renderer. Raw HTML is never passed through. Only `http:` and `https:` links are emitted, and link opening is delegated to the extension host after a second protocol check.
 
@@ -136,7 +177,10 @@ range where applicable, revision/hash, byte/token estimate, and explicit
 truncation. Browser/debug capture, editor selection, console text, inspected
 element metadata, screenshots, GitHub selection, and Fusion source files are
 one-shot in-memory prompt attachments. Workbench does not persist their bytes,
-does not proxy browser traffic, and does not own GitHub credentials.
+does not proxy browser traffic, and does not own GitHub credentials. Browser
+screenshot and clipboard bytes are discarded from Workbench memory after prompt
+admission; only sanitized receipt/source metadata can become a context-capture
+artifact.
 
 Deterministic evidence references are retained in workspace state so a goal's
 evidence IDs still resolve after an extension-host reload. Entries contain only
@@ -150,6 +194,11 @@ registry and imported idempotently by ID. Obvious credential forms are redacted;
 unsafe or credential-bearing receipt URIs are omitted. Per-workspace state
 remains the local projection, while the private registry is the crash-safe
 cross-workspace handoff authority.
+
+Automated accessibility tests enforce semantic roles, focus behavior, reduced
+motion, forced colors, and keyboard reachability. They do not establish actual
+speech output. A manual release smoke with NVDA, VoiceOver, or Orca is still
+required and must not be reported as complete from headless tests alone.
 
 ## Bridge
 

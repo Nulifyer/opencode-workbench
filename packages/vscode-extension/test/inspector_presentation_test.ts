@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert"
-import type { ChatSnapshot } from "@opencode-workbench/shared"
-import { inspectorPresentation } from "../src/webview/views/inspector/presentation.ts"
+import type { ChatSnapshot, RunComparisonRow } from "@opencode-workbench/shared"
+import { inspectorPresentation, sortRunComparisonRows } from "../src/webview/views/inspector/presentation.ts"
 
 function snapshot(): ChatSnapshot {
   return {
@@ -38,9 +38,12 @@ function snapshot(): ChatSnapshot {
         id: "receipt",
         sessionID: "session",
         promptID: "prompt",
-        admittedAt: 10,
-        truncation: "explicit",
-        items: [{ id: "item", kind: "file", label: "File" }],
+      admittedAt: 10,
+      truncation: "explicit",
+      items: [
+        { id: "item", kind: "file", label: "File", uri: "file:///workspace/src/file.ts", revision: "10:20" },
+        { id: "missing", kind: "selection", label: "Unavailable selection" },
+      ],
       }],
       goal: {
         sourceTool: "get_goal",
@@ -70,7 +73,12 @@ Deno.test("inspector presentation covers activity, changes, context, goal, and e
   assertStringIncludes(context.markup, "provider/&lt;model&gt;")
   assertStringIncludes(context.markup, "42%")
   assertStringIncludes(context.markup, "$0.1250")
-  assertStringIncludes(context.markup, "STAMP · explicit")
+  assertStringIncludes(context.markup, "2 items · STAMP")
+  assertStringIncludes(context.markup, "truncation explicit")
+  assertStringIncludes(context.markup, 'data-context-receipt-id="receipt" data-context-receipt-item-id="item"')
+  assertStringIncludes(context.markup, "Open source")
+  assertStringIncludes(context.markup, "Stored revision; staleness checked when opened")
+  assertStringIncludes(context.markup, "Source unavailable after reload")
 
   const goal = inspectorPresentation(value, "goal")
   assertStringIncludes(goal.markup, "Ship &lt;safely&gt;")
@@ -112,6 +120,48 @@ Deno.test("inspector run presentation exposes only actions valid for pending, re
   assert(!markup.slice(discardedStart, discardedEnd).includes("inspector-actions"))
 })
 
+Deno.test("objective comparison is sortable, export-bound, responsive, and eligibility-aware", () => {
+  const value = snapshot()
+  value.runGroups = [{
+    id: "group",
+    title: "Objective rows",
+    repository: "/repo",
+    baseRef: "main",
+    promptReceiptID: "receipt",
+    isolation: "worktree",
+    createdAt: 1,
+    runs: [
+      { id: "available", model: "zeta", phase: "completed", session: { sessionID: "available-session", directory: "/run/available", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
+      { id: "pending", model: "alpha", phase: "preparing", session: { sessionID: "pending", directory: "/run/pending", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
+      { id: "discarded", model: "beta", phase: "cancelled", discarded: true, session: { sessionID: "discarded-session", directory: "/run/discarded", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
+      { id: "retained", model: "gamma", phase: "completed", retained: true, session: { sessionID: "retained-session", directory: "/run/retained", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
+    ],
+  }]
+  const row = (runID: string, model: string, tokens?: number, cost?: number): RunComparisonRow => ({ runID, model, status: "completed", elapsedMilliseconds: tokens, changedFiles: tokens ?? 0, additions: tokens ?? 0, deletions: 0, taskOutcomes: "not-recorded", diagnostics: "not-recorded", tokens, cost, complete: true })
+  const rows = [row("available", "zeta", 20, 2), row("pending", "alpha", undefined, undefined), row("discarded", "beta", 10, 1), row("retained", "gamma", 30, 3)]
+  value.runComparisons = [{ artifactID: "comparison", revision: 4, groupID: "group", rows, updatedAt: 2 }]
+
+  assertEquals(sortRunComparisonRows(rows, { key: "cost", direction: "descending" }).map((entry) => entry.runID), ["retained", "available", "discarded", "pending"])
+  const markup = inspectorPresentation(value, "runs", undefined, { comparisonSorts: { comparison: { key: "tokens", direction: "descending" } } }).markup
+  assertStringIncludes(markup, 'aria-sort="descending"')
+  assertStringIncludes(markup, 'data-comparison-sort="tokens"')
+  assertStringIncludes(markup, "Sort rows <select")
+  assertStringIncludes(markup, 'data-run-action="export-comparison" data-comparison-artifact-id="comparison" data-comparison-revision="4"')
+  assertStringIncludes(markup, "No winner or score is inferred.")
+  assert(markup.indexOf('data-run-id="retained"') < markup.indexOf('data-run-id="available"'))
+  const comparisonRow = (runID: string): string => {
+    const start = markup.indexOf(`<tr data-run-id="${runID}">`)
+    return markup.slice(start, markup.indexOf("</tr>", start))
+  }
+  for (const runID of ["pending", "discarded"]) {
+    assertStringIncludes(comparisonRow(runID), "Unavailable")
+    assert(!comparisonRow(runID).includes("data-run-action"))
+  }
+  for (const action of ["open", "diff", "review"]) assertStringIncludes(comparisonRow("retained"), `data-run-action="${action}"`)
+  for (const action of ["keep", "discard"]) assert(!comparisonRow("retained").includes(`data-run-action="${action}"`))
+  for (const action of ["open", "diff", "review", "keep", "discard"]) assertStringIncludes(comparisonRow("available"), `data-run-action="${action}"`)
+})
+
 Deno.test("inspector run presentation exposes standalone worktree failures as exact focus targets", () => {
   const value = snapshot()
   value.worktrees = [{
@@ -133,6 +183,107 @@ Deno.test("inspector run presentation exposes standalone worktree failures as ex
   assertStringIncludes(markup, 'data-worktree-id="worktree"')
   assertStringIncludes(markup, "workbench/failed")
   assertStringIncludes(markup, "Interrupted session creation")
+})
+
+Deno.test("inspector lineage and Jobs include OpenCode grandchildren, cycles, and standalone worktrees", () => {
+  const value = snapshot()
+  value.lineage = [
+    { sessionID: "session", rootID: "session", depth: 0, relation: "root", title: "Root", status: { type: "idle" }, updatedAt: 10 },
+    { sessionID: "child", parentID: "session", rootID: "session", depth: 1, relation: "child", title: "Child", status: { type: "idle" }, updatedAt: 9 },
+    { sessionID: "grandchild", parentID: "child", rootID: "session", depth: 2, relation: "child", title: "Grandchild", status: { type: "busy" }, updatedAt: 11, tokens: 123, cost: 0.25 },
+    { sessionID: "cycle-a", parentID: "cycle-b", rootID: "cycle-a", depth: 1, relation: "child", title: "Cycle A", status: { type: "idle" }, updatedAt: 2 },
+    { sessionID: "cycle-b", parentID: "cycle-a", rootID: "cycle-a", depth: 1, relation: "child", title: "Cycle B", status: { type: "idle" }, updatedAt: 1 },
+  ]
+  value.worktrees = [{
+    id: "orphan-worktree", mutationID: "mutation", owner: "workbench", repository: "/repo", repositoryID: "git:repo",
+    path: "/repo-worktrees/orphan", branch: "workbench/orphan", baseRef: "main", phase: "cleanup-pending", createdAt: 1, updatedAt: 2,
+  }]
+
+  const jobs = inspectorPresentation(value, "jobs").markup
+  assertStringIncludes(jobs, "Grandchild")
+  assertStringIncludes(jobs, "123 tokens")
+  assertStringIncludes(jobs, "$0.2500")
+  assertStringIncludes(jobs, "workbench/orphan")
+  assertStringIncludes(jobs, "Needs input")
+  assertStringIncludes(jobs, 'role="search" aria-label="Job filters"')
+  assertStringIncludes(jobs, 'data-job-filter="text"')
+  assertStringIncludes(jobs, 'data-job-filter="kind"')
+  assertStringIncludes(jobs, 'data-job-filter="session"')
+  assertStringIncludes(jobs, 'data-job-filter="run"')
+  assertStringIncludes(jobs, 'data-job-row data-job-kind="session" data-job-session-id="grandchild"')
+  assertStringIncludes(jobs, 'data-job-row data-job-kind="worktree"')
+
+  const lineage = inspectorPresentation(value, "lineage").markup
+  assertStringIncludes(lineage, 'aria-level="3"')
+  assertStringIncludes(lineage, "Cycle A")
+  assertStringIncludes(lineage, "cycle recovered")
+})
+
+Deno.test("Jobs needs-input controls route to the session projecting aggregated attention", () => {
+  const value = snapshot()
+  value.session!.delegations = [{
+    partID: "part-delegated", sessionID: "delegated", title: "Delegated attention", status: { type: "idle" }, messages: [], revision: 1,
+  }]
+  value.session!.questions = [{
+    id: "question", sessionID: "delegated", protocol: "v2",
+    questions: [{ header: "Choice", question: "Continue?", options: [{ label: "Yes", description: "Proceed" }] }],
+  }]
+  value.lineage = [
+    { sessionID: "session", rootID: "session", depth: 0, relation: "root", title: "Selected root", status: { type: "idle" }, updatedAt: 10 },
+    { sessionID: "child-attention", parentID: "session", rootID: "session", depth: 1, relation: "child", title: "Child attention", status: { type: "idle" }, updatedAt: 9, questionCount: 1 },
+    { sessionID: "grandchild", parentID: "child-attention", rootID: "session", depth: 2, relation: "child", title: "Grandchild work", status: { type: "busy" }, updatedAt: 8 },
+    { sessionID: "run-root", rootID: "run-root", depth: 0, relation: "root", title: "Run root", status: { type: "idle" }, updatedAt: 7 },
+    { sessionID: "run-child", parentID: "run-root", rootID: "run-root", depth: 1, relation: "child", title: "Run child", status: { type: "idle" }, updatedAt: 6 },
+  ]
+  value.runGroups = [{
+    id: "group", title: "Runs", repository: "/repo", baseRef: "main", promptReceiptID: "receipt", isolation: "worktree", createdAt: 1,
+    runs: [
+      { id: "rooted", model: "Rooted run", phase: "needs-input", session: { sessionID: "run-child", directory: "/run/rooted", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
+      { id: "bounded", model: "Bounded run", phase: "needs-input", session: { sessionID: "run-bounded", directory: "/run/bounded", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
+    ],
+  }]
+
+  const jobs = inspectorPresentation(value, "jobs").markup
+  const row = (label: string): string => {
+    const at = jobs.indexOf(`<strong>${label}</strong>`)
+    assert(at >= 0, `Missing Jobs row: ${label}`)
+    return jobs.slice(jobs.lastIndexOf("<li", at), jobs.indexOf("</li>", at))
+  }
+  assertStringIncludes(row("Delegated attention"), 'data-job-session="session"')
+  assertStringIncludes(row("Child attention"), 'data-job-session="session"')
+  assertStringIncludes(row("Grandchild work"), 'data-job-session="grandchild"')
+  assertStringIncludes(row("Rooted run"), 'data-job-session="run-root"')
+  assertStringIncludes(row("Bounded run"), 'data-job-session="run-bounded"')
+  assert(!row("Rooted run").includes("data-run-action"))
+  assert(!row("Bounded run").includes("data-run-action"))
+})
+
+Deno.test("inspector review exposes bounded finding triage and hides archived artifacts", () => {
+  const value = snapshot()
+  value.artifacts = [
+    { schemaVersion: 1, id: "active-review", kind: "review", sessionID: "session", lifecycle: "active", revision: 3, createdAt: 1, updatedAt: 4, state: "ready", itemCount: 1, stale: false },
+    { schemaVersion: 1, id: "archived-review", kind: "review", sessionID: "session", lifecycle: "archived", revision: 2, createdAt: 1, updatedAt: 3, state: "ready", itemCount: 1, stale: false },
+  ]
+  value.reviewFindings = [{
+    sessionID: "session", artifactID: "active-review", artifactRevision: 3, artifactUpdatedAt: 4, stale: false,
+    diffHash: `sha256:${"a".repeat(64)}`, findingID: "finding", title: "Unsafe <input>", detail: "Validate & reject it.",
+    category: "security", severity: "critical", anchors: [{ file: "src/main.ts", side: "modified", startLine: 2, endLine: 3 }], disposition: "open",
+  }]
+
+  const markup = inspectorPresentation(value, "review").markup
+  assertStringIncludes(markup, "Unsafe &lt;input&gt;")
+  assertStringIncludes(markup, "Validate &amp; reject it.")
+  assertStringIncludes(markup, 'data-artifact-action="open-finding"')
+  assertStringIncludes(markup, 'data-finding-disposition="fixed"')
+  assertStringIncludes(markup, 'data-finding-disposition="accepted-risk"')
+  assertStringIncludes(markup, 'role="group" aria-label="Review finding filters"')
+  assertStringIncludes(markup, 'data-review-filter="severity"')
+  assertStringIncludes(markup, 'data-review-filter="category"')
+  assertStringIncludes(markup, 'data-review-filter="disposition"')
+  assertStringIncludes(markup, 'data-review-severity="critical" data-review-category="security" data-review-disposition="open"')
+  assertStringIncludes(markup, 'role="status" aria-live="polite" data-review-filter-status')
+  assertStringIncludes(markup, "1 archived review artifact is hidden")
+  assert(!markup.includes('data-artifact-row="archived-review"'))
 })
 
 Deno.test("inspector walkthrough presentation is deterministic, escaped, and newest-first", () => {

@@ -38,10 +38,19 @@ export interface SessionInfo {
   title: string
   directory: string
   parentID?: string
-  time: { created: number; updated: number }
+  time: { created: number; updated: number; archived?: number }
   agent?: string
   model?: { id: string; providerID: string; variant?: string }
   cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: { read: number; write: number }
+  }
+  summary?: { additions: number; deletions: number; files: number }
+  share?: { url: string }
+  revert?: { messageID: string; partID?: string }
   [key: string]: unknown
 }
 
@@ -307,6 +316,18 @@ export interface RuntimeStatus {
   formatters: RuntimeService[]
   mcp: RuntimeService[]
   updatedAt: number
+}
+
+/** Read-only metadata reported by OpenCode's native PTY service. */
+export interface OpenCodePty {
+  id: string
+  title: string
+  command: string
+  args: string[]
+  cwd: string
+  status: "running" | "exited"
+  pid: number
+  exitCode?: number
 }
 
 export interface ContextSummary {

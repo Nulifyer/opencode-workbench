@@ -10,6 +10,7 @@ import type {
   InlineAttachment,
   MessageBundle,
   ModelOption,
+  OpenCodePty,
   PastedTextBlock,
   PermissionRequest,
   ProviderOption,
@@ -20,7 +21,8 @@ import type {
   SessionStatus,
   TodoItem,
 } from "./opencode.ts"
-import type { AttentionItem, ContextReceipt, RunGroup, WalkthroughDocument, WorktreeJournalEntry } from "./workbench-domain.ts"
+import { sanitizeDurableMetadataText } from "./workbench-domain.ts"
+import type { AttentionItem, ContextReceipt, EvidenceReference, RunComparisonRow, RunGroup, TaskArtifactSummary, WalkthroughDocument, WorktreeJournalEntry } from "./workbench-domain.ts"
 import type { ConnectionState } from "./session-state.ts"
 import {
   PERMISSION_AGGREGATE_CHARACTER_LIMIT,
@@ -55,15 +57,29 @@ export type WebviewToHostMessage =
   | { type: "openFile"; sessionID: string; file: string; line?: number; column?: number; endLine?: number; endColumn?: number }
   | { type: "openPatch"; sessionID: string; file: string }
   | { type: "sessionAction"; sessionID: string; action: "rename" | "delete" | "fork" | "undo" | "redo" | "retry" | "compact" | "share" | "unshare" | "export" | "copyLast" | "copyTranscript"; messageID?: string }
+  | { type: "sessionPresentation"; sessionID: string; action: "pin" | "unpin" | "archive" }
+  | { type: "ptyAction"; id: string; action: "cancel" }
+  | { type: "jobAction"; sessionID: string; action: "open" | "background" }
   | { type: "setAutoApproval"; sessionID: string; enabled: boolean }
   | { type: "goalAction"; sessionID: string; action: "edit" | "configure" | "verify" | "pause" | "resume" | "cancel" }
-  | { type: "runAction"; groupID: string; runID?: string; action: "open" | "cancel" | "retry" | "refresh" | "compare" | "fuse" | "diff" | "review" | "keep" | "discard" }
+  | { type: "configureGoal"; sessionID: string; expectedSettlementGeneration?: number; configuration: GoalConfigurationInput }
+  | { type: "artifactAction"; sessionID: string; artifactID: string; action: "open" | "approve" | "handoff" | "archive" | "delete" | "open-finding" | "set-finding-disposition" | "regenerate"; expectedRevision?: number; findingID?: string; disposition?: "open" | "fixed" | "dismissed" | "accepted-risk" }
+  | { type: "requestRecoveryPreview"; sessionID: string; messageID?: string }
+  | { type: "applyRecovery"; sessionID: string; mode: "revert" | "fork" | "redo"; messageID?: string }
+  | { type: "healthAction"; action: "refresh" | "reconnect" | "logs" | "trace" | "copy" }
+  | { type: "evidenceAction"; action: "capture" }
+  | { type: "contextReceiptAction"; sessionID: string; receiptID: string; itemID: string; action: "open-source" }
+  | { type: "browserContextAction"; sessionID: string; action: "capture"; task?: string; sources?: Array<"selection" | "console" | "element" | "terminal-task" | "diagnostics" | "debug" | "url" | "screenshot">; approvedUrl?: string }
+  | { type: "runAction"; groupID: string; action: "refresh" | "compare" | "fuse" }
+  | { type: "runAction"; groupID: string; action: "export-comparison"; comparisonArtifactID: string; comparisonRevision: number }
+  | { type: "runAction"; groupID: string; runID: string; action: "open" | "cancel" | "retry" | "diff" | "review" | "keep" | "discard" }
   | { type: "walkthroughAction"; documentID: string; stopID: string }
-  | { type: "openInEditor" }
+  | { type: "openInEditor"; tab?: WorkbenchInspectorTab }
   | { type: "openInSidebar" }
   | { type: "navigateBack" }
   | { type: "refresh" }
   | { type: "openLogs" }
+  | { type: "openHelp" }
   | { type: "openFolder" }
   | { type: "reloadWindow" }
   | { type: "openLink"; url: string }
@@ -78,6 +94,109 @@ export type WebviewToHostMessage =
   | { type: "attachResource"; sessionID: string; uri: string }
   | { type: "openPlan"; sessionID: string }
   | { type: "mcpAction"; sessionID: string; name: string; action: "connect" | "disconnect" | "authenticate" | "removeAuth" }
+
+export type WorkbenchInspectorTab = "activity" | "changes" | "context" | "plan" | "goal" | "jobs" | "runs" | "lineage" | "walkthrough" | "review" | "evidence" | "health"
+
+export interface GoalConfigurationInput {
+  objective: string
+  acceptanceCriteria: string[]
+  tokenBudget: number | null
+  maxAutoTurns: number | null
+  maxDurationSeconds: number | null
+  verifier: { enabled: boolean; model: string | null; agent: string | null; timeoutMilliseconds: number; repeatedBlockThreshold: number }
+}
+
+export interface WorkbenchHealthSummary {
+  workbenchVersion: string
+  vscodeVersion: string
+  openCodeVersion?: string
+  serverMode: "managed" | "external"
+  serverState: "starting" | "connected" | "reconnecting" | "failed" | "disconnected"
+  pluginState: "available" | "unavailable" | "unknown"
+  capabilities: string[]
+  eventStream: { state: string; lastEventAt?: number; lastReconciliationAt?: number; reconnectCount: number }
+  requestQueueDepth: number
+  protocol: { version: number; epoch?: string }
+}
+
+export interface WorkbenchTraceSummary {
+  type: string
+  timestamp: number
+  sessionID?: string
+  transition?: string
+  durationMilliseconds?: number
+}
+
+export interface RecoveryPreview {
+  sessionID: string
+  messageID: string
+  userText: string
+  removedMessageIDs: string[]
+  removedTurns: number
+  changedFiles: Array<{ file: string; additions: number; deletions: number }>
+  limitations: string[]
+  canRevert: boolean
+  canFork: boolean
+  canRedo: boolean
+}
+
+/** Bounded objective-matrix projection derived from a run-comparison artifact. */
+export interface RunComparisonSnapshot {
+  artifactID: string
+  revision: number
+  groupID: string
+  rows: RunComparisonRow[]
+  updatedAt: number
+  stale?: boolean
+}
+
+/**
+ * Bounded OpenCode-native session ancestry. The ordinary `sessions` array
+ * remains a root-only rail projection; this collection is the source for
+ * Lineage and descendant Jobs without turning Workbench into a session store.
+ */
+export interface SessionLineageNode {
+  sessionID: string
+  parentID?: string
+  rootID: string
+  depth: number
+  relation: "root" | "child" | "run" | "fusion" | "recovery"
+  title: string
+  status: SessionStatus
+  updatedAt: number
+  directory?: string
+  model?: string
+  agent?: string
+  tokens?: number
+  cost?: number
+  attention?: number
+  questionCount?: number
+  permissionCount?: number
+  archived?: boolean
+  shared?: boolean
+  branch?: string
+  worktree?: string
+  runGroupID?: string
+  runID?: string
+  worktreeID?: string
+}
+
+/** Bounded finding detail for the selected session's active review artifacts. */
+export interface ReviewFindingSnapshot {
+  sessionID: string
+  artifactID: string
+  artifactRevision: number
+  artifactUpdatedAt: number
+  stale: boolean
+  diffHash: string
+  findingID: string
+  title: string
+  detail: string
+  category: "correctness" | "security" | "performance" | "maintainability" | "tests" | "regression"
+  severity: "critical" | "high" | "medium" | "low"
+  anchors: Array<{ file: string; side: "base" | "modified"; startLine: number; endLine: number; hunkHeader?: string }>
+  disposition: "open" | "fixed" | "dismissed" | "accepted-risk"
+}
 
 export interface ChatSnapshot {
   connected: boolean
@@ -97,7 +216,22 @@ export interface ChatSnapshot {
     queued?: number
     todo?: { completed: number; total: number }
     changeCount?: number
+    pinned?: boolean
+    archived?: boolean
+    shared?: boolean
+    shareUrl?: string
+    model?: string
+    agent?: string
+    tokens?: number
+    branch?: string
+    worktree?: string
+    cost?: number
+    summary?: { additions: number; deletions: number; files: number }
+    rootID?: string
+    depth?: number
   }>
+  /** All bounded visible OpenCode roots and descendants for Lineage and Jobs. */
+  lineage?: SessionLineageNode[]
   session?: {
     id: string
     parentID?: string
@@ -123,6 +257,10 @@ export interface ChatSnapshot {
     delegations?: DelegationProgress[]
     contextReceipts?: ContextReceipt[]
     history?: TranscriptHistoryState
+    archived?: boolean
+    shared?: boolean
+    shareUrl?: string
+    revertMessageID?: string
   }
   agents: AgentOption[]
   mentionAgents?: AgentOption[]
@@ -133,11 +271,23 @@ export interface ChatSnapshot {
   commands?: CommandOption[]
   autoApproval?: boolean
   runtime?: RuntimeStatus
+  /** Bounded metadata from OpenCode's native PTY control plane. */
+  ptys?: OpenCodePty[]
   attentionItems?: AttentionItem[]
   composer?: { enterBehavior: "send" | "newline" }
   runGroups?: RunGroup[]
   worktrees?: WorktreeJournalEntry[]
   walkthroughs?: WalkthroughDocument[]
+  /** Metadata-only durable artifacts scoped to the selected OpenCode session. */
+  artifacts?: TaskArtifactSummary[]
+  /** Bounded finding detail scoped to active reviews for the selected session. */
+  reviewFindings?: ReviewFindingSnapshot[]
+  /** Bounded deterministic evidence scoped to the selected OpenCode session. */
+  evidence?: EvidenceReference[]
+  /** Objective rows only; never a full task-artifact payload. */
+  runComparisons?: RunComparisonSnapshot[]
+  health?: WorkbenchHealthSummary
+  trace?: WorkbenchTraceSummary[]
   /**
    * Present only when the extension host had to project an otherwise valid
    * snapshot below the webview transport limit. The authoritative session and
@@ -148,6 +298,7 @@ export interface ChatSnapshot {
 
 export interface ChatSnapshotProjectionOmissions {
   sessions?: number
+  lineage?: number
   messages?: number
   delegations?: number
   queuedPrompts?: number
@@ -158,11 +309,16 @@ export interface ChatSnapshotProjectionOmissions {
   contextReceipts?: number
   catalogItems?: number
   runtimeServices?: number
+  ptys?: number
   attentionItems?: number
   runGroups?: number
   worktrees?: number
   walkthroughs?: number
   walkthroughStops?: number
+  taskArtifacts?: number
+  reviewFindings?: number
+  evidence?: number
+  runComparisons?: number
 }
 
 export interface ChatSnapshotProjection {
@@ -215,6 +371,9 @@ export type HostToWebviewMessage =
   | { type: "composerPayloadChanged"; sessionID: string; revision: number; attachments: InlineAttachment[]; pastedText: PastedTextBlock[]; conflict?: boolean; mutationID?: string }
   | { type: "draftChanged"; sessionID: string; draft: string; revision: number }
   | { type: "sessionRemoved"; sessionID: string }
+  | { type: "navigateWorkbench"; tab: WorkbenchInspectorTab; itemID?: string; focus?: boolean }
+  | { type: "workbenchControl"; target: "sessions" | "jobs" | "attention"; action: "show" | "toggle" }
+  | { type: "recoveryPreview"; preview: RecoveryPreview }
 
 type UnknownRecord = Record<string, unknown>
 
@@ -247,6 +406,25 @@ function validPromptID(value: unknown): value is string {
 }
 
 const inlineMimes = new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp", "application/pdf"])
+const WORKBENCH_INSPECTOR_TABS = new Set<string>(["activity", "changes", "context", "plan", "goal", "jobs", "runs", "lineage", "walkthrough", "review", "evidence", "health"] satisfies WorkbenchInspectorTab[])
+
+function validGoalLimit(value: unknown): value is number | null {
+  return value === null || (Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 1_000_000_000)
+}
+
+function validGoalConfiguration(value: unknown): value is GoalConfigurationInput {
+  if (!record(value) || !exactKeys(value, ["objective", "acceptanceCriteria", "tokenBudget", "maxAutoTurns", "maxDurationSeconds", "verifier"]) ||
+    !boundedString(value.objective, 4_000) || !value.objective.trim() ||
+    !Array.isArray(value.acceptanceCriteria) || value.acceptanceCriteria.length < 1 || value.acceptanceCriteria.length > 100 ||
+    !value.acceptanceCriteria.every((criterion) => boundedString(criterion, 2_000) && criterion.trim().length > 0) ||
+    !validGoalLimit(value.tokenBudget) || !validGoalLimit(value.maxAutoTurns) ||
+    !validGoalLimit(value.maxDurationSeconds) || !record(value.verifier) ||
+    !exactKeys(value.verifier, ["enabled", "model", "agent", "timeoutMilliseconds", "repeatedBlockThreshold"])) return false
+  return typeof value.verifier.enabled === "boolean" && (value.verifier.model === null || boundedString(value.verifier.model)) &&
+    (value.verifier.agent === null || boundedString(value.verifier.agent)) && Number.isSafeInteger(value.verifier.timeoutMilliseconds) &&
+    Number(value.verifier.timeoutMilliseconds) >= 1_000 && Number(value.verifier.timeoutMilliseconds) <= 300_000 &&
+    Number.isSafeInteger(value.verifier.repeatedBlockThreshold) && Number(value.verifier.repeatedBlockThreshold) >= 1 && Number(value.verifier.repeatedBlockThreshold) <= 10
+}
 
 function validInlineAttachments(value: unknown, optional = true): value is InlineAttachment[] | undefined {
   if (value === undefined) return optional
@@ -306,7 +484,9 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
     case "ready":
       return { type: "ready" }
     case "openInEditor":
-      return exactKeys(value, ["type"]) ? { type: "openInEditor" } : undefined
+      return exactKeys(value, ["type", "tab"]) && (value.tab === undefined || WORKBENCH_INSPECTOR_TABS.has(String(value.tab)))
+        ? { type: "openInEditor", tab: value.tab as WorkbenchInspectorTab | undefined }
+        : undefined
     case "openInSidebar":
       return exactKeys(value, ["type"]) ? { type: "openInSidebar" } : undefined
     case "navigateBack":
@@ -315,6 +495,8 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
       return exactKeys(value, ["type"]) ? { type: "refresh" } : undefined
     case "openLogs":
       return exactKeys(value, ["type"]) ? { type: "openLogs" } : undefined
+    case "openHelp":
+      return exactKeys(value, ["type"]) ? { type: "openHelp" } : undefined
     case "openFolder":
       return exactKeys(value, ["type"]) ? { type: "openFolder" } : undefined
     case "reloadWindow":
@@ -426,6 +608,19 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
           (value.messageID === undefined || value.action === "fork" || value.action === "retry") && ["rename", "delete", "fork", "undo", "redo", "retry", "compact", "share", "unshare", "export", "copyLast", "copyTranscript"].includes(String(value.action))
         ? { type: "sessionAction", sessionID: value.sessionID, action: value.action as Extract<WebviewToHostMessage, { type: "sessionAction" }>["action"], messageID: value.messageID }
         : undefined
+    case "sessionPresentation":
+      return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) && ["pin", "unpin", "archive"].includes(String(value.action))
+        ? { type: "sessionPresentation", sessionID: value.sessionID, action: value.action as "pin" | "unpin" | "archive" }
+        : undefined
+    case "ptyAction":
+      return exactKeys(value, ["type", "id", "action"]) && validID(value.id) &&
+          !/[\u0000-\u001f\u007f]/.test(value.id) && value.action === "cancel"
+        ? { type: "ptyAction", id: value.id, action: "cancel" }
+        : undefined
+    case "jobAction":
+      return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) && ["open", "background"].includes(String(value.action))
+        ? { type: "jobAction", sessionID: value.sessionID, action: value.action as "open" | "background" }
+        : undefined
     case "setAutoApproval":
       return exactKeys(value, ["type", "sessionID", "enabled"]) && validID(value.sessionID) && typeof value.enabled === "boolean"
         ? { type: "setAutoApproval", sessionID: value.sessionID, enabled: value.enabled }
@@ -435,11 +630,70 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
           ["edit", "configure", "verify", "pause", "resume", "cancel"].includes(String(value.action))
         ? { type: "goalAction", sessionID: value.sessionID, action: value.action as Extract<WebviewToHostMessage, { type: "goalAction" }>["action"] }
         : undefined
-    case "runAction":
-      return exactKeys(value, ["type", "groupID", "runID", "action"]) && validID(value.groupID) && boundedOptionalString(value.runID) &&
-          ["open", "cancel", "retry", "refresh", "compare", "fuse", "diff", "review", "keep", "discard"].includes(String(value.action)) && (["refresh", "compare", "fuse"].includes(String(value.action)) || value.runID !== undefined)
-        ? { type: "runAction", groupID: value.groupID, runID: value.runID, action: value.action as Extract<WebviewToHostMessage, { type: "runAction" }>["action"] }
+    case "configureGoal":
+      return exactKeys(value, ["type", "sessionID", "expectedSettlementGeneration", "configuration"]) && validID(value.sessionID) &&
+          (value.expectedSettlementGeneration === undefined || (Number.isSafeInteger(value.expectedSettlementGeneration) && Number(value.expectedSettlementGeneration) >= 0)) && validGoalConfiguration(value.configuration)
+        ? { type: "configureGoal", sessionID: value.sessionID, expectedSettlementGeneration: value.expectedSettlementGeneration as number | undefined, configuration: value.configuration }
         : undefined
+    case "artifactAction":
+      return exactKeys(value, ["type", "sessionID", "artifactID", "action", "expectedRevision", "findingID", "disposition"]) && validID(value.sessionID) && validID(value.artifactID) &&
+          ["open", "approve", "handoff", "archive", "delete", "open-finding", "set-finding-disposition", "regenerate"].includes(String(value.action)) &&
+          (value.expectedRevision === undefined || (Number.isSafeInteger(value.expectedRevision) && Number(value.expectedRevision) >= 1)) && boundedOptionalString(value.findingID) &&
+          (value.disposition === undefined || ["open", "fixed", "dismissed", "accepted-risk"].includes(String(value.disposition))) &&
+          (value.action === "open-finding" ? value.findingID !== undefined : true) &&
+          (value.action === "set-finding-disposition" ? value.findingID !== undefined && value.disposition !== undefined && value.expectedRevision !== undefined : true)
+        ? value as unknown as WebviewToHostMessage
+        : undefined
+    case "requestRecoveryPreview":
+      return exactKeys(value, ["type", "sessionID", "messageID"]) && validID(value.sessionID) && boundedOptionalString(value.messageID)
+        ? { type: "requestRecoveryPreview", sessionID: value.sessionID, messageID: value.messageID }
+        : undefined
+    case "applyRecovery":
+      return exactKeys(value, ["type", "sessionID", "mode", "messageID"]) && validID(value.sessionID) && ["revert", "fork", "redo"].includes(String(value.mode)) && boundedOptionalString(value.messageID) &&
+          (value.mode === "redo" || value.messageID !== undefined)
+        ? { type: "applyRecovery", sessionID: value.sessionID, mode: value.mode as "revert" | "fork" | "redo", messageID: value.messageID }
+        : undefined
+    case "healthAction":
+      return exactKeys(value, ["type", "action"]) && ["refresh", "reconnect", "logs", "trace", "copy"].includes(String(value.action))
+        ? { type: "healthAction", action: value.action as "refresh" | "reconnect" | "logs" | "trace" | "copy" }
+        : undefined
+    case "evidenceAction":
+      return exactKeys(value, ["type", "action"]) && value.action === "capture" ? { type: "evidenceAction", action: "capture" } : undefined
+    case "contextReceiptAction":
+      return exactKeys(value, ["type", "sessionID", "receiptID", "itemID", "action"]) && value.action === "open-source" &&
+          validID(value.sessionID) && validID(value.receiptID) && validID(value.itemID) &&
+          !/[\u0000-\u001f\u007f]/.test(value.sessionID) && !/[\u0000-\u001f\u007f]/.test(value.receiptID) && !/[\u0000-\u001f\u007f]/.test(value.itemID)
+        ? { type: "contextReceiptAction", sessionID: value.sessionID, receiptID: value.receiptID, itemID: value.itemID, action: "open-source" }
+        : undefined
+    case "browserContextAction":
+      if (!exactKeys(value, ["type", "sessionID", "action", "task", "sources", "approvedUrl"]) || !validID(value.sessionID) || /[\u0000-\u001f\u007f]/.test(value.sessionID) || value.action !== "capture") return undefined
+      if (value.task === undefined && value.sources === undefined && value.approvedUrl === undefined) return { type: "browserContextAction", sessionID: value.sessionID, action: "capture" }
+      if (!boundedString(value.task, 20_000) || !value.task.trim() || !Array.isArray(value.sources) || !value.sources.length || value.sources.length > 8) return undefined
+      {
+        const allowed = new Set(["selection", "console", "element", "terminal-task", "diagnostics", "debug", "url", "screenshot"])
+        if (!value.sources.every((source) => typeof source === "string" && allowed.has(source)) || new Set(value.sources).size !== value.sources.length) return undefined
+        if (value.sources.filter((source) => ["console", "element", "terminal-task"].includes(String(source))).length > 1) return undefined
+        if ((value.sources.includes("url") && (!boundedString(value.approvedUrl, 8_192) || !value.approvedUrl.trim())) || (!value.sources.includes("url") && value.approvedUrl !== undefined)) return undefined
+        return { type: "browserContextAction", sessionID: value.sessionID, action: "capture", task: value.task, sources: value.sources as Array<"selection" | "console" | "element" | "terminal-task" | "diagnostics" | "debug" | "url" | "screenshot">, approvedUrl: typeof value.approvedUrl === "string" ? value.approvedUrl : undefined }
+      }
+    case "runAction": {
+      if (!validID(value.groupID)) return undefined
+      if (["refresh", "compare", "fuse"].includes(String(value.action))) {
+        return exactKeys(value, ["type", "groupID", "action"])
+          ? { type: "runAction", groupID: value.groupID, action: value.action as "refresh" | "compare" | "fuse" }
+          : undefined
+      }
+      if (value.action === "export-comparison") {
+        return exactKeys(value, ["type", "groupID", "action", "comparisonArtifactID", "comparisonRevision"]) && validID(value.comparisonArtifactID) &&
+            Number.isSafeInteger(value.comparisonRevision) && Number(value.comparisonRevision) > 0
+          ? { type: "runAction", groupID: value.groupID, action: "export-comparison", comparisonArtifactID: value.comparisonArtifactID, comparisonRevision: Number(value.comparisonRevision) }
+          : undefined
+      }
+      return exactKeys(value, ["type", "groupID", "runID", "action"]) && validID(value.runID) &&
+          ["open", "cancel", "retry", "diff", "review", "keep", "discard"].includes(String(value.action))
+        ? { type: "runAction", groupID: value.groupID, runID: value.runID, action: value.action as "open" | "cancel" | "retry" | "diff" | "review" | "keep" | "discard" }
+        : undefined
+    }
     case "walkthroughAction":
       return exactKeys(value, ["type", "documentID", "stopID"]) && validID(value.documentID) && validID(value.stopID)
         ? { type: "walkthroughAction", documentID: value.documentID, stopID: value.stopID }
@@ -527,7 +781,14 @@ function validSessionOption(value: unknown): boolean {
     (value.updatedAt === undefined || (Number.isSafeInteger(value.updatedAt) && Number(value.updatedAt) >= 0)) &&
     [value.attention, value.questionCount, value.permissionCount, value.queued, value.changeCount].every((count) => count === undefined || (Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000)) &&
     (value.todo === undefined || (record(value.todo) && Number.isSafeInteger(value.todo.completed) && Number(value.todo.completed) >= 0 &&
-      Number.isSafeInteger(value.todo.total) && Number(value.todo.total) >= Number(value.todo.completed) && Number(value.todo.total) <= 10_000))
+      Number.isSafeInteger(value.todo.total) && Number(value.todo.total) >= Number(value.todo.completed) && Number(value.todo.total) <= 10_000)) &&
+    [value.pinned, value.archived, value.shared].every((flag) => flag === undefined || typeof flag === "boolean") &&
+    boundedOptionalString(value.shareUrl, 8_192) && boundedOptionalString(value.model) && boundedOptionalString(value.agent) &&
+    (value.tokens === undefined || (Number.isSafeInteger(value.tokens) && Number(value.tokens) >= 0)) && boundedOptionalString(value.branch, 2_000) && boundedOptionalString(value.worktree, 8_192) &&
+    (value.cost === undefined || (typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0)) &&
+    (value.summary === undefined || (record(value.summary) && exactKeys(value.summary, ["additions", "deletions", "files"]) && [value.summary.additions, value.summary.deletions, value.summary.files]
+      .every((entry) => Number.isSafeInteger(entry) && Number(entry) >= 0 && Number(entry) <= 1_000_000_000))) &&
+    boundedOptionalString(value.rootID) && (value.depth === undefined || (Number.isSafeInteger(value.depth) && Number(value.depth) >= 0 && Number(value.depth) <= 100))
 }
 
 function validSessionOptions(value: unknown[]): boolean {
@@ -537,6 +798,65 @@ function validSessionOptions(value: unknown[]): boolean {
     return characters + option.id.length + option.title.length + (option.directory?.length ?? 0) + (option.parentID?.length ?? 0) +
       (option.status.message?.length ?? 0)
   }, 0) <= 2_000_000
+}
+
+function validLineage(value: unknown): value is SessionLineageNode[] {
+  if (!Array.isArray(value) || value.length > 5_000) return false
+  const ids = new Set<string>()
+  let characters = 0
+  return value.every((node) => {
+    if (!record(node) || !exactKeys(node, [
+      "sessionID", "parentID", "rootID", "depth", "relation", "title", "status", "updatedAt", "directory", "model", "agent", "tokens", "cost",
+      "attention", "questionCount", "permissionCount", "archived", "shared", "branch", "worktree", "runGroupID", "runID", "worktreeID",
+    ]) || !validID(node.sessionID) || ids.has(node.sessionID) || !boundedOptionalString(node.parentID) || !validID(node.rootID) ||
+      !Number.isSafeInteger(node.depth) || Number(node.depth) < 0 || Number(node.depth) > 100 ||
+      !["root", "child", "run", "fusion", "recovery"].includes(String(node.relation)) || !boundedString(node.title, 2_000) || !validStatus(node.status) ||
+      !Number.isSafeInteger(node.updatedAt) || Number(node.updatedAt) < 0 || !boundedOptionalString(node.directory, 8_192) ||
+      !boundedOptionalString(node.model) || !boundedOptionalString(node.agent) ||
+      (node.tokens !== undefined && (!Number.isSafeInteger(node.tokens) || Number(node.tokens) < 0)) ||
+      (node.cost !== undefined && (typeof node.cost !== "number" || !Number.isFinite(node.cost) || node.cost < 0)) ||
+      ![node.attention, node.questionCount, node.permissionCount].every((count) => count === undefined || (Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000)) ||
+      ![node.archived, node.shared].every((flag) => flag === undefined || typeof flag === "boolean") ||
+      !boundedOptionalString(node.branch, 2_000) || !boundedOptionalString(node.worktree, 8_192) || !boundedOptionalString(node.runGroupID) ||
+      !boundedOptionalString(node.runID) || !boundedOptionalString(node.worktreeID)) return false
+    ids.add(node.sessionID)
+    const status: unknown = node.status
+    const statusMessage = record(status) && typeof status.message === "string" ? status.message : ""
+    characters += node.sessionID.length + (node.parentID?.length ?? 0) + node.rootID.length + node.title.length +
+      statusMessage.length +
+      (node.directory?.length ?? 0) + (node.model?.length ?? 0) + (node.agent?.length ?? 0) +
+      (node.branch?.length ?? 0) + (node.worktree?.length ?? 0) + (node.runGroupID?.length ?? 0) + (node.runID?.length ?? 0) + (node.worktreeID?.length ?? 0)
+    return characters <= 2_000_000
+  })
+}
+
+function validReviewFindingSnapshots(value: unknown, sessionID: string): value is ReviewFindingSnapshot[] {
+  if (!Array.isArray(value) || value.length > 200) return false
+  const ids = new Set<string>()
+  let characters = 0
+  return value.every((entry) => {
+    if (!record(entry) || !exactKeys(entry, [
+      "sessionID", "artifactID", "artifactRevision", "artifactUpdatedAt", "stale", "diffHash", "findingID", "title", "detail", "category", "severity", "anchors", "disposition",
+    ]) || entry.sessionID !== sessionID || !validID(entry.artifactID) || !Number.isSafeInteger(entry.artifactRevision) || Number(entry.artifactRevision) < 1 ||
+      !Number.isSafeInteger(entry.artifactUpdatedAt) || Number(entry.artifactUpdatedAt) < 0 || typeof entry.stale !== "boolean" ||
+      typeof entry.diffHash !== "string" || !/^sha256:[0-9a-f]{64}$/.test(entry.diffHash) || !validID(entry.findingID) ||
+      !boundedString(entry.title, 500) || !boundedString(entry.detail, 10_000) ||
+      !["correctness", "security", "performance", "maintainability", "tests", "regression"].includes(String(entry.category)) ||
+      !["critical", "high", "medium", "low"].includes(String(entry.severity)) ||
+      !["open", "fixed", "dismissed", "accepted-risk"].includes(String(entry.disposition)) || !Array.isArray(entry.anchors) ||
+      entry.anchors.length < 1 || entry.anchors.length > 20) return false
+    const key = `${entry.artifactID}\0${entry.findingID}`
+    if (ids.has(key)) return false
+    ids.add(key)
+    characters += entry.sessionID.length + entry.artifactID.length + entry.diffHash.length + entry.findingID.length + entry.title.length + entry.detail.length
+    for (const anchor of entry.anchors) {
+      if (!record(anchor) || !exactKeys(anchor, ["file", "side", "startLine", "endLine", "hunkHeader"]) || !boundedString(anchor.file, 8_192) || !anchor.file ||
+        !["base", "modified"].includes(String(anchor.side)) || !Number.isSafeInteger(anchor.startLine) || Number(anchor.startLine) < 1 ||
+        !Number.isSafeInteger(anchor.endLine) || Number(anchor.endLine) < Number(anchor.startLine) || !boundedOptionalString(anchor.hunkHeader, 2_000)) return false
+      characters += anchor.file.length + (anchor.hunkHeader?.length ?? 0)
+    }
+    return characters <= 2_000_000
+  })
 }
 
 function validMessage(value: unknown): boolean {
@@ -588,8 +908,12 @@ function validMessages(value: unknown[]): boolean {
 function jsonCharacters(value: unknown, depth = 0): number {
   if (depth > 8 || value === null || typeof value === "boolean" || typeof value === "number") return 0
   if (typeof value === "string") return value.length
-  if (Array.isArray(value)) return value.reduce((total, entry) => total + jsonCharacters(entry, depth + 1), 0)
-  if (record(value)) return Object.entries(value).reduce((total, [key, entry]) => total + key.length + jsonCharacters(entry, depth + 1), 0)
+  if (Array.isArray(value)) {
+    return value.reduce((total, entry) => total + jsonCharacters(entry, depth + 1), 0)
+  }
+  if (record(value)) {
+    return Object.entries(value).reduce((total, [key, entry]) => total + key.length + jsonCharacters(entry, depth + 1), 0)
+  }
   return 0
 }
 
@@ -604,8 +928,10 @@ function validDelegations(value: unknown): value is DelegationProgress[] {
       !Number.isSafeInteger(delegation.revision) || Number(delegation.revision) < 0) return false
     for (const message of delegation.messages as MessageBundle[]) {
       parts += message.parts.length
-      for (const part of message.parts) characters += (part.text?.length ?? 0) + (part.state?.title?.length ?? 0) +
+      for (const part of message.parts) {
+        characters += (part.text?.length ?? 0) + (part.state?.title?.length ?? 0) +
         (part.state?.output?.length ?? 0) + (part.state?.error?.length ?? 0)
+      }
     }
     return parts <= 10_000 && characters <= 2_000_000
   })
@@ -636,7 +962,12 @@ function validTranscriptHistoryPage(value: unknown): value is TranscriptHistoryP
   return value.messages.every((message) => (message as MessageBundle).info.sessionID === value.sessionID)
 }
 
-function validJson(value: unknown, depth = 0, budget = { nodes: 0, characters: 0 }, characterLimit = PERMISSION_METADATA_CHARACTER_LIMIT): boolean {
+function validJson(
+  value: unknown,
+  depth = 0,
+  budget = { nodes: 0, characters: 0 },
+  characterLimit = PERMISSION_METADATA_CHARACTER_LIMIT,
+): boolean {
   budget.nodes += 1
   if (budget.nodes > 1_000 || depth > 8) return false
   if (value === null || typeof value === "boolean") return true
@@ -645,7 +976,9 @@ function validJson(value: unknown, depth = 0, budget = { nodes: 0, characters: 0
     budget.characters += value.length
     return budget.characters <= characterLimit
   }
-  if (Array.isArray(value)) return value.length <= 100 && value.every((entry) => validJson(entry, depth + 1, budget, characterLimit))
+  if (Array.isArray(value)) {
+    return value.length <= 100 && value.every((entry) => validJson(entry, depth + 1, budget, characterLimit))
+  }
   if (!record(value) || Object.keys(value).length > 100) return false
   return Object.entries(value).every(([key, entry]) => {
     budget.characters += key.length
@@ -654,7 +987,9 @@ function validJson(value: unknown, depth = 0, budget = { nodes: 0, characters: 0
 }
 
 function validQueue(value: unknown): value is QueuedPrompt[] {
-  if (!Array.isArray(value) || value.length > PROMPT_QUEUE_COUNT_LIMIT) return false
+  if (!Array.isArray(value) || value.length > PROMPT_QUEUE_COUNT_LIMIT) {
+    return false
+  }
   const ids = new Set<string>()
   let characters = 0
   return value.every((prompt) => {
@@ -689,6 +1024,110 @@ function validAttentionItems(value: unknown): value is AttentionItem[] {
     record(item.target) && ["conversation", "goal", "runs", "health"].includes(String(item.target.surface)) && boundedOptionalString(item.target.itemID))
 }
 
+const TASK_ARTIFACT_STATES: Readonly<Record<TaskArtifactSummary["kind"], ReadonlySet<string>>> = {
+  plan: new Set(["generating", "ready", "approved", "handed-off", "failed", "unavailable"]),
+  review: new Set(["ready", "stale"]),
+  "goal-verification": new Set(["pending", "continue", "complete", "blocked", "needs-user", "applied", "stale"]),
+  "run-comparison": new Set(["complete", "incomplete"]),
+  "context-capture": new Set(["complete", "limited"]),
+}
+const TASK_ARTIFACT_ITEM_LIMITS: Readonly<Record<TaskArtifactSummary["kind"], number>> = { plan: 100, review: 100, "goal-verification": 500, "run-comparison": 5, "context-capture": 100 }
+const EVIDENCE_KINDS = new Set<EvidenceReference["kind"]>(["task", "terminal", "test", "diagnostics", "diff", "todo", "criterion"])
+const EVIDENCE_STATUSES = new Set<EvidenceReference["status"]>(["passed", "failed", "warning", "unknown"])
+
+function validDurableMetadataString(value: unknown, limit: number, label: string): value is string {
+  if (typeof value !== "string" || !value.trim() || value.length > limit) return false
+  try {
+    return sanitizeDurableMetadataText(value, limit, label) === value
+  } catch {
+    return false
+  }
+}
+
+function validTaskArtifactSummaries(value: unknown, selectedSessionID: string): value is TaskArtifactSummary[] {
+  if (!Array.isArray(value) || value.length > 500) return false
+  const ids = new Set<string>()
+  let characters = 0
+  return value.every((summary) => {
+    if (!record(summary) || !exactKeys(summary, ["schemaVersion", "id", "kind", "sessionID", "lifecycle", "revision", "createdAt", "updatedAt", "state", "itemCount", "stale"]) ||
+      summary.schemaVersion !== 1 || !validDurableMetadataString(summary.id, 1_024, "Task artifact ID") || ids.has(summary.id) ||
+      !validDurableMetadataString(summary.sessionID, 1_024, "Task artifact session ID") || summary.sessionID !== selectedSessionID ||
+      !Object.hasOwn(TASK_ARTIFACT_STATES, String(summary.kind)) || !["active", "archived"].includes(String(summary.lifecycle)) ||
+      !Number.isSafeInteger(summary.revision) || Number(summary.revision) < 1 || !Number.isSafeInteger(summary.createdAt) || Number(summary.createdAt) < 0 ||
+      !Number.isSafeInteger(summary.updatedAt) || Number(summary.updatedAt) < Number(summary.createdAt)) return false
+    const kind = summary.kind as TaskArtifactSummary["kind"]
+    if (!TASK_ARTIFACT_STATES[kind].has(String(summary.state)) || (summary.itemCount !== undefined && (!Number.isSafeInteger(summary.itemCount) ||
+      Number(summary.itemCount) < 0 || Number(summary.itemCount) > TASK_ARTIFACT_ITEM_LIMITS[kind])) ||
+      (summary.stale !== undefined && typeof summary.stale !== "boolean") || (!["review", "goal-verification"].includes(kind) && summary.stale !== undefined) ||
+      ((summary.state === "stale") !== (summary.stale === true))) return false
+    ids.add(summary.id)
+    characters += summary.id.length + summary.sessionID.length +
+      String(summary.state).length
+    return characters <= 1_100_000
+  })
+}
+
+function validEvidenceReferences(value: unknown, selectedSessionID: string): value is EvidenceReference[] {
+  if (!Array.isArray(value) || value.length > 2_000) return false
+  const ids = new Set<string>()
+  let characters = 0
+  return value.every((evidence) => {
+    if (!record(evidence) || !exactKeys(evidence, ["id", "kind", "label", "status", "observedAt", "sourceID", "sessionID", "runGroupID", "runID", "repository", "summary"]) ||
+      !validDurableMetadataString(evidence.id, 1_024, "Evidence ID") || ids.has(evidence.id) || !EVIDENCE_KINDS.has(evidence.kind as EvidenceReference["kind"]) ||
+      !validDurableMetadataString(evidence.label, 1_024, "Evidence label") || !EVIDENCE_STATUSES.has(evidence.status as EvidenceReference["status"]) ||
+      !Number.isSafeInteger(evidence.observedAt) || Number(evidence.observedAt) < 0 || !validDurableMetadataString(evidence.sessionID, 1_024, "Evidence session ID") ||
+      evidence.sessionID !== selectedSessionID || !validDurableMetadataString(evidence.summary, 4_000, "Evidence summary")) return false
+    for (const [candidate, limit, label] of [[evidence.sourceID, 1_024, "Evidence source ID"], [evidence.runGroupID, 1_024, "Evidence run-group ID"], [evidence.runID, 1_024, "Evidence run ID"], [evidence.repository, 8_192, "Evidence repository"]] as const) {
+      if (candidate !== undefined && !validDurableMetadataString(candidate, limit, label)) return false
+    }
+    ids.add(evidence.id)
+    characters += evidence.id.length + evidence.label.length +
+      evidence.sessionID.length + evidence.summary.length +
+      (typeof evidence.sourceID === "string" ? evidence.sourceID.length : 0) +
+      (typeof evidence.runGroupID === "string"
+        ? evidence.runGroupID.length
+        : 0) +
+      (typeof evidence.runID === "string" ? evidence.runID.length : 0) +
+      (typeof evidence.repository === "string"
+        ? evidence.repository.length
+        : 0)
+    return characters <= 32_000_000
+  })
+}
+
+function validRunComparisonRow(value: unknown): value is RunComparisonRow {
+  if (!record(value) || !exactKeys(value, ["runID", "status", "model", "agent", "variant", "elapsedMilliseconds", "changedFiles", "additions", "deletions", "taskOutcomes", "diagnostics", "verifierState", "tokens", "cost", "blocker", "complete", "limitation"]) ||
+    !validDurableMetadataString(value.runID, 1_024, "Run comparison run ID") || !["pending", "preparing", "admitting", "working", "needs-input", "completed", "failed", "cancelled"].includes(String(value.status)) ||
+    !validDurableMetadataString(value.model, 1_024, "Run comparison model") || !["not-recorded", "passed", "failed", "mixed"].includes(String(value.taskOutcomes)) ||
+    !["not-recorded", "clean", "has-errors"].includes(String(value.diagnostics)) || typeof value.complete !== "boolean") return false
+  for (const [candidate, limit, label] of [[value.agent, 1_024, "Run comparison agent"], [value.variant, 1_024, "Run comparison variant"], [value.verifierState, 2_000, "Run comparison verifier state"], [value.blocker, 4_000, "Run comparison blocker"], [value.limitation, 4_000, "Run comparison limitation"]] as const) {
+    if (candidate !== undefined && !validDurableMetadataString(candidate, limit, label)) return false
+  }
+  for (const candidate of [value.elapsedMilliseconds, value.tokens]) {
+    if (candidate !== undefined && (!Number.isSafeInteger(candidate) || Number(candidate) < 0)) return false
+  }
+  for (const candidate of [value.changedFiles, value.additions, value.deletions]) {
+    if (!Number.isSafeInteger(candidate) || Number(candidate) < 0) return false
+  }
+  return value.cost === undefined || (typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0 && value.cost <= 1_000_000_000_000)
+}
+
+function validRunComparisonSnapshots(value: unknown): value is RunComparisonSnapshot[] {
+  if (!Array.isArray(value) || value.length > 20) return false
+  const artifactIDs = new Set<string>()
+  return value.every((comparison) => {
+    if (!record(comparison) || !exactKeys(comparison, ["artifactID", "revision", "groupID", "rows", "updatedAt", "stale"]) ||
+      !validDurableMetadataString(comparison.artifactID, 1_024, "Run comparison artifact ID") || artifactIDs.has(comparison.artifactID) ||
+      !Number.isSafeInteger(comparison.revision) || Number(comparison.revision) < 1 || !validDurableMetadataString(comparison.groupID, 1_024, "Run comparison group ID") ||
+      !Number.isSafeInteger(comparison.updatedAt) || Number(comparison.updatedAt) < 0 || !Array.isArray(comparison.rows) || comparison.rows.length > 5 ||
+      !comparison.rows.every(validRunComparisonRow) || (comparison.stale !== undefined && typeof comparison.stale !== "boolean")) return false
+    const runIDs = comparison.rows.map((row) => row.runID)
+    if (new Set(runIDs).size !== runIDs.length) return false
+    artifactIDs.add(comparison.artifactID)
+    return true
+  })
+}
+
 function validRunGroups(value: unknown): value is RunGroup[] {
   if (!Array.isArray(value) || value.length > 500) return false
   return value.every((group) => record(group) && boundedString(group.id) && boundedString(group.title, 500) && boundedString(group.repository, 8_192) && boundedString(group.baseRef) && boundedString(group.promptReceiptID) &&
@@ -715,6 +1154,7 @@ function validWalkthroughs(value: unknown): value is WalkthroughDocument[] {
 
 const SNAPSHOT_OMISSION_KEYS = [
   "sessions",
+  "lineage",
   "messages",
   "delegations",
   "queuedPrompts",
@@ -725,11 +1165,16 @@ const SNAPSHOT_OMISSION_KEYS = [
   "contextReceipts",
   "catalogItems",
   "runtimeServices",
+  "ptys",
   "attentionItems",
   "runGroups",
   "worktrees",
   "walkthroughs",
   "walkthroughStops",
+  "taskArtifacts",
+  "reviewFindings",
+  "evidence",
+  "runComparisons",
 ] as const
 
 function validSnapshotProjection(value: unknown): value is ChatSnapshotProjection {
@@ -851,7 +1296,166 @@ function validRuntime(value: unknown): value is RuntimeStatus {
   )
 }
 
-export function parseHostMessage(value: unknown): HostToWebviewMessage | undefined {
+function validPtys(value: unknown): value is OpenCodePty[] {
+  if (!Array.isArray(value) || value.length > 500) return false
+  const ids = new Set<string>()
+  let characters = 0
+  return value.every((pty) => {
+    if (
+      !record(pty) ||
+      !exactKeys(pty, [
+        "id",
+        "title",
+        "command",
+        "args",
+        "cwd",
+        "status",
+        "pid",
+        "exitCode",
+      ]) ||
+      !validID(pty.id) || /[\u0000-\u001f\u007f]/.test(pty.id) ||
+      ids.has(pty.id) ||
+      !boundedString(pty.title, 2_000) || pty.title.includes("\0") ||
+      !boundedString(pty.command, 8_192) || !pty.command ||
+      pty.command.includes("\0") ||
+      !boundedString(pty.cwd, 8_192) || !pty.cwd || pty.cwd.includes("\0") ||
+      !Array.isArray(pty.args) || pty.args.length > 256 ||
+      !["running", "exited"].includes(String(pty.status)) ||
+      !Number.isSafeInteger(pty.pid) || Number(pty.pid) < 0 ||
+      Number(pty.pid) > 2_147_483_647 ||
+      (pty.exitCode !== undefined &&
+        (!Number.isSafeInteger(pty.exitCode) ||
+          Number(pty.exitCode) < -2_147_483_648 ||
+          Number(pty.exitCode) > 2_147_483_647))
+    ) return false
+    let argumentCharacters = 0
+    if (
+      !pty.args.every((argument) => {
+        if (
+          !boundedString(argument, 20_000) || argument.includes("\0")
+        ) return false
+        argumentCharacters += argument.length
+        return argumentCharacters <= 100_000
+      })
+    ) return false
+    ids.add(pty.id)
+    characters += pty.id.length + pty.title.length + pty.command.length +
+      pty.cwd.length + argumentCharacters
+    return characters <= 4_000_000
+  })
+}
+
+function validWorkbenchHealth(value: unknown): value is WorkbenchHealthSummary {
+  if (
+    !record(value) ||
+    !exactKeys(value, [
+      "workbenchVersion",
+      "vscodeVersion",
+      "openCodeVersion",
+      "serverMode",
+      "serverState",
+      "pluginState",
+      "capabilities",
+      "eventStream",
+      "requestQueueDepth",
+      "protocol",
+    ]) ||
+    !boundedString(value.workbenchVersion, 100) ||
+    !boundedString(value.vscodeVersion, 100) ||
+    !boundedOptionalString(value.openCodeVersion, 100) ||
+    !["managed", "external"].includes(String(value.serverMode)) ||
+    !["starting", "connected", "reconnecting", "failed", "disconnected"]
+      .includes(String(value.serverState)) ||
+    !["available", "unavailable", "unknown"].includes(
+      String(value.pluginState),
+    ) || !Array.isArray(value.capabilities) ||
+    value.capabilities.length > 200 ||
+    !value.capabilities.every((entry) => boundedString(entry, 256)) ||
+    !Number.isSafeInteger(value.requestQueueDepth) ||
+    Number(value.requestQueueDepth) < 0 ||
+    !record(value.eventStream) ||
+    !exactKeys(value.eventStream, [
+      "state",
+      "lastEventAt",
+      "lastReconciliationAt",
+      "reconnectCount",
+    ]) || !boundedString(value.eventStream.state, 100) ||
+    !Number.isSafeInteger(value.eventStream.reconnectCount) ||
+    Number(value.eventStream.reconnectCount) < 0 ||
+    ![value.eventStream.lastEventAt, value.eventStream.lastReconciliationAt]
+      .every((entry) =>
+        entry === undefined ||
+        (Number.isSafeInteger(entry) && Number(entry) >= 0)
+      ) ||
+    !record(value.protocol) ||
+    !exactKeys(value.protocol, ["version", "epoch"]) ||
+    !Number.isSafeInteger(value.protocol.version) ||
+    Number(value.protocol.version) < 1 ||
+    !boundedOptionalString(value.protocol.epoch, 1_024)
+  ) return false
+  return true
+}
+
+function validWorkbenchTrace(value: unknown): value is WorkbenchTraceSummary[] {
+  return Array.isArray(value) && value.length <= 100 &&
+    value.every((entry) =>
+      record(entry) &&
+      exactKeys(entry, [
+        "type",
+        "timestamp",
+        "sessionID",
+        "transition",
+        "durationMilliseconds",
+      ]) &&
+      boundedString(entry.type, 256) && Number.isSafeInteger(entry.timestamp) &&
+      Number(entry.timestamp) >= 0 && boundedOptionalString(entry.sessionID) &&
+      boundedOptionalString(entry.transition, 256) &&
+      (entry.durationMilliseconds === undefined ||
+        (typeof entry.durationMilliseconds === "number" &&
+          Number.isFinite(entry.durationMilliseconds) &&
+          entry.durationMilliseconds >= 0))
+    )
+}
+
+function validRecoveryPreview(value: unknown): value is RecoveryPreview {
+  return record(value) &&
+    exactKeys(value, [
+      "sessionID",
+      "messageID",
+      "userText",
+      "removedMessageIDs",
+      "removedTurns",
+      "changedFiles",
+      "limitations",
+      "canRevert",
+      "canFork",
+      "canRedo",
+    ]) &&
+    validID(value.sessionID) && validID(value.messageID) &&
+    boundedString(value.userText, 20_000) &&
+    Array.isArray(value.removedMessageIDs) &&
+    value.removedMessageIDs.length <= 5_000 &&
+    value.removedMessageIDs.every(validID) &&
+    Number.isSafeInteger(value.removedTurns) &&
+    Number(value.removedTurns) >= 0 && Number(value.removedTurns) <= 5_000 &&
+    Array.isArray(value.changedFiles) && value.changedFiles.length <= 500 &&
+    value.changedFiles.every((file) =>
+      record(file) && exactKeys(file, ["file", "additions", "deletions"]) &&
+      boundedString(file.file, 8_192) && Number.isSafeInteger(file.additions) &&
+      Number(file.additions) >= 0 && Number.isSafeInteger(file.deletions) &&
+      Number(file.deletions) >= 0
+    ) &&
+    Array.isArray(value.limitations) && value.limitations.length <= 20 &&
+    value.limitations.every((entry) => boundedString(entry, 2_000)) &&
+    typeof value.canRevert === "boolean" &&
+    typeof value.canFork === "boolean" && typeof value.canRedo === "boolean" &&
+    (Number(value.removedTurns) >= 1 ||
+      (Number(value.removedTurns) === 0 && value.removedMessageIDs.length === 0 && value.canRedo && !value.canRevert && !value.canFork))
+}
+
+export function parseHostMessage(
+  value: unknown,
+): HostToWebviewMessage | undefined {
   if (!record(value) || typeof value.type !== "string") return undefined
   if (value.type === "error") {
     return typeof value.message === "string" ? { type: "error", message: value.message } : undefined
@@ -898,6 +1502,31 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
   if (value.type === "sessionRemoved") {
     return exactKeys(value, ["type", "sessionID"]) && validID(value.sessionID) ? { type: "sessionRemoved", sessionID: value.sessionID } : undefined
   }
+  if (value.type === "navigateWorkbench") {
+    return exactKeys(value, ["type", "tab", "itemID", "focus"]) &&
+        WORKBENCH_INSPECTOR_TABS.has(String(value.tab)) &&
+        boundedOptionalString(value.itemID) &&
+        (value.focus === undefined || typeof value.focus === "boolean")
+      ? {
+        type: "navigateWorkbench",
+        tab: value.tab as WorkbenchInspectorTab,
+        itemID: value.itemID,
+        focus: value.focus,
+      }
+      : undefined
+  }
+  if (value.type === "workbenchControl") {
+    return exactKeys(value, ["type", "target", "action"]) && ["sessions", "jobs", "attention"].includes(String(value.target)) &&
+        ["show", "toggle"].includes(String(value.action))
+      ? value as HostToWebviewMessage
+      : undefined
+  }
+  if (value.type === "recoveryPreview") {
+    return exactKeys(value, ["type", "preview"]) &&
+        validRecoveryPreview(value.preview)
+      ? value as unknown as HostToWebviewMessage
+      : undefined
+  }
   if (value.type === "messagePatches") {
     if (!exactKeys(value, ["type", "patches"]) || !Array.isArray(value.patches) || value.patches.length > 100) return undefined
     const valid = value.patches.every((patch) => record(patch) && exactKeys(patch, ["sessionID", "messageID", "message", "revision", "active", "append", "afterMessageID"]) &&
@@ -917,27 +1546,62 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
   if (value.type !== "snapshot" || !record(value.snapshot)) return undefined
   const snapshot = value.snapshot
   if (
-    typeof snapshot.connected !== "boolean" || !["connecting", "connected", "reconnecting", "failed"].includes(String(snapshot.connectionState)) ||
-    snapshot.connected !== (snapshot.connectionState === "connected") || !boundedOptionalString(snapshot.connectionError, 20_000) ||
-    !Array.isArray(snapshot.sessions) || !validSessionOptions(snapshot.sessions) ||
-    !Array.isArray(snapshot.agents) || snapshot.agents.length > 500 || !validCatalog(snapshot.agents, validAgent) ||
-    (snapshot.mentionAgents !== undefined && (!Array.isArray(snapshot.mentionAgents) || snapshot.mentionAgents.length > 500 || !validCatalog(snapshot.mentionAgents, validAgent))) ||
-    (snapshot.providers !== undefined && (!Array.isArray(snapshot.providers) || snapshot.providers.length > 500 || !validCatalog(snapshot.providers, validProvider))) ||
-    !Array.isArray(snapshot.models) || snapshot.models.length > 5_000 || !validCatalog(snapshot.models, validModel) ||
-    (snapshot.resources !== undefined && (!Array.isArray(snapshot.resources) || snapshot.resources.length > 2_000 || !validCatalog(snapshot.resources, validResource))) ||
-    (snapshot.catalog !== undefined && (!record(snapshot.catalog) || !exactKeys(snapshot.catalog, ["status", "updatedAt", "error"]) ||
-      !["ready", "stale", "error"].includes(String(snapshot.catalog.status)) ||
-      (snapshot.catalog.updatedAt !== undefined && (!Number.isSafeInteger(snapshot.catalog.updatedAt) || Number(snapshot.catalog.updatedAt) < 0)) ||
-      !boundedOptionalString(snapshot.catalog.error, 20_000))) ||
-    (snapshot.commands !== undefined && (!Array.isArray(snapshot.commands) || snapshot.commands.length > 1_000 || !validCatalog(snapshot.commands, validCommand))) ||
-    (snapshot.autoApproval !== undefined && typeof snapshot.autoApproval !== "boolean") ||
+    typeof snapshot.connected !== "boolean" ||
+    !["connecting", "connected", "reconnecting", "failed"].includes(
+      String(snapshot.connectionState),
+    ) ||
+    snapshot.connected !== (snapshot.connectionState === "connected") ||
+    !boundedOptionalString(snapshot.connectionError, 20_000) ||
+    !Array.isArray(snapshot.sessions) ||
+    !validSessionOptions(snapshot.sessions) ||
+    (snapshot.lineage !== undefined && !validLineage(snapshot.lineage)) ||
+    !Array.isArray(snapshot.agents) || snapshot.agents.length > 500 ||
+    !validCatalog(snapshot.agents, validAgent) ||
+    (snapshot.mentionAgents !== undefined &&
+      (!Array.isArray(snapshot.mentionAgents) ||
+        snapshot.mentionAgents.length > 500 ||
+        !validCatalog(snapshot.mentionAgents, validAgent))) ||
+    (snapshot.providers !== undefined &&
+      (!Array.isArray(snapshot.providers) || snapshot.providers.length > 500 ||
+        !validCatalog(snapshot.providers, validProvider))) ||
+    !Array.isArray(snapshot.models) || snapshot.models.length > 5_000 ||
+    !validCatalog(snapshot.models, validModel) ||
+    (snapshot.resources !== undefined &&
+      (!Array.isArray(snapshot.resources) ||
+        snapshot.resources.length > 2_000 ||
+        !validCatalog(snapshot.resources, validResource))) ||
+    (snapshot.catalog !== undefined &&
+      (!record(snapshot.catalog) ||
+        !exactKeys(snapshot.catalog, ["status", "updatedAt", "error"]) ||
+        !["ready", "stale", "error"].includes(
+          String(snapshot.catalog.status),
+        ) ||
+        (snapshot.catalog.updatedAt !== undefined &&
+          (!Number.isSafeInteger(snapshot.catalog.updatedAt) ||
+            Number(snapshot.catalog.updatedAt) < 0)) ||
+        !boundedOptionalString(snapshot.catalog.error, 20_000))) ||
+    (snapshot.commands !== undefined &&
+      (!Array.isArray(snapshot.commands) || snapshot.commands.length > 1_000 ||
+        !validCatalog(snapshot.commands, validCommand))) ||
+    (snapshot.autoApproval !== undefined &&
+      typeof snapshot.autoApproval !== "boolean") ||
     (snapshot.runtime !== undefined && !validRuntime(snapshot.runtime)) ||
-    (snapshot.attentionItems !== undefined && !validAttentionItems(snapshot.attentionItems)) ||
-    (snapshot.composer !== undefined && (!record(snapshot.composer) || !["send", "newline"].includes(String(snapshot.composer.enterBehavior))))
-    || (snapshot.runGroups !== undefined && !validRunGroups(snapshot.runGroups))
-    || (snapshot.worktrees !== undefined && !validWorktrees(snapshot.worktrees))
-    || (snapshot.walkthroughs !== undefined && !validWalkthroughs(snapshot.walkthroughs))
-    || (snapshot.projection !== undefined && !validSnapshotProjection(snapshot.projection))
+    (snapshot.ptys !== undefined && !validPtys(snapshot.ptys)) ||
+    (snapshot.attentionItems !== undefined &&
+      !validAttentionItems(snapshot.attentionItems)) ||
+    (snapshot.composer !== undefined &&
+      (!record(snapshot.composer) ||
+        !["send", "newline"].includes(
+          String(snapshot.composer.enterBehavior),
+        ))) ||
+    (snapshot.runGroups !== undefined && !validRunGroups(snapshot.runGroups)) ||
+    (snapshot.worktrees !== undefined && !validWorktrees(snapshot.worktrees)) ||
+    (snapshot.walkthroughs !== undefined &&
+      !validWalkthroughs(snapshot.walkthroughs)) ||
+    (snapshot.health !== undefined && !validWorkbenchHealth(snapshot.health)) ||
+    (snapshot.trace !== undefined && !validWorkbenchTrace(snapshot.trace)) ||
+    (snapshot.projection !== undefined &&
+      !validSnapshotProjection(snapshot.projection))
   ) return undefined
   if (snapshot.session !== undefined) {
     if (!record(snapshot.session)) return undefined
@@ -950,7 +1614,9 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
       !boundedString(session.draft, PROMPT_TEXT_CHARACTER_LIMIT) ||
       !validStatus(session.status) ||
       typeof session.loaded !== "boolean" ||
-      !["idle", "loading", "ready", "error"].includes(String(session.loadState)) ||
+      !["idle", "loading", "ready", "error"].includes(
+        String(session.loadState),
+      ) ||
       !Array.isArray(session.messages) || !validMessages(session.messages) ||
       !validMessageRevisions(session.messageRevisions, session.messages) ||
       !boundedOptionalString(session.agent) ||
@@ -958,16 +1624,46 @@ export function parseHostMessage(value: unknown): HostToWebviewMessage | undefin
       !boundedOptionalString(session.variant) ||
       (session.queue !== undefined && !validQueue(session.queue)) ||
       !boundedOptionalString(session.inFlightPromptID) ||
-      (session.inFlightPromptID !== undefined && (!Array.isArray(session.queue) || !session.queue.some((prompt) => record(prompt) && prompt.id === session.inFlightPromptID))) ||
-      (session.permissions !== undefined && !validPermissions(session.permissions)) ||
+      (session.inFlightPromptID !== undefined &&
+        (!Array.isArray(session.queue) ||
+          !session.queue.some((prompt) =>
+            record(prompt) && prompt.id === session.inFlightPromptID
+          ))) ||
+      (session.permissions !== undefined &&
+        !validPermissions(session.permissions)) ||
       (session.questions !== undefined && !validQuestions(session.questions)) ||
       (session.todos !== undefined && !validTodos(session.todos)) ||
       (session.changes !== undefined && !validChanges(session.changes)) ||
       (session.context !== undefined && !validContext(session.context)) ||
       (session.goal !== undefined && !validGoal(session.goal)) ||
-      (session.delegations !== undefined && !validDelegations(session.delegations)) ||
-      (session.contextReceipts !== undefined && !validContextReceipts(session.contextReceipts)) ||
-      (session.history !== undefined && (!validTranscriptHistory(session.history) || session.history.visibleMessages !== session.messages.length))
+      (session.delegations !== undefined &&
+        !validDelegations(session.delegations)) ||
+      (session.contextReceipts !== undefined &&
+        !validContextReceipts(session.contextReceipts)) ||
+      (session.history !== undefined &&
+        (!validTranscriptHistory(session.history) ||
+          session.history.visibleMessages !== session.messages.length)) ||
+      (session.archived !== undefined &&
+        typeof session.archived !== "boolean") ||
+      (session.shared !== undefined && typeof session.shared !== "boolean") ||
+      !boundedOptionalString(session.shareUrl, 8_192) ||
+      !boundedOptionalString(session.revertMessageID)
+    ) return undefined
+  }
+  if (
+    snapshot.artifacts !== undefined || snapshot.reviewFindings !== undefined || snapshot.evidence !== undefined ||
+    snapshot.runComparisons !== undefined
+  ) {
+    if (
+      !record(snapshot.session) || !boundedString(snapshot.session.id) ||
+      (snapshot.artifacts !== undefined &&
+        !validTaskArtifactSummaries(snapshot.artifacts, snapshot.session.id)) ||
+      (snapshot.reviewFindings !== undefined &&
+        !validReviewFindingSnapshots(snapshot.reviewFindings, snapshot.session.id)) ||
+      (snapshot.evidence !== undefined &&
+        !validEvidenceReferences(snapshot.evidence, snapshot.session.id)) ||
+      (snapshot.runComparisons !== undefined &&
+        !validRunComparisonSnapshots(snapshot.runComparisons))
     ) return undefined
   }
   return value as HostToWebviewMessage

@@ -3,8 +3,8 @@ import { realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import * as vscode from "vscode"
-import type { AttentionItem, ContextAttachmentSummary, ContextReceiptItem, EditorContextSummary, HostToWebviewMessage, InlineAttachment, PastedTextBlock, RuntimeDescriptor, WebviewToHostMessage, WorkbenchCapability } from "@opencode-workbench/shared"
-import { parseWebviewMessage, PROMPT_ATTACHMENT_CHARACTER_LIMIT, PROMPT_ATTACHMENT_COUNT_LIMIT } from "@opencode-workbench/shared"
+import type { AttentionItem, ContextAttachmentSummary, ContextReceiptItem, EditorContextSummary, HostToWebviewMessage, InlineAttachment, PastedTextBlock, RuntimeDescriptor, WebviewToHostMessage, WorkbenchCapability, WorkbenchHealthSummary, WorkbenchInspectorTab, WorkbenchTraceSummary } from "@opencode-workbench/shared"
+import { parseWebviewMessage, PROMPT_ATTACHMENT_CHARACTER_LIMIT, PROMPT_ATTACHMENT_COUNT_LIMIT, taskArtifactSummary } from "@opencode-workbench/shared"
 import type { PromptFilePart } from "../opencode-client.js"
 import type { ControllerUpdate, SessionController } from "../session-controller.js"
 import { prepareFzf, rankPreparedFzf, workspaceSearchPaths, type PreparedFzfIndex } from "../fuzzy.js"
@@ -16,6 +16,13 @@ import type { WorktreeService } from "../application/worktree-service.js"
 import { WebviewProtocolHost, type ProtocolObservation } from "../protocol/webview-protocol-host.js"
 import { dataUrlPayload, receiptHash } from "../application/context-receipt-builders.js"
 import { projectChatSnapshotForWebview } from "../application/webview-snapshot-projector.js"
+import type { EvidenceService } from "../application/evidence-service.js"
+import { RecoveryPreviewGuard, type RecoveryPreviewInput, type RecoveryPreviewService } from "../application/recovery-preview-service.js"
+import { exactRunComparisonMarkdown } from "../application/run-comparison-service.js"
+import type { SessionPresentationService } from "../application/session-presentation-service.js"
+import type { TaskArtifactService } from "../application/task-artifact-service.js"
+import type { BrowserEditorSelection } from "../application/browser-context-service.js"
+import { inspectContextReceiptSource } from "../application/context-receipt-source-service.js"
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -51,6 +58,21 @@ const ICONS = {
   back: icon("m9.8 3.2 1 1L7 8l3.8 3.8-1 1L5 8l4.8-4.8Z"),
 }
 
+const INSPECTOR_TABS: ReadonlyArray<{ id: WorkbenchInspectorTab; label: string }> = [
+  { id: "activity", label: "Activity" },
+  { id: "plan", label: "Plan" },
+  { id: "changes", label: "Changes" },
+  { id: "review", label: "Review" },
+  { id: "evidence", label: "Evidence" },
+  { id: "goal", label: "Goal" },
+  { id: "jobs", label: "Jobs" },
+  { id: "lineage", label: "Lineage" },
+  { id: "runs", label: "Runs" },
+  { id: "context", label: "Context" },
+  { id: "walkthrough", label: "Walkthrough" },
+  { id: "health", label: "Health" },
+]
+
 interface StoredContextAttachment {
   sessionID: string
   key: string
@@ -58,6 +80,20 @@ interface StoredContextAttachment {
   summary: ContextAttachmentSummary
   sourceUri?: string
   receipt: Omit<ContextReceiptItem, "id" | "label">
+}
+
+type InitialWorkbenchControl = "composer-focus" | "sessions-toggle" | "sessions-show" | "attention-show"
+
+export interface ChatWorkbenchServices {
+  artifacts?: TaskArtifactService
+  evidence?: EvidenceService
+  recovery?: RecoveryPreviewService
+  sessionPresentation?: SessionPresentationService
+  health?: () => WorkbenchHealthSummary | undefined
+  trace?: () => WorkbenchTraceSummary[]
+  captureBrowserContext?: (request: Extract<WebviewToHostMessage, { type: "browserContextAction" }>) => Promise<void>
+  openHealth?: () => Promise<void>
+  openTrace?: () => Promise<void>
 }
 
 function receiptRange(range: vscode.Range): NonNullable<ContextReceiptItem["range"]> {
@@ -79,8 +115,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private readonly pendingMessageUpdates = new Map<string, { sessionID: string; messageID: string }>()
   private readonly contextAttachments = new Map<string, StoredContextAttachment>()
   private readonly composerPayloads = new Map<string, { revision: number; attachments: InlineAttachment[]; pastedText: PastedTextBlock[] }>()
+  private readonly recoveryPreviews = new RecoveryPreviewGuard<vscode.Webview>()
   private lastEditor = vscode.window.activeTextEditor
   private lastDocumentUri = vscode.window.activeTextEditor?.document.uri
+  private lastEditorSelection = this.editorSelectionSnapshot(vscode.window.activeTextEditor)
   private editorContextSignature = ""
   private workspaceFiles?: { expiresAt: number; index: PreparedFzfIndex }
   private fullUpdatePending = false
@@ -89,6 +127,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private readonly protocol: WebviewProtocolHost<HostToWebviewMessage[], WebviewToHostMessage, HostToWebviewMessage>
   private lastConnected: boolean
   private knownSessionIDs = new Set<string>()
+  private pendingEditorTab?: WorkbenchInspectorTab
+  private pendingEditorControl?: InitialWorkbenchControl
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -103,6 +143,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private readonly walkthroughs?: WalkthroughService,
     private readonly worktrees?: WorktreeService,
     private readonly protocolTrace?: (observation: ProtocolObservation) => void,
+    private readonly workbench: ChatWorkbenchServices = {},
   ) {
     this.knownSessionIDs = new Set(Object.keys(controller?.snapshot.sessions ?? {}))
     this.lastConnected = controller?.snapshot.connected ?? false
@@ -146,21 +187,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (editor) {
           this.lastEditor = editor
           this.lastDocumentUri = editor.document.uri
+          this.lastEditorSelection = this.editorSelectionSnapshot(editor)
         }
         void this.publishEditorContext()
       }),
       vscode.window.onDidChangeTextEditorSelection((event) => {
-        if (event.textEditor === this.lastEditor) void this.publishEditorContext()
+        if (event.textEditor === this.lastEditor) {
+          this.lastEditorSelection = this.editorSelectionSnapshot(event.textEditor)
+          void this.publishEditorContext()
+        }
       }),
       vscode.workspace.onDidCloseTextDocument((document) => {
         if (this.lastEditor?.document === document) {
           this.lastEditor = vscode.window.visibleTextEditors.find((editor) => editor.document !== document)
           this.lastDocumentUri = this.lastEditor?.document.uri
+          this.lastEditorSelection = this.editorSelectionSnapshot(this.lastEditor)
           void this.publishEditorContext()
         }
       }),
       vscode.workspace.onDidChangeTextDocument((event) => {
-        if (event.document === this.lastEditor?.document) void this.publishEditorContext()
+        if (event.document === this.lastEditor?.document) {
+          this.lastEditorSelection = this.editorSelectionSnapshot(this.lastEditor)
+          void this.publishEditorContext()
+        }
       }),
       vscode.workspace.onDidSaveTextDocument((document) => {
         if (document === this.lastEditor?.document) void this.publishEditorContext()
@@ -174,6 +223,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (this.view) {
       const previousID = this.surfaceIDs.get(this.view.webview)
       if (previousID) this.protocol.detach(previousID)
+      this.recoveryPreviews.invalidate(this.view.webview)
       this.surfaceIDs.delete(this.view.webview)
     }
     this.disposeAll(this.viewDisposables)
@@ -194,26 +244,90 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       view.onDidDispose(() => {
         if (this.view === view) this.view = undefined
         this.protocol.detach(surfaceID)
+        this.recoveryPreviews.invalidate(view.webview)
         this.surfaceIDs.delete(view.webview)
         this.disposeAll(this.viewDisposables)
       }),
     )
   }
 
-  openInEditor(): void {
+  openInEditor(tab?: WorkbenchInspectorTab, initialControl?: InitialWorkbenchControl): void {
+    this.rememberActiveEditorSelection()
     if (this.panel) {
       this.panel.reveal()
-      void vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar")
+      if (tab) void this.postTo(this.panel.webview, { type: "navigateWorkbench", tab, focus: true })
       return
     }
+    this.pendingEditorTab = tab
+    this.pendingEditorControl = initialControl
     const panel = vscode.window.createWebviewPanel(
       "opencodeWorkbench.chatEditor",
-      this.controller?.chatSnapshot().session?.title || "OpenCode Chat",
+      "OpenCode Task Workbench",
       vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")] },
     )
     this.attachEditorPanel(panel)
-    void vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar")
+  }
+
+  captureEditorSelection(): BrowserEditorSelection | undefined {
+    this.rememberActiveEditorSelection()
+    return this.lastEditorSelection ? { ...this.lastEditorSelection } : undefined
+  }
+
+  toggleEditor(): void {
+    if (this.panel) {
+      this.panel.dispose()
+      return
+    }
+    this.openInEditor()
+  }
+
+  focusComposer(): void {
+    if (!this.panel) {
+      this.openInEditor(undefined, "composer-focus")
+      return
+    }
+    this.openInEditor()
+    const sessionID = this.controller?.snapshot.selectedID
+    if (sessionID) void this.publishDirect({ type: "insertText", sessionID, text: "" })
+  }
+
+  toggleSessions(): void {
+    if (!this.panel) {
+      this.openInEditor(undefined, "sessions-show")
+      return
+    }
+    void this.postTo(this.panel.webview, { type: "workbenchControl", target: "sessions", action: "toggle" })
+  }
+
+  toggleJobs(): void {
+    if (!this.panel) {
+      this.openInEditor("jobs")
+      return
+    }
+    void this.postTo(this.panel.webview, { type: "workbenchControl", target: "jobs", action: "toggle" })
+  }
+
+  showAttention(): void {
+    if (!this.panel) {
+      this.openInEditor(undefined, "attention-show")
+      return
+    }
+    this.openInEditor()
+    void this.postTo(this.panel.webview, { type: "workbenchControl", target: "attention", action: "show" })
+  }
+
+  async openNextAttention(): Promise<void> {
+    const item = this.snapshot().attentionItems?.[0]
+    if (!item) {
+      this.openInEditor("activity")
+      return
+    }
+    if (item.sessionID && item.sessionID !== this.controller?.snapshot.selectedID && Object.hasOwn(this.controller?.snapshot.sessions ?? {}, item.sessionID)) {
+      await this.controller?.select(item.sessionID)
+    }
+    const tab: WorkbenchInspectorTab = item.target.surface === "goal" ? "goal" : item.target.surface === "runs" ? "runs" : item.target.surface === "health" ? "health" : "activity"
+    this.openInEditor(tab)
   }
 
   restoreEditor(panel: vscode.WebviewPanel): void {
@@ -224,6 +338,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (this.panel) {
       const previousID = this.surfaceIDs.get(this.panel.webview)
       if (previousID) this.protocol.detach(previousID)
+      this.recoveryPreviews.invalidate(this.panel.webview)
       this.surfaceIDs.delete(this.panel.webview)
     }
     this.disposeAll(this.panelDisposables)
@@ -231,7 +346,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const surfaceID = `editor-${randomUUID()}`
     this.surfaceIDs.set(panel.webview, surfaceID)
     this.protocol.attach(surfaceID, panel.webview, panel.visible)
-    this.configure(panel.webview, "editor", surfaceID)
+    this.configure(panel.webview, "editor", surfaceID, this.pendingEditorTab, this.pendingEditorControl)
+    this.pendingEditorTab = undefined
+    this.pendingEditorControl = undefined
     this.panelDisposables.push(
       panel.webview.onDidReceiveMessage((raw) => void this.handleIncoming(raw, panel.webview, surfaceID)),
       panel.onDidChangeViewState(() => {
@@ -244,6 +361,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       panel.onDidDispose(() => {
         if (this.panel === panel) this.panel = undefined
         this.protocol.detach(surfaceID)
+        this.recoveryPreviews.invalidate(panel.webview)
         this.surfaceIDs.delete(panel.webview)
         this.disposeAll(this.panelDisposables)
       }),
@@ -284,18 +402,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
-  private configure(webview: vscode.Webview, mode: "sidebar" | "editor", surfaceID: string): void {
+  private configure(webview: vscode.Webview, mode: "sidebar" | "editor", surfaceID: string, initialTab?: WorkbenchInspectorTab, initialControl?: InitialWorkbenchControl): void {
     const media = vscode.Uri.joinPath(this.extensionUri, "media")
     webview.options = { enableScripts: true, localResourceRoots: [media] }
-    webview.html = this.html(webview, mode, surfaceID)
+    webview.html = this.html(webview, mode, surfaceID, initialTab, initialControl)
   }
 
-  private html(webview: vscode.Webview, mode: "sidebar" | "editor", surfaceID: string): string {
+  private html(webview: vscode.Webview, mode: "sidebar" | "editor", surfaceID: string, initialTab?: WorkbenchInspectorTab, initialControl?: InitialWorkbenchControl): string {
     const nonce = randomBytes(18).toString("base64")
     const script = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "chat.js"))
     const style = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "chat.css"))
     const extensionVersion = String(vscode.extensions.getExtension("nulifyer.opencode-workbench")?.packageJSON.version ?? "unknown")
     const safeVersion = /^[A-Za-z0-9.+-]{1,64}$/.test(extensionVersion) ? extensionVersion : "unknown"
+    const configuration = vscode.workspace.getConfiguration("opencodeWorkbench")
+    const configuredDensity = configuration.get<string>("transcriptDensity", "full")
+    const transcriptDensity = configuredDensity === "answers" ? "answers" : "full"
+    const configuredMotion = configuration.get<string>("progressMotion", "system")
+    const progressMotion = configuredMotion === "animated" || configuredMotion === "static" ? configuredMotion : "system"
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -305,19 +428,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <link rel="stylesheet" href="${style}">
   <title>OpenCode Chat</title>
 </head>
-<body data-mode="${mode}" data-surface-id="${surfaceID}" data-extension-version="${safeVersion}">
+<body data-mode="${mode}" data-surface-id="${surfaceID}" data-extension-version="${safeVersion}" data-transcript-density="${transcriptDensity}" data-progress-motion="${progressMotion}"${initialTab ? ` data-initial-tab="${initialTab}"` : ""}${initialControl ? ` data-initial-control="${initialControl}"` : ""}>
   <div class="app-shell">
     <header class="chat-header">
       <button id="back-parent" class="icon-action" type="button" title="Back to parent session" aria-label="Back to parent session" hidden>${ICONS.back}</button>
       <button id="session-current" class="session-current" type="button" aria-haspopup="dialog" aria-expanded="false" title="Search session history">
         <span class="session-title" id="session-title">No session</span><span class="session-state" id="session-state"></span>${ICONS.chevron}
       </button>
+      <span id="public-badge" class="public-badge" title="This OpenCode transcript is publicly shared" hidden>PUBLIC</span>
       <span id="connection" class="connection offline" role="status" tabindex="-1" hidden>Offline</span>
       <div class="header-actions">
         <button id="attention-toggle" class="icon-action attention-toggle" type="button" title="Needs Attention" aria-label="Needs Attention" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">!</span><small id="attention-count" hidden></small></button>
         <button id="inspector-toggle" class="icon-action" type="button" title="Toggle OpenCode inspector" aria-label="Toggle OpenCode inspector" aria-expanded="false"><span aria-hidden="true">ⓘ</span></button>
         <button id="create-header" class="icon-action" type="button" title="New session" aria-label="New session">${ICONS.add}</button>
         <button id="surface-toggle" class="icon-action" type="button" title="${mode === "sidebar" ? "Switch chat to editor" : "Switch chat to sidebar"}" aria-label="${mode === "sidebar" ? "Switch chat to editor" : "Switch chat to sidebar"}">${ICONS.editor}</button>
+        <button id="help-toggle" class="icon-action" type="button" title="Keyboard help" aria-label="Keyboard help" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">?</span></button>
         <button id="rail-toggle" class="icon-action" type="button" title="Toggle sessions" aria-label="Toggle sessions" aria-expanded="${mode === "editor"}">${ICONS.rail}</button>
         <button id="session-menu-toggle" class="icon-action" type="button" title="Session actions" aria-label="Session actions" aria-haspopup="menu" aria-expanded="false">${ICONS.more}</button>
       </div>
@@ -340,6 +465,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       <button type="button" role="menuitem" data-session-action="compact">Compact context</button>
       <button type="button" role="menuitem" data-session-action="share">Share publicly</button>
       <button type="button" role="menuitem" data-session-action="unshare">Unshare</button>
+      <button type="button" role="menuitem" data-menu-command="copyShare">Copy public link</button>
       <hr>
       <button type="button" role="menuitem" data-menu-command="stash">Stash prompt</button>
       <button type="button" role="menuitem" data-menu-command="restore">Restore stashed prompt</button>
@@ -357,8 +483,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     </div>
     <div id="session-context-menu" class="session-context-menu" role="menu" hidden>
       <button type="button" role="menuitem" data-context-action="open">Open</button>
+      <button type="button" role="menuitem" data-context-action="pin">Pin</button>
       <button type="button" role="menuitem" data-context-action="rename">Rename</button>
       <button type="button" role="menuitem" data-context-action="fork">Fork session</button>
+      <button type="button" role="menuitem" data-context-action="archive">Archive</button>
       <hr>
       <button type="button" role="menuitem" class="danger-action" data-context-action="delete">Delete session</button>
     </div>
@@ -389,8 +517,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       </section>
     </div>
 
+    <div id="recovery-overlay" class="overlay" hidden>
+      <button class="overlay-backdrop" type="button" data-close-recovery aria-label="Close recovery preview"></button>
+      <section class="history-panel recovery-panel" role="dialog" aria-modal="true" aria-labelledby="recovery-title">
+        <div class="overlay-heading"><strong id="recovery-title">OpenCode recovery preview</strong><button type="button" class="text-action" data-close-recovery>Close</button></div>
+        <div id="recovery-content"></div>
+      </section>
+    </div>
+
+    <div id="keyboard-help-overlay" class="overlay" hidden>
+      <button class="overlay-backdrop" type="button" data-close-keyboard-help aria-label="Close keyboard help"></button>
+      <section class="history-panel keyboard-help-panel" role="dialog" aria-modal="true" aria-labelledby="keyboard-help-title">
+        <div class="overlay-heading"><strong id="keyboard-help-title">OpenCode Workbench keyboard help</strong><button type="button" class="text-action" data-close-keyboard-help>Close</button></div>
+        <dl class="inspector-metrics keyboard-help-list"><dt>Ctrl/Cmd+Shift+O</dt><dd>Open Task Workbench</dd><dt>Ctrl/Cmd+L</dt><dd>Focus composer</dd><dt>Escape</dt><dd>Stop active OpenCode work when the Workbench is focused</dd><dt>Arrow keys</dt><dd>Navigate menus, tabs, session lists, and splitters</dd><dt>Shift+F10</dt><dd>Open the selected session context menu</dd><dt>Home / End</dt><dd>Resize a focused pane to its minimum or maximum</dd></dl>
+        <div class="inspector-actions"><button type="button" data-open-full-help>Open Getting Started walkthrough</button></div>
+      </section>
+    </div>
+
     <div class="work-area">
-      <section class="conversation-column">
+      <section id="conversation-column" class="conversation-column">
         <section id="notice" class="notice" role="alert" tabindex="-1" hidden>
           <div class="notice-copy"><strong id="notice-title"></strong><p id="notice-message"></p></div>
           <div class="notice-actions"><button id="notice-retry" type="button">Retry</button><button id="notice-logs" type="button">Open Logs</button><button id="notice-copy" type="button">Copy details</button><button id="notice-dismiss" type="button" aria-label="Dismiss message">×</button></div>
@@ -416,6 +561,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <div class="empty-actions">
             <button id="plan-task" class="primary-action" type="button">Plan a task first</button>
             <button id="create-empty" type="button">New session</button>
+            <button type="button" data-empty-command="help">Open walkthrough</button>
+            <button type="button" data-empty-command="health">Check OpenCode health</button>
           </div>
         </section>
 
@@ -467,20 +614,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         </footer>
       </section>
 
+      <div id="artifact-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize task artifacts" aria-valuemin="300" aria-valuemax="900" aria-valuenow="420" tabindex="0"></div>
+
       <aside id="inspector" class="inspector" aria-label="OpenCode inspector" hidden>
-        <div class="inspector-header"><strong>OpenCode Inspector</strong><button id="inspector-close" class="icon-action" type="button" aria-label="Close inspector">${ICONS.close}</button></div>
+        <div class="inspector-header"><strong>Task Workbench</strong><button id="inspector-close" class="icon-action" type="button" aria-label="Close task workbench">${ICONS.close}</button></div>
         <div id="inspector-tabs" class="inspector-tabs" role="tablist" aria-label="Inspector sections">
-          ${["Activity", "Changes", "Context", "Goal", "Runs", "Walkthrough"].map((tab, index) => `<button id="inspector-tab-${tab.toLowerCase()}" type="button" role="tab" data-inspector-tab="${tab.toLowerCase()}" aria-controls="inspector-panel" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}">${tab}</button>`).join("")}
+          ${INSPECTOR_TABS.map((tab, index) => `<button id="inspector-tab-${tab.id}" type="button" role="tab" data-inspector-tab="${tab.id}" aria-controls="inspector-panel" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}">${tab.label}</button>`).join("")}
         </div>
         <section id="inspector-panel" class="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-activity" tabindex="0"></section>
       </aside>
 
-      <aside id="right-rail" class="right-rail editor-only" aria-label="OpenCode sessions">
+      <div id="sessions-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize sessions and jobs" aria-valuemin="220" aria-valuemax="520" aria-valuenow="300" tabindex="0"></div>
+
+      <aside id="right-rail" class="right-rail editor-only" aria-label="OpenCode sessions and jobs">
         <div class="rail-header sidebar-only"><strong>Sessions</strong><button id="rail-close" class="icon-action" type="button" title="Close sessions" aria-label="Close sessions">${ICONS.close}</button></div>
         <div id="rail-sessions" class="rail-panel">
           <div id="rail-run-groups" class="rail-run-groups" hidden></div>
-          <div class="rail-heading"><strong>Sessions</strong><span id="rail-session-count">0</span></div>
+          <div class="rail-heading"><strong>Sessions &amp; Jobs</strong><span id="rail-session-count">0</span></div>
           <label class="rail-session-search"><span class="visually-hidden">Search sessions</span><input id="rail-session-search" type="search" placeholder="Search sessions" autocomplete="off"></label>
+          <div id="rail-session-filters" class="rail-session-filters" aria-label="Filter sessions">
+            <button type="button" data-session-filter="needs-input" aria-pressed="false">Needs input</button>
+            <button type="button" data-session-filter="working" aria-pressed="false">Working</button>
+            <button type="button" data-session-filter="completed" aria-pressed="false" title="Idle sessions with unread completed output">Unread completed</button>
+            <button type="button" data-session-filter="archived" aria-pressed="false">Show archived</button>
+            <button type="button" data-session-filter="shared" aria-pressed="false">Shared</button>
+            <button type="button" data-session-filter="changed" aria-pressed="false">Changed</button>
+          </div>
           <div id="rail-session-list"></div>
         </div>
       </aside>
@@ -518,6 +677,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (range.isEmpty) return undefined
     const end = range.end.character === 0 && range.end.line > range.start.line ? range.end.line : range.end.line + 1
     return range.start.line + 1 === end ? `Line ${end}` : `Lines ${range.start.line + 1}-${end}`
+  }
+
+  private editorSelectionSnapshot(editor: vscode.TextEditor | undefined): BrowserEditorSelection | undefined {
+    if (!editor || editor.document.isClosed || editor.selection.isEmpty) return undefined
+    const selection = editor.selection
+    return {
+      uri: editor.document.uri.toString(),
+      startLine: selection.start.line + 1,
+      startColumn: selection.start.character + 1,
+      endLine: selection.end.line + 1,
+      endColumn: selection.end.character + 1,
+      revision: String(editor.document.version),
+      text: editor.document.getText(selection),
+    }
+  }
+
+  private rememberActiveEditorSelection(): void {
+    const editor = vscode.window.activeTextEditor
+    if (!editor) return
+    this.lastEditor = editor
+    this.lastDocumentUri = editor.document.uri
+    this.lastEditorSelection = this.editorSelectionSnapshot(editor)
   }
 
   private editorContext(): EditorContextSummary | undefined {
@@ -583,7 +764,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (message.type === "respondPermission") return "input.permissions.exact"
     if (message.type === "respondQuestion" || message.type === "rejectQuestion") return "input.questions"
     if (message.type === "goalAction") return "goal.lifecycle"
-    if (["pickFiles", "resolveDroppedUris", "removeContextAttachment", "openContextAttachment", "attachWorkspacePath", "attachResource"].includes(message.type)) return "context.ledger"
+    if (["pickFiles", "resolveDroppedUris", "removeContextAttachment", "openContextAttachment", "contextReceiptAction", "attachWorkspacePath", "attachResource"].includes(message.type)) return "context.ledger"
     if (message.type === "attachCurrentEditor") return "context.editorBridge"
     return undefined
   }
@@ -628,6 +809,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     await this.protocol.publishTo(surfaceID, message)
   }
 
+  private async deliverRecoveryPreview(source: vscode.Webview, input: RecoveryPreviewInput): Promise<void> {
+    this.recoveryPreviews.invalidate(source)
+    if (!this.workbench.recovery) throw new Error("OpenCode recovery preview is unavailable")
+    const preview = this.workbench.recovery.preview(input)
+    this.recoveryPreviews.remember(source, { input, preview })
+    try {
+      await this.postTo(source, { type: "recoveryPreview", preview })
+    } catch (error) {
+      this.recoveryPreviews.invalidate(source)
+      throw error
+    }
+  }
+
   private contextSummaries(sessionID: string): ContextAttachmentSummary[] {
     return [...this.contextAttachments.values()].filter((attachment) => attachment.sessionID === sessionID).map((attachment) => attachment.summary)
   }
@@ -667,6 +861,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     try {
       switch (message.type) {
         case "ready":
+          this.recoveryPreviews.invalidate(source)
           await this.postTo(source, { type: "snapshot", snapshot: this.snapshot() })
           await this.postEditorContext(source)
           break
@@ -701,39 +896,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           break
         case "goalAction":
           this.requireSelected(message.sessionID)
-          if (message.action === "edit") {
-            const current = this.controller!.chatSnapshot().session?.goal?.objective
-            const objective = await vscode.window.showInputBox({ title: "Edit goal", prompt: "Update the objective", value: current, validateInput: (value) => value.trim() ? undefined : "Enter a goal objective" })
-            if (objective !== undefined) await this.controller!.send(`/goal edit ${objective.trim()}`)
-          } else if (message.action === "configure") {
-            const goal = this.controller!.chatSnapshot().session?.goal
-            if (!goal) throw new Error("This session has no goal")
-            const criteriaText = await vscode.window.showInputBox({ title: "Goal acceptance criteria", prompt: "JSON array of independently checkable criteria", value: JSON.stringify(goal.acceptanceCriteria?.length ? goal.acceptanceCriteria : [goal.objective ?? ""], null, 0), validateInput: (value) => {
-              try { const parsed = JSON.parse(value); return Array.isArray(parsed) && parsed.length <= 100 && parsed.every((item) => typeof item === "string" && item.trim() && item.length <= 2_000) ? undefined : "Enter a JSON array of 1-100 non-empty strings" } catch { return "Enter a valid JSON array" }
-            } })
-            if (criteriaText === undefined) break
-            const limit = async (title: string, current?: number) => await vscode.window.showInputBox({ title, prompt: "Enter a positive integer, or leave blank for unlimited", value: current === undefined ? "" : String(current), validateInput: (value) => !value.trim() || (/^[1-9]\d*$/.test(value.trim()) && Number.isSafeInteger(Number(value)) && Number(value) <= 1_000_000_000) ? undefined : "Enter a positive integer or leave blank" })
-            const tokenBudget = await limit("Goal token limit", goal.tokenBudget); if (tokenBudget === undefined) break
-            const maxAutoTurns = await limit("Goal auto-turn limit", goal.maxAutoTurns); if (maxAutoTurns === undefined) break
-            const maxDurationSeconds = await limit("Goal duration limit (seconds)", goal.maxDurationSeconds); if (maxDurationSeconds === undefined) break
-            const verifierEnabled = await vscode.window.showQuickPick([{ label: "Enabled", value: true }, { label: "Disabled", value: false }], { title: "Independent goal verifier", placeHolder: goal.verifier?.enabled ? "Enabled" : "Disabled" })
-            if (!verifierEnabled) break
-            let verifierModel: string | null = goal.verifier?.model ?? null
-            let verifierAgent: string | null = goal.verifier?.agent ?? null
-            let repeatedBlockThreshold = goal.verifier?.repeatedBlockThreshold ?? 3
-            if (verifierEnabled.value) {
-              const selectedModel = await vscode.window.showQuickPick([{ label: "Default model", value: null }, ...this.controller!.chatSnapshot().models.map((model) => ({ label: model.name, description: model.providerID, value: `${model.providerID}/${model.id}` }))], { title: "Verifier model", placeHolder: verifierModel ?? "Default model" })
-              if (!selectedModel) break
-              verifierModel = selectedModel.value
-              const selectedAgent = await vscode.window.showQuickPick([{ label: "Plan agent (default)", value: null }, ...this.controller!.chatSnapshot().agents.map((agent) => ({ label: agent.name, value: agent.name }))], { title: "Verifier agent", placeHolder: verifierAgent ?? "Plan agent" })
-              if (!selectedAgent) break
-              verifierAgent = selectedAgent.value
-              const threshold = await vscode.window.showInputBox({ title: "Repeated blocked-verdict threshold", value: String(repeatedBlockThreshold), validateInput: (value) => /^[1-9]$|^10$/.test(value.trim()) ? undefined : "Enter an integer from 1 to 10" })
-              if (threshold === undefined) break
-              repeatedBlockThreshold = Number(threshold)
-            }
-            if (this.controller!.chatSnapshot().session?.id !== message.sessionID) throw new Error("The selected session changed while configuring the goal")
-            await this.controller!.send(`/goal configure ${JSON.stringify({ acceptance_criteria: JSON.parse(criteriaText), token_budget: tokenBudget.trim() ? Number(tokenBudget) : null, max_auto_turns: maxAutoTurns.trim() ? Number(maxAutoTurns) : null, max_duration_seconds: maxDurationSeconds.trim() ? Number(maxDurationSeconds) : null, enabled: verifierEnabled.value, model: verifierModel, agent: verifierAgent, repeated_block_threshold: repeatedBlockThreshold })}`)
+          if (message.action === "edit" || message.action === "configure") {
+            this.openInEditor("goal")
           } else if (message.action === "verify") {
             await vscode.commands.executeCommand("opencodeWorkbench.verifyGoal")
           } else if (message.action === "cancel") {
@@ -743,29 +907,174 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             await this.controller!.send(`/goal ${message.action}`)
           }
           break
+        case "configureGoal": {
+          this.requireSelected(message.sessionID)
+          const goal = this.controller!.chatSnapshot().session?.goal
+          if (!goal) throw new Error("This session has no goal")
+          if (message.expectedSettlementGeneration !== undefined && goal.settlementGeneration !== message.expectedSettlementGeneration) {
+            throw new Error("The goal changed while its configuration form was open; review the latest values and save again")
+          }
+          const configuration = message.configuration
+          await this.controller!.send(`/goal configure ${JSON.stringify({
+            objective: configuration.objective,
+            acceptance_criteria: configuration.acceptanceCriteria,
+            token_budget: configuration.tokenBudget,
+            max_auto_turns: configuration.maxAutoTurns,
+            max_duration_seconds: configuration.maxDurationSeconds,
+            enabled: configuration.verifier.enabled,
+            model: configuration.verifier.model,
+            agent: configuration.verifier.agent,
+            timeout_milliseconds: configuration.verifier.timeoutMilliseconds,
+            repeated_block_threshold: configuration.verifier.repeatedBlockThreshold,
+            expected_generation: message.expectedSettlementGeneration,
+          })}`)
+          break
+        }
+        case "sessionPresentation": {
+          this.requireKnown(message.sessionID)
+          if (message.action === "pin") this.workbench.sessionPresentation?.pin(message.sessionID)
+          else if (message.action === "unpin") this.workbench.sessionPresentation?.unpin(message.sessionID)
+          else {
+            const session = this.controller!.snapshot.sessions[message.sessionID]
+            const confirmed = await vscode.window.showWarningMessage(
+              `Archive "${session?.info.title || message.sessionID}"?`,
+              { modal: true, detail: "Archived is native OpenCode session state. Archived sessions are hidden by default. This pinned OpenCode version has no proven unarchive API, so the Workbench cannot currently undo this action." },
+              "Archive",
+            )
+            if (confirmed === "Archive") await this.controller!.archiveSession(message.sessionID)
+          }
+          this.queueFullUpdate()
+          break
+        }
+        case "ptyAction":
+          await this.controller!.cancelPty(message.id)
+          this.queueFullUpdate()
+          break
+        case "jobAction":
+          this.requireKnown(message.sessionID)
+          if (message.action === "open") await this.controller!.select(message.sessionID)
+          else await this.controller!.backgroundChildSessions(message.sessionID)
+          break
+        case "artifactAction": {
+          this.requireKnown(message.sessionID)
+          const artifact = this.workbench.artifacts?.get(message.sessionID, message.artifactID)
+          if (!artifact) throw new Error("Task artifact is no longer available")
+          if (message.action === "archive") {
+            this.workbench.artifacts!.archive(message.sessionID, message.artifactID, message.expectedRevision ?? artifact.revision)
+          } else if (message.action === "delete") {
+            const confirmed = await vscode.window.showWarningMessage("Delete this Workbench artifact metadata?", { modal: true, detail: "This does not delete the owning OpenCode session or its transcript." }, "Delete metadata")
+            if (confirmed === "Delete metadata") this.workbench.artifacts!.remove(message.sessionID, message.artifactID, message.expectedRevision ?? artifact.revision)
+          } else {
+            await vscode.commands.executeCommand("opencodeWorkbench.taskArtifactAction", message)
+          }
+          this.queueFullUpdate()
+          break
+        }
+        case "requestRecoveryPreview": {
+          this.recoveryPreviews.invalidate(source)
+          this.requireSelected(message.sessionID)
+          const session = this.controller!.snapshot.sessions[message.sessionID]
+          if (!session) throw new Error("OpenCode recovery preview is unavailable")
+          await this.deliverRecoveryPreview(source, {
+            sessionID: message.sessionID,
+            status: session.status,
+            messages: session.messages,
+            changes: session.changes,
+            intent: "recover",
+            messageID: message.messageID,
+            revertMessageID: session.info.revert?.messageID,
+          })
+          break
+        }
+        case "applyRecovery": {
+          try {
+            this.requireSelected(message.sessionID)
+            const session = this.controller!.snapshot.sessions[message.sessionID]
+            if (!session || !this.workbench.recovery) throw new Error("OpenCode recovery preview is unavailable")
+            const delivered = this.recoveryPreviews.consume(source, (preview) => {
+              const intent = message.mode === "redo" ? "redo" : "recover"
+              const input: RecoveryPreviewInput = {
+                sessionID: message.sessionID,
+                status: session.status,
+                messages: session.messages,
+                changes: session.changes,
+                intent,
+                messageID: intent === "recover" ? message.messageID ?? preview.messageID : undefined,
+                revertMessageID: session.info.revert?.messageID,
+              }
+              return { input, preview: this.workbench.recovery!.preview(input) }
+            })
+            const available = message.mode === "redo" ? delivered.canRedo : message.mode === "fork" ? delivered.canFork : delivered.canRevert
+            if (!available) throw new Error("The selected recovery action was not available in the confirmed preview")
+            if (message.mode === "redo") await this.controller!.redoSession(message.sessionID)
+            else if (message.mode === "fork") await this.controller!.forkSession(message.sessionID, delivered.messageID)
+            else await this.controller!.undoSession(message.sessionID, delivered.messageID)
+          } catch (error) {
+            this.recoveryPreviews.invalidate(source)
+            throw error
+          }
+          break
+        }
+        case "healthAction": {
+          if (message.action === "refresh") await this.controller?.refresh()
+          else if (message.action === "reconnect") this.controller?.reconnect()
+          else if (message.action === "logs") this.showLogs?.()
+          else if (message.action === "trace") await this.workbench.openTrace?.()
+          else {
+            const health = this.workbench.health?.()
+            if (health) await vscode.env.clipboard.writeText(JSON.stringify(health, null, 2))
+          }
+          break
+        }
+        case "evidenceAction":
+          await vscode.commands.executeCommand("opencodeWorkbench.captureTaskEvidence")
+          break
+        case "browserContextAction":
+          this.requireSelected(message.sessionID)
+          await this.workbench.captureBrowserContext?.(message)
+          break
         case "runAction": {
           const group = this.runGroups?.get(message.groupID)
           if (!group) throw new Error("Run group is no longer available")
           if (message.action === "refresh") await vscode.commands.executeCommand("opencodeWorkbench.refreshRunGroups")
           else if (message.action === "compare") await vscode.commands.executeCommand("opencodeWorkbench.compareRunResults", group.id)
+          else if (message.action === "export-comparison") {
+            if (!this.workbench.artifacts) throw new Error("Run comparison artifacts are unavailable")
+            const content = exactRunComparisonMarkdown(group, this.workbench.artifacts.list(), {
+              groupID: message.groupID,
+              artifactID: message.comparisonArtifactID,
+              revision: message.comparisonRevision,
+            })
+            const safeTitle = group.title.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-|-$/g, "").slice(0, 100) || "run-comparison"
+            const target = await vscode.window.showSaveDialog({
+              title: "Export Objective Run Comparison",
+              defaultUri: this.workspaceRoot ? vscode.Uri.file(path.join(this.workspaceRoot, `${safeTitle}-comparison.md`)) : undefined,
+              filters: { Markdown: ["md"] },
+            })
+            if (target) await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(content))
+          }
           else if (message.action === "fuse") await vscode.commands.executeCommand("opencodeWorkbench.fuseRuns", group.id)
           else {
+            if (!("runID" in message)) throw new Error("Run action is missing its exact run identity")
             const run = group.runs.find((candidate) => candidate.id === message.runID)
             if (!run) throw new Error("Run is no longer available")
+            const sourceAction = ["open", "diff", "review", "keep", "discard"].includes(message.action)
+            if (sourceAction && (run.session.sessionID === "pending" || run.discarded)) throw new Error("This run source is no longer available")
+            if (["keep", "discard"].includes(message.action) && run.retained) throw new Error("This run is already retained")
             if (message.action === "cancel") await this.multiRun?.cancel(group.id, run.id)
             else if (message.action === "retry") {
               const prompt = await vscode.window.showInputBox({ title: `Retry ${run.model}`, prompt: "Explicit retry instruction (source prompt bytes are not persisted)", value: "Continue the original task from the current worktree state. Diagnose the prior failure and complete the requested work.", validateInput: (value) => value.trim() ? undefined : "Enter a retry instruction" })
               if (prompt) await this.multiRun?.retry(group.id, run.id, prompt)
             }
             else if (message.action === "diff") await vscode.commands.executeCommand("opencodeWorkbench.openRunDiff", group.id, run.id)
-            else if (message.action === "review") await vscode.commands.executeCommand("opencodeWorkbench.reviewChanges", run.session.directory, group.baseRef)
+            else if (message.action === "review") await vscode.commands.executeCommand("opencodeWorkbench.reviewChanges", run.session.directory, group.baseRef, run.session.sessionID)
             else if (message.action === "discard") await vscode.commands.executeCommand("opencodeWorkbench.discardRun", group.id, run.id)
             else if (message.action === "keep") {
               this.runGroups?.update(group.id, run.id, { retained: true })
               await this.runGroups?.flush()
               void vscode.window.showInformationMessage(`Kept ${run.model}; it is no longer offered as disposable in the Runs inspector.`)
             }
-            else if (run.session.directory !== "pending") await vscode.commands.executeCommand("opencodeWorkbench.openRun", group.id, run.id)
+            else await vscode.commands.executeCommand("opencodeWorkbench.openRun", group.id, run.id)
           }
           this.queueFullUpdate()
           break
@@ -895,6 +1204,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           }
           break
         }
+        case "contextReceiptAction": {
+          this.requireSelected(message.sessionID)
+          const receipt = this.contextReceipts?.get(message.receiptID)
+          const directory = this.controller!.snapshot.sessions[message.sessionID]?.info.directory
+          if (!receipt || !directory) throw new Error("Context receipt source is no longer available")
+          const inspected = await inspectContextReceiptSource({
+            sessionID: message.sessionID,
+            directory,
+            receipt,
+            itemID: message.itemID,
+          })
+          if (inspected.availability !== "available" || !inspected.uri) throw new Error("This context source is unavailable; only its admitted metadata remains")
+          if (inspected.stale) {
+            const confirmed = await vscode.window.showWarningMessage(
+              "This context source changed after it was sent to OpenCode.",
+              { modal: true, detail: "Opening shows the current file, not the exact admitted revision." },
+              "Open current source",
+            )
+            if (confirmed !== "Open current source") break
+          }
+          const uri = vscode.Uri.parse(inspected.uri, true)
+          if (uri.scheme === "http" || uri.scheme === "https") {
+            if (!await vscode.env.openExternal(uri)) throw new Error("VS Code did not open the context source")
+            break
+          }
+          if (uri.scheme !== "file") throw new Error("This context source cannot be opened")
+          if (usesCustomEditor(uri)) {
+            await vscode.commands.executeCommand("vscode.open", uri, { preview: true })
+            break
+          }
+          const document = await vscode.workspace.openTextDocument(uri)
+          const editor = await vscode.window.showTextDocument(document, { preview: true })
+          if (inspected.range && document.lineCount) {
+            const firstLine = Math.min(inspected.range.startLine - 1, document.lineCount - 1)
+            const lastLine = Math.min(inspected.range.endLine - 1, document.lineCount - 1)
+            const firstColumn = Math.min(inspected.range.startColumn - 1, document.lineAt(firstLine).text.length)
+            const lastColumn = Math.min(inspected.range.endColumn - 1, document.lineAt(lastLine).text.length)
+            const range = new vscode.Range(firstLine, firstColumn, lastLine, lastColumn)
+            editor.selection = new vscode.Selection(range.start, range.end)
+            editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport)
+          }
+          break
+        }
         case "attachWorkspacePath":
           this.requireSelected(message.sessionID)
           await this.addWorkspaceAttachments(message.sessionID, [await this.workspaceFile(message.path)])
@@ -993,7 +1345,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "sessionAction":
           if (["rename", "delete", "fork"].includes(message.action)) this.requireKnown(message.sessionID)
           else this.requireSelected(message.sessionID)
-          await this.handleSessionAction(message.sessionID, message.action, message.messageID)
+          await this.handleSessionAction(message.sessionID, message.action, source, message.messageID)
           break
         case "setAutoApproval":
           if (!this.controller) throw new Error("Open a folder to change approval behavior")
@@ -1001,7 +1353,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.controller.setAutoApproval(message.sessionID, message.enabled)
           break
         case "openInEditor":
-          this.openInEditor()
+          this.openInEditor(message.tab)
           break
         case "openInSidebar":
           await this.openInSidebar()
@@ -1019,6 +1371,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           break
         case "openLogs":
           this.showLogs?.()
+          break
+        case "openHelp":
+          await vscode.commands.executeCommand("opencodeWorkbench.openHelp")
           break
         case "openFolder":
           await vscode.commands.executeCommand("workbench.action.files.openFolder")
@@ -1089,7 +1444,88 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       .slice(0, supplementalLimit)]
       .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
       .slice(0, 500)
-    const configured = { ...decorated, attentionItems, runGroups, worktrees, walkthroughs: this.walkthroughs?.list(), composer: { enterBehavior: vscode.workspace.getConfiguration("opencodeWorkbench").get<"send" | "newline">("enterBehavior", "send") } }
+    const pins = new Set(this.workbench.sessionPresentation?.list().map((entry) => entry.sessionID) ?? [])
+    const runBySession = new Map(runGroups.flatMap((group) => group.runs.flatMap((run) => run.session.sessionID === "pending" ? [] : [[run.session.sessionID, { group, run }] as const])))
+    const worktreeByID = new Map(worktrees.map((entry) => [entry.id, entry]))
+    const worktreeBySession = new Map(worktrees.flatMap((entry) => entry.sessionID ? [[entry.sessionID, entry] as const] : []))
+    const sessions = decorated.sessions.map((session) => {
+      const run = runBySession.get(session.id)?.run
+      const worktree = run?.worktreeID ? worktreeByID.get(run.worktreeID) : undefined
+      return {
+        ...session,
+        pinned: pins.has(session.id),
+        tokens: session.id === decorated.session?.id ? decorated.session.context?.totalTokens ?? session.tokens : session.tokens,
+        branch: worktree?.branch,
+        worktree: worktree?.path,
+      }
+    })
+    const lineage = decorated.lineage?.map((node) => {
+      const match = runBySession.get(node.sessionID)
+      const worktree = (match?.run.worktreeID ? worktreeByID.get(match.run.worktreeID) : undefined) ?? worktreeBySession.get(node.sessionID)
+      return {
+        ...node,
+        relation: match ? "run" as const : node.relation,
+        branch: worktree?.branch,
+        worktree: worktree?.path,
+        runGroupID: match?.group.id,
+        runID: match?.run.id,
+        worktreeID: match?.run.worktreeID ?? worktree?.id,
+      }
+    })
+    this.workbench.sessionPresentation?.reconcile(sessions.map((session) => session.id))
+    const selectedSessionID = decorated.session?.id
+    const selectedArtifacts = selectedSessionID ? this.workbench.artifacts?.list(selectedSessionID) ?? [] : []
+    const reviewFindings = selectedArtifacts
+      .filter((artifact) => artifact.kind === "review" && artifact.lifecycle === "active")
+      .flatMap((artifact) => artifact.kind === "review" ? artifact.payload.document.findings.map((finding) => ({
+        sessionID: artifact.sessionID,
+        artifactID: artifact.id,
+        artifactRevision: artifact.revision,
+        artifactUpdatedAt: artifact.updatedAt,
+        stale: artifact.payload.stale,
+        diffHash: artifact.payload.diffHash,
+        findingID: finding.id,
+        title: finding.title,
+        detail: finding.detail,
+        category: finding.category,
+        severity: finding.severity,
+        anchors: finding.anchors,
+        disposition: artifact.payload.dispositions.find((entry) => entry.findingID === finding.id)?.state ?? "open" as const,
+      })) : [])
+      .sort((left, right) => right.artifactUpdatedAt - left.artifactUpdatedAt || left.findingID.localeCompare(right.findingID))
+      .slice(0, 200)
+    const comparisonGroups = new Set<string>()
+    const runComparisons = (this.workbench.artifacts?.list() ?? [])
+      .filter((artifact) => artifact.kind === "run-comparison" && artifact.lifecycle === "active")
+      .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+      .flatMap((artifact) => {
+        if (artifact.kind !== "run-comparison" || comparisonGroups.has(artifact.payload.groupID)) return []
+        const group = runGroups.find((candidate) => candidate.id === artifact.payload.groupID)
+        if (!group) return []
+        const shapeChanged = group.runs.length !== artifact.payload.rows.length || !artifact.payload.rows.every((row) => group.runs.some((run) => run.id === row.runID && run.phase === row.status))
+        const newestSourceUpdate = Math.max(group.createdAt, ...group.runs.flatMap((run) => [run.startedAt ?? 0, run.completedAt ?? 0, run.worktreeID ? worktreeByID.get(run.worktreeID)?.updatedAt ?? 0 : 0]))
+        const active = group.runs.some((run) => ["pending", "preparing", "admitting", "working", "needs-input"].includes(run.phase))
+        comparisonGroups.add(artifact.payload.groupID)
+        return [{ artifactID: artifact.id, revision: artifact.revision, groupID: artifact.payload.groupID, rows: artifact.payload.rows, updatedAt: artifact.updatedAt, stale: shapeChanged || active || newestSourceUpdate > artifact.updatedAt }]
+      })
+      .slice(0, 20)
+    const configured = {
+      ...decorated,
+      sessions,
+      lineage,
+      attentionItems,
+      runGroups,
+      worktrees,
+      ptys: this.controller?.ptys(),
+      walkthroughs: this.walkthroughs?.list(),
+      artifacts: selectedSessionID ? selectedArtifacts.map(taskArtifactSummary) : undefined,
+      reviewFindings: selectedSessionID ? reviewFindings : undefined,
+      evidence: selectedSessionID ? this.workbench.evidence?.list({ sessionID: selectedSessionID }) : undefined,
+      runComparisons: this.workbench.artifacts ? runComparisons : undefined,
+      health: this.workbench.health?.(),
+      trace: this.workbench.trace?.(),
+      composer: { enterBehavior: vscode.workspace.getConfiguration("opencodeWorkbench").get<"send" | "newline">("enterBehavior", "send") },
+    }
     const complete = !configured.connected && this.connectionError ? { ...configured, connectionError: this.connectionError } : configured
     return projectChatSnapshotForWebview(complete)
   }
@@ -1097,6 +1533,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private queueUpdate(update: ControllerUpdate): void {
     this.publishRemovedSessions()
     if (update.type === "draft") return
+    this.recoveryPreviews.clear()
     const key = this.controller?.messageUpdateKey(update)
     if (key && !this.fullUpdatePending) this.pendingMessageUpdates.set(`${key.sessionID}\0${key.messageID}`, key)
     else {
@@ -1468,6 +1905,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private async handleSessionAction(
     sessionID: string,
     action: Extract<WebviewToHostMessage, { type: "sessionAction" }>["action"],
+    source: vscode.Webview,
     messageID?: string,
   ): Promise<void> {
     const controller = this.controller!
@@ -1496,11 +1934,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return
     }
     if (action === "undo") {
-      await controller.undoSession(sessionID)
+      await this.deliverRecoveryPreview(source, { sessionID, status: session.status, messages: session.messages, changes: session.changes, intent: "recover", revertMessageID: session.info.revert?.messageID })
       return
     }
     if (action === "redo") {
-      await controller.redoSession(sessionID)
+      await this.deliverRecoveryPreview(source, { sessionID, status: session.status, messages: session.messages, changes: session.changes, intent: "redo", revertMessageID: session.info.revert?.messageID })
       return
     }
     if (action === "retry") {
@@ -1585,7 +2023,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       const attention = snapshot.attentionItems?.length ?? 0
       this.view.badge = attention ? { value: attention, tooltip: `${attention} OpenCode item${attention === 1 ? " needs" : "s need"} attention` } : undefined
     }
-    if (message.type === "snapshot" && this.panel) this.panel.title = message.snapshot.session?.title || "OpenCode Chat"
+    if (message.type === "snapshot" && this.panel) this.panel.title = message.snapshot.session?.title ? `OpenCode · ${message.snapshot.session.title}` : "OpenCode Task Workbench"
     const publish = async (webview: vscode.Webview): Promise<void> => {
       await this.postTo(webview, message)
       if (message.type === "snapshot") await this.postEditorContext(webview)
@@ -1602,6 +2040,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   dispose(): void {
     this.updates.dispose()
+    this.recoveryPreviews.clear()
     for (const surfaceID of this.surfaceIDs.values()) this.protocol.detach(surfaceID)
     this.surfaceIDs.clear()
     this.panel?.dispose()

@@ -499,6 +499,7 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
       configure_goal_verification: tool({
         description: "Configure explicit acceptance criteria and independent verifier behavior only when the user requests it.",
         args: {
+          objective: s.string().min(1).max(4_000).optional(),
           acceptance_criteria: s.array(s.string().min(1).max(2_000)).max(100).optional(),
           token_budget: s.number().int().min(1).nullable().optional(),
           max_auto_turns: s.number().int().min(1).nullable().optional(),
@@ -510,9 +511,11 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
           repeated_block_threshold: s.number().int().min(1).max(10).optional(),
           plan_reference: s.string().min(1).max(8_192).nullable().optional(),
           run_group_reference: s.string().min(1).max(1_024).nullable().optional(),
+          expected_generation: s.number().int().min(0).optional(),
         },
         async execute(args, context) {
           return json({ goal: await goalStore.mutate((state) => configureGoalVerification(state, context.sessionID, {
+            objective: args.objective,
             acceptanceCriteria: args.acceptance_criteria,
             tokenBudget: args.token_budget,
             maxAutoTurns: args.max_auto_turns,
@@ -520,6 +523,8 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
             verifier: { enabled: args.enabled, model: args.model, agent: args.agent, timeoutMilliseconds: args.timeout_milliseconds, repeatedBlockThreshold: args.repeated_block_threshold },
             planReference: args.plan_reference,
             runGroupReference: args.run_group_reference,
+            expectedSettlementGeneration: args.expected_generation,
+            agent: context.agent,
           })) })
         },
       }),

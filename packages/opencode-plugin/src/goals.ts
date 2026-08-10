@@ -574,28 +574,62 @@ export function pauseGoalContinuationRecovery(state: GoalState, sessionID: strin
   return snapshotGoal(goal, at)
 }
 
-export function configureGoalVerification(state: GoalState, sessionID: string, input: { acceptanceCriteria?: string[]; tokenBudget?: number | null; maxAutoTurns?: number | null; maxDurationSeconds?: number | null; verifier?: Partial<GoalVerifierConfig>; planReference?: string | null; runGroupReference?: string | null }, at = nowSeconds()): GoalSnapshot {
+export function configureGoalVerification(state: GoalState, sessionID: string, input: { objective?: string; acceptanceCriteria?: string[]; tokenBudget?: number | null; maxAutoTurns?: number | null; maxDurationSeconds?: number | null; verifier?: Partial<GoalVerifierConfig>; planReference?: string | null; runGroupReference?: string | null; expectedSettlementGeneration?: number; agent?: string }, at = nowSeconds()): GoalSnapshot {
   const goal = state.goals[sessionID]
   if (!goal) throw new Error("This session has no goal")
-  if (input.acceptanceCriteria) goal.acceptanceCriteria = input.acceptanceCriteria.map((criterion) => requiredText(criterion, "Acceptance criterion")).slice(0, 100)
-  if (input.tokenBudget !== undefined) goal.tokenBudget = positiveOrNull(input.tokenBudget)
-  if (input.maxAutoTurns !== undefined) goal.maxAutoTurns = positiveOrNull(input.maxAutoTurns)
-  if (input.maxDurationSeconds !== undefined) goal.maxDurationSeconds = positiveOrNull(input.maxDurationSeconds)
-  if (input.verifier) goal.verifier = {
+  if (input.expectedSettlementGeneration !== undefined && goal.settlementGeneration !== input.expectedSettlementGeneration) {
+    throw new Error("Goal configuration is stale because the goal changed")
+  }
+
+  // Normalize every potentially rejecting field before changing the goal. This
+  // keeps the objective and verifier configuration a single atomic mutation,
+  // including for direct callers that do not pass through the tool schema.
+  const nextObjective = input.objective === undefined ? undefined : objective(input.objective)
+  const nextAcceptanceCriteria = input.acceptanceCriteria === undefined
+    ? undefined
+    : input.acceptanceCriteria.map((criterion) => requiredText(criterion, "Acceptance criterion")).slice(0, 100)
+  const nextTokenBudget = input.tokenBudget === undefined ? undefined : positiveOrNull(input.tokenBudget)
+  const nextMaxAutoTurns = input.maxAutoTurns === undefined ? undefined : positiveOrNull(input.maxAutoTurns)
+  const nextMaxDurationSeconds = input.maxDurationSeconds === undefined ? undefined : positiveOrNull(input.maxDurationSeconds)
+  const nextVerifier = input.verifier === undefined ? undefined : {
     enabled: input.verifier.enabled ?? goal.verifier.enabled,
     model: input.verifier.model === undefined ? goal.verifier.model : nullableText(input.verifier.model, 1_024),
     agent: input.verifier.agent === undefined ? goal.verifier.agent : nullableText(input.verifier.agent, 1_024),
     timeoutMilliseconds: Math.min(300_000, Math.max(1_000, integer(input.verifier.timeoutMilliseconds, goal.verifier.timeoutMilliseconds))),
     repeatedBlockThreshold: Math.min(10, Math.max(1, integer(input.verifier.repeatedBlockThreshold, goal.verifier.repeatedBlockThreshold))),
   }
-  if (input.planReference !== undefined) goal.planReference = nullableText(input.planReference, 8_192)
-  if (input.runGroupReference !== undefined) goal.runGroupReference = nullableText(input.runGroupReference, 1_024)
+  const nextPlanReference = input.planReference === undefined ? undefined : nullableText(input.planReference, 8_192)
+  const nextRunGroupReference = input.runGroupReference === undefined ? undefined : nullableText(input.runGroupReference, 1_024)
+  const objectiveChanged = nextObjective !== undefined && nextObjective !== goal.objective
+  if (objectiveChanged) {
+    accountTime(goal, at)
+    const planMode = input.agent?.trim().toLowerCase() === "plan"
+    goal.objective = nextObjective
+    goal.status = planMode || goal.status !== "active" ? "paused" : "active"
+    goal.lastAccountedAt = goal.status === "active" ? at : null
+    goal.stopReason = planMode ? "plan mode" : goal.status === "paused" ? "paused" : null
+    goal.blocker = planMode ? "Goal execution is paused while the session is in Plan mode." : null
+    goal.completionEvidence = null
+    goal.closedAt = null
+    goal.evidenceReferences = []
+    clearPendingContinuation(goal)
+    goal.lastStatus = planMode
+      ? "Goal objective and verification configuration updated and paused in Plan mode."
+      : `Goal objective and verification configuration updated and ${goal.status === "active" ? "remained active" : "paused"}.`
+  }
+  if (nextAcceptanceCriteria !== undefined) goal.acceptanceCriteria = nextAcceptanceCriteria
+  if (nextTokenBudget !== undefined) goal.tokenBudget = nextTokenBudget
+  if (nextMaxAutoTurns !== undefined) goal.maxAutoTurns = nextMaxAutoTurns
+  if (nextMaxDurationSeconds !== undefined) goal.maxDurationSeconds = nextMaxDurationSeconds
+  if (nextVerifier !== undefined) goal.verifier = nextVerifier
+  if (nextPlanReference !== undefined) goal.planReference = nextPlanReference
+  if (nextRunGroupReference !== undefined) goal.runGroupReference = nextRunGroupReference
   applyLimits(goal)
   goal.latestVerdict = null
   goal.consecutiveBlockedVerdicts = 0
   advanceSettlementGeneration(goal)
   goal.updatedAt = at
-  pushHistory(goal, "updated", "Goal verification configuration updated.", at)
+  pushHistory(goal, "updated", objectiveChanged ? "Goal objective and verification configuration updated." : "Goal verification configuration updated.", at)
   return snapshotGoal(goal, at)
 }
 

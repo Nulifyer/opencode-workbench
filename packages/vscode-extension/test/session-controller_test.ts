@@ -1,4 +1,4 @@
-import { isOpenCodeMessageID, parseHostMessage, reusablePermissionScopes, type MessageBundle, type SessionInfo } from "@opencode-workbench/shared"
+import { isOpenCodeMessageID, parseHostMessage, reusablePermissionScopes, type MessageBundle, type OpenCodePty, type SessionInfo } from "@opencode-workbench/shared"
 import type { OpenCodeClient } from "../src/opencode-client.ts"
 import { type ComposerPreferences, permissionPatternMatches, SessionController } from "../src/session-controller.ts"
 
@@ -22,9 +22,13 @@ function session(id: string, updated: number): SessionInfo {
   return { id, title: id, directory: "/project", time: { created: 1, updated } }
 }
 
+function pty(id: string, status: OpenCodePty["status"] = "running"): OpenCodePty {
+  return { id, title: id, command: "deno", args: ["test"], cwd: "/project", status, pid: 42, ...(status === "exited" ? { exitCode: 0 } : {}) }
+}
+
 Deno.test("chat snapshot exposes switchable sessions", async () => {
   const fake = {
-    listSessions: async () => [session("one", 2), session("two", 1)],
+    listSessions: async () => [{ ...session("one", 2), tokens: { input: 10, output: 20, reasoning: 5, cache: { read: 7, write: 3 } } }, session("two", 1)],
     sessionStatuses: async () => ({ two: { type: "busy" as const } }),
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [],
@@ -33,7 +37,7 @@ Deno.test("chat snapshot exposes switchable sessions", async () => {
   await controller.reconcile()
 
   const snapshot = controller.chatSnapshot()
-  if (snapshot.sessions.length !== 2 || snapshot.sessions[1]?.id !== "two" || snapshot.sessions[1]?.status.type !== "busy") {
+  if (snapshot.sessions.length !== 2 || snapshot.sessions[0]?.tokens !== 45 || snapshot.sessions[1]?.id !== "two" || snapshot.sessions[1]?.status.type !== "busy") {
     throw new Error("Chat snapshot omitted session switcher state")
   }
   controller.dispose()
@@ -60,6 +64,126 @@ Deno.test("LSP events refresh runtime status", async () => {
   await refreshed.promise
 
   if (lspCalls !== 2) throw new Error("LSP event did not refresh runtime endpoint exactly once")
+  controller.dispose()
+})
+
+Deno.test("controller hydrates a bounded clone-safe OpenCode PTY projection and backgrounds child sessions natively", async () => {
+  const backgrounded: string[] = []
+  const nativePtys = Array.from({ length: 501 }, (_, index) => pty(`pty-${index}`))
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    listPtys: async () => nativePtys,
+    backgroundChildSessions: async (sessionID: string) => {
+      backgrounded.push(sessionID)
+      return true
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+
+  const projected = controller.ptys()
+  if (projected.length !== 500 || projected[0]?.id !== "pty-0" || projected.at(-1)?.id !== "pty-499") {
+    throw new Error("Controller PTY hydration was not deterministically bounded")
+  }
+  projected[0]!.args[0] = "mutated"
+  if (controller.ptys()[0]?.args[0] !== "test") throw new Error("Controller PTY getter leaked mutable metadata")
+  if (!await controller.backgroundChildSessions("one") || backgrounded.join(",") !== "one") throw new Error("Controller did not use OpenCode child-session backgrounding")
+  controller.dispose()
+})
+
+Deno.test("controller cancels only known PTYs through OpenCode and mutates projection after confirmation", async () => {
+  const deleted: string[] = []
+  let deletionAccepted = true
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    listPtys: async () => [pty("pty-one")],
+    deletePty: async (ptyID: string) => {
+      deleted.push(ptyID)
+      return deletionAccepted
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+
+  await controller.cancelPty("pty-one")
+  if (deleted.join(",") !== "pty-one" || controller.ptys().length !== 0) throw new Error("Confirmed OpenCode PTY cancellation was not projected")
+
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "pty.created", properties: { info: pty("pty-two") } })
+  deletionAccepted = false
+  let rejected = false
+  try {
+    await controller.cancelPty("pty-two")
+  } catch {
+    rejected = true
+  }
+  if (!rejected || controller.ptys()[0]?.id !== "pty-two") throw new Error("Rejected OpenCode PTY cancellation mutated the local projection")
+
+  try {
+    await controller.cancelPty("pty-unknown")
+  } catch {
+    // Expected: arbitrary PTY IDs never reach the native endpoint.
+  }
+  if (deleted.join(",") !== "pty-one,pty-two") throw new Error("Unknown PTY cancellation reached OpenCode")
+  controller.dispose()
+})
+
+Deno.test("controller consumes authoritative OpenCode PTY lifecycle events", async () => {
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    listPtys: async () => [pty("pty-one")],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const created = { ...pty("pty-two"), args: ["task", "build"] }
+  internal.handleEvent({ type: "pty.created", properties: { info: created } })
+  created.args[0] = "mutated"
+  internal.handleEvent({ type: "pty.updated", properties: { info: { ...pty("pty-one"), title: "Renamed" } } })
+  if (controller.ptys().find((candidate) => candidate.id === "pty-one")?.title !== "Renamed") throw new Error("OpenCode PTY update event was ignored")
+  internal.handleEvent({ type: "pty.exited", properties: { id: "pty-two", exitCode: 9 } })
+  internal.handleEvent({ type: "pty.deleted", properties: { id: "pty-one" } })
+
+  const projected = controller.ptys()
+  if (projected.length !== 1 || projected[0]?.id !== "pty-two" || projected[0].status !== "exited" || projected[0].exitCode !== 9 || projected[0].args[0] !== "task") {
+    throw new Error(`OpenCode PTY lifecycle events were not projected exactly: ${JSON.stringify(projected)}`)
+  }
+  controller.dispose()
+})
+
+Deno.test("newer PTY events cannot be overwritten by stale reconciliation", async () => {
+  const first = deferred<OpenCodePty[]>()
+  let ptyCalls = 0
+  const current = { ...pty("pty-event"), title: "From event" }
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    listPtys: () => ++ptyCalls === 1 ? first.promise : Promise.resolve([current]),
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  const reconciling = controller.reconcile()
+  for (let attempt = 0; attempt < 20 && ptyCalls === 0; attempt += 1) await Promise.resolve()
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "pty.created", properties: { info: current } })
+  first.resolve([{ ...pty("pty-stale"), title: "Stale list" }])
+  await reconciling
+  for (let attempt = 0; attempt < 20 && ptyCalls < 2; attempt += 1) await Promise.resolve()
+  for (let attempt = 0; attempt < 20 && controller.ptys()[0]?.id !== "pty-event"; attempt += 1) await Promise.resolve()
+
+  if (ptyCalls !== 2 || controller.ptys().map((value) => value.id).join(",") !== "pty-event") {
+    throw new Error(`Stale PTY reconciliation replaced a newer event: ${JSON.stringify(controller.ptys())}`)
+  }
   controller.dispose()
 })
 
@@ -525,8 +649,9 @@ Deno.test("message snapshots retain the newest parts after the part limit", asyn
 Deno.test("delegated task snapshots include bounded child-session progress", async () => {
   const parent = session("parent", 2)
   const child = { ...session("child", 1), parentID: "parent" }
+  const grandchild = { ...session("grandchild", 1), parentID: "child" }
   const fake = {
-    listSessions: async () => [parent, child],
+    listSessions: async () => [parent, child, grandchild],
     sessionStatuses: async () => ({ child: { type: "busy" as const } }),
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async (sessionID: string) => sessionID === "parent" ? [{
@@ -551,18 +676,68 @@ Deno.test("delegated task snapshots include bounded child-session progress", asy
     type: "permission.asked",
     properties: { id: "child-permission", sessionID: "child", permission: "bash", patterns: ["git status"], always: [] },
   })
+  internal.handleEvent({
+    type: "question.v2.asked",
+    properties: {
+      id: "child-question",
+      sessionID: "child",
+      questions: [{ header: "Choice", question: "Continue?", options: [{ label: "Yes", description: "Proceed" }] }],
+    },
+  })
   const snapshot = controller.chatSnapshot()
   const delegation = snapshot.session?.delegations?.[0]
+  const permissionAttention = snapshot.attentionItems?.find((item) => item.kind === "permission")
+  const questionAttention = snapshot.attentionItems?.find((item) => item.kind === "question")
 
   if (delegation?.sessionID !== "child" || delegation.status.type !== "busy" || delegation.messages[0]?.parts[0]?.text !== "Inspecting routes" ||
-    snapshot.session?.permissions?.[0]?.sessionID !== "child" || snapshot.sessions[0]?.permissionCount !== 1 ||
-    snapshot.sessions.some((entry) => entry.id === "child") || !parseHostMessage({ type: "snapshot", snapshot })) {
+    snapshot.session?.permissions?.[0]?.sessionID !== "child" || snapshot.session.questions?.[0]?.sessionID !== "child" ||
+    snapshot.sessions[0]?.permissionCount !== 1 || snapshot.sessions[0]?.questionCount !== 1 ||
+    permissionAttention?.sessionID !== "parent" || permissionAttention.id !== "permission:current:child:child-permission" || permissionAttention.target.itemID !== "child-permission" ||
+    questionAttention?.sessionID !== "parent" || questionAttention.id !== "question:child:child-question" || questionAttention.target.itemID !== "child-question" ||
+    snapshot.sessions.some((entry) => entry.id === "child") ||
+    !snapshot.lineage?.some((entry) => entry.sessionID === "child" && entry.parentID === "parent" && entry.rootID === "parent" && entry.depth === 1 && entry.relation === "child") ||
+    !snapshot.lineage?.some((entry) => entry.sessionID === "grandchild" && entry.parentID === "child" && entry.rootID === "parent" && entry.depth === 2 && entry.relation === "child") ||
+    !parseHostMessage({ type: "snapshot", snapshot })) {
     throw new Error("Delegated child progress was not loaded into a valid parent snapshot")
   }
   await controller.select("child")
   const childSnapshot = controller.chatSnapshot().session
-  if (childSnapshot?.parentID !== "parent" || childSnapshot.permissions?.length !== 0) {
+  if (childSnapshot?.parentID !== "parent" || childSnapshot.permissions?.length !== 0 || childSnapshot.questions?.length !== 0) {
     throw new Error("Subagent detail snapshot omitted parent navigation or retained parent-routed approval UI")
+  }
+  controller.dispose()
+})
+
+Deno.test("child attention routing remains canonical across malformed parent cycles", async () => {
+  const first = { ...session("cycle-a", 2), parentID: "cycle-b" }
+  const second = { ...session("cycle-b", 1), parentID: "cycle-a" }
+  const fake = {
+    listSessions: async () => [first, second],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: { id: "cycle-permission", sessionID: "cycle-a", permission: "bash", patterns: ["pwd"], always: [] },
+  })
+  internal.handleEvent({
+    type: "question.v2.asked",
+    properties: {
+      id: "cycle-question",
+      sessionID: "cycle-b",
+      questions: [{ header: "Choice", question: "Continue?", options: [{ label: "Yes", description: "Proceed" }] }],
+    },
+  })
+  const attention = controller.chatSnapshot().attentionItems ?? []
+  const permission = attention.find((item) => item.kind === "permission")
+  const question = attention.find((item) => item.kind === "question")
+  if (!permission?.sessionID || permission.sessionID !== question?.sessionID ||
+    permission.id !== "permission:current:cycle-a:cycle-permission" || question.id !== "question:cycle-b:cycle-question") {
+    throw new Error("Cyclic child ownership split attention routing or lost the exact request owner")
   }
   controller.dispose()
 })

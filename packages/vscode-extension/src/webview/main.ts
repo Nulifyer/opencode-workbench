@@ -1,5 +1,5 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
-import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RuntimeService, type TranscriptHistoryPage, type WebviewToHostMessage, type WorkbenchCapabilities, type WorkbenchCapability } from "@opencode-workbench/shared"
+import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RecoveryPreview, type RuntimeService, type TranscriptHistoryPage, type WebviewToHostMessage, type WorkbenchCapabilities, type WorkbenchCapability } from "@opencode-workbench/shared"
 import { activityVisualState, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionLoadPhase, shouldCollapsePaste, stripTerminalSequences, toolKind, workspaceMentionReference } from "./presentation.js"
 import { renderMarkdown } from "./markdown.js"
 import { WorkbenchProtocolClient } from "./transport/protocol-v2-client.js"
@@ -10,12 +10,14 @@ import type { ScrollAnchor } from "./controllers/scroll-controller.js"
 import { FocusController } from "./controllers/focus-controller.js"
 import { OverlayController } from "./controllers/overlay-controller.js"
 import { nextMenuIndex, type MenuNavigationKey } from "./controllers/menu-navigation.js"
+import { SplitPaneController } from "./controllers/split-pane-controller.js"
 import { ConversationView } from "./views/conversation.js"
 import { deliveryLabel, queueProjection } from "./views/queue.js"
-import { SESSION_COMPLETED_ICON, sessionListMarkup, sessionStatusLabel } from "./views/session-list.js"
+import { SESSION_COMPLETED_ICON, sessionListMarkup, sessionStatusLabel, type SessionListState } from "./views/session-list.js"
 import { InspectorShellController } from "./views/inspector/shell.js"
-import { inspectorPresentation, type InspectorTab } from "./views/inspector/presentation.js"
+import { inspectorPresentation, type InspectorTab, type RunComparisonSort, type RunComparisonSortKey } from "./views/inspector/presentation.js"
 import { composerSubmitIntent } from "./views/composer.js"
+import { addGoalCriterion, applyGoalFormPreset, createGoalFormDraft, goalFormMarkup, moveGoalCriterion, removeGoalCriterion, serializeGoalFormDraft, type GoalFormDraft, type GoalFormPreset } from "./views/goal-form.js"
 import { historyPresentation, mergeHistoryPage } from "./views/history.js"
 import { turnNavigationMarkers } from "./views/turn-navigation.js"
 
@@ -23,6 +25,8 @@ interface WebviewState {
   todoExpanded?: boolean
   inspectorOpen?: boolean
   inspectorTab?: string
+  layout?: { artifactWidth?: number; sessionsWidth?: number; sessionsOpen?: boolean }
+  sessionFilters?: string[]
 }
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void; getState(): WebviewState | undefined; setState(state: WebviewState): void }
@@ -70,12 +74,17 @@ const backParent = element<HTMLButtonElement>("back-parent")
 const sessionCurrent = element<HTMLButtonElement>("session-current")
 const sessionTitle = element<HTMLElement>("session-title")
 const sessionState = element<HTMLElement>("session-state")
+const publicBadge = element<HTMLElement>("public-badge")
 const status = element<HTMLElement>("status")
 const connection = element<HTMLElement>("connection")
 const attentionToggle = element<HTMLButtonElement>("attention-toggle")
 const attentionCount = element<HTMLElement>("attention-count")
 const attentionOverlay = element<HTMLElement>("attention-overlay")
 const attentionList = element<HTMLElement>("attention-list")
+const recoveryOverlay = element<HTMLElement>("recovery-overlay")
+const recoveryContent = element<HTMLElement>("recovery-content")
+const helpToggle = element<HTMLButtonElement>("help-toggle")
+const keyboardHelpOverlay = element<HTMLElement>("keyboard-help-overlay")
 const inspector = element<HTMLElement>("inspector")
 const inspectorToggle = element<HTMLButtonElement>("inspector-toggle")
 const inspectorClose = element<HTMLButtonElement>("inspector-close")
@@ -114,6 +123,8 @@ const historySearch = element<HTMLInputElement>("history-search")
 const historyList = element<HTMLElement>("history-list")
 const railToggle = element<HTMLButtonElement>("rail-toggle")
 const railClose = element<HTMLButtonElement>("rail-close")
+const rightRail = element<HTMLElement>("right-rail")
+const conversationColumn = element<HTMLElement>("conversation-column")
 const sessionMenuToggle = element<HTMLButtonElement>("session-menu-toggle")
 const sessionMenu = element<HTMLElement>("session-menu")
 const sessionMenuSearch = element<HTMLInputElement>("session-menu-search")
@@ -122,13 +133,25 @@ const railSessions = element<HTMLElement>("rail-sessions")
 const railRunGroups = element<HTMLElement>("rail-run-groups")
 const railSessionCount = element<HTMLElement>("rail-session-count")
 const railSessionSearch = element<HTMLInputElement>("rail-session-search")
+const railSessionFilters = element<HTMLElement>("rail-session-filters")
 const railSessionList = element<HTMLElement>("rail-session-list")
+const artifactSplitter = element<HTMLElement>("artifact-splitter")
+const sessionsSplitter = element<HTMLElement>("sessions-splitter")
 const store = new WorkbenchWebviewStore()
 let snapshot: ChatSnapshot = store.snapshot
 const storedState = vscode.getState()
+const validInitialWorkbenchControls = new Set(["composer-focus", "sessions-toggle", "sessions-show", "attention-show"])
+const initialWorkbenchControl = validInitialWorkbenchControls.has(document.body.dataset.initialControl ?? "") ? document.body.dataset.initialControl : undefined
+const validSessionFilters = new Set(["needs-input", "working", "completed", "archived", "shared", "changed"])
+const activeSessionFilters = new Set((storedState?.sessionFilters ?? []).filter((value) => validSessionFilters.has(value)))
 let todoExpanded = storedState?.todoExpanded ?? true
-const inspectorShell = new InspectorShellController(storedState)
-const INSPECTOR_TABS = new Set<InspectorTab>(["activity", "changes", "context", "goal", "runs", "walkthrough"])
+const initialInspectorTab = document.body.dataset.initialTab
+const inspectorShell = new InspectorShellController({
+  ...storedState,
+  inspectorOpen: storedState?.inspectorOpen ?? document.body.dataset.mode === "editor",
+  inspectorTab: initialInspectorTab ?? storedState?.inspectorTab,
+})
+const INSPECTOR_TABS = new Set<InspectorTab>(["activity", "plan", "changes", "review", "evidence", "goal", "jobs", "lineage", "runs", "context", "walkthrough", "health"])
 let inspectorOpen = inspectorShell.open
 let inspectorTab: InspectorTab = INSPECTOR_TABS.has(inspectorShell.tab as InspectorTab) ? inspectorShell.tab as InspectorTab : "activity"
 inspectorShell.select(inspectorTab)
@@ -170,6 +193,20 @@ let noticeKind: "error" | "offline" | "projection" | undefined
 let noticeDetail = ""
 let dismissedProjectionSignature = ""
 let lastAttentionCount: number | undefined
+let activeRecoveryPreview: RecoveryPreview | undefined
+let recoveryReturnFocus: HTMLElement | undefined
+let goalFormDraft: GoalFormDraft | undefined
+let goalFormSourceSignature = ""
+let comparisonSorts: Record<string, RunComparisonSort> = Object.create(null) as Record<string, RunComparisonSort>
+type ReviewFilterKey = "severity" | "category" | "disposition"
+type JobFilterKey = "text" | "kind" | "session" | "run"
+const reviewFilterKeys = new Set<ReviewFilterKey>(["severity", "category", "disposition"])
+const jobFilterKeys = new Set<JobFilterKey>(["text", "kind", "session", "run"])
+const localInspectorFilters: { review: Record<ReviewFilterKey, string>; jobs: Record<JobFilterKey, string> } = {
+  review: { severity: "", category: "", disposition: "" },
+  jobs: { text: "", kind: "", session: "", run: "" },
+}
+let splitPanes: SplitPaneController | undefined
 let pendingAttentionTarget: { sessionID?: string; itemID?: string; surface: "conversation" | "goal" | "runs" | "health" } | undefined
 let historyLoadingSessionID: string | undefined
 let pendingHistoryAnchor: ScrollAnchor | undefined
@@ -202,6 +239,7 @@ const conversationView = new ConversationView({
 })
 const focusController = new FocusController()
 const attentionOverlayController = new OverlayController(attentionOverlay, attentionToggle)
+const keyboardHelpController = new OverlayController(keyboardHelpOverlay, helpToggle)
 const PRIMARY_ICONS = {
   send: send.innerHTML,
   queue: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 2.4 11.5 7 1.8 11.6 2.9 8 7.4 7 2.9 6 1.8 2.4Zm10.7 7.1h1.2v1.8h1.8v1.2h-1.8v1.8h-1.2v-1.8h-1.8v-1.2h1.8V9.5Z"/></svg>`,
@@ -261,6 +299,7 @@ function syncProjectionNotice(connectionUnavailable: boolean): void {
   if (connectionUnavailable || noticeKind === "error" || dismissedProjectionSignature === projectionSignature()) return
   const labels: Record<keyof typeof projection.omitted, string> = {
     sessions: "sessions",
+    lineage: "session lineage entries",
     messages: "messages",
     delegations: "delegated tasks",
     queuedPrompts: "queued prompts",
@@ -271,11 +310,16 @@ function syncProjectionNotice(connectionUnavailable: boolean): void {
     contextReceipts: "context receipts",
     catalogItems: "catalog entries",
     runtimeServices: "runtime services",
+    ptys: "terminal jobs",
     attentionItems: "attention items",
     runGroups: "run groups",
     worktrees: "worktrees",
     walkthroughs: "walkthroughs",
     walkthroughStops: "walkthrough steps",
+    taskArtifacts: "task artifacts",
+    reviewFindings: "review findings",
+    evidence: "evidence records",
+    runComparisons: "run comparisons",
   }
   const hidden = Object.entries(projection.omitted).map(([key, count]) => `${count} ${labels[key as keyof typeof projection.omitted]}`).join(", ")
   const size = (projection.encodedBytes / (1024 * 1024)).toFixed(1)
@@ -905,7 +949,7 @@ function moveModelOptionFocus(key: string): void {
 }
 
 function renderSessionLists(): void {
-  const signature = JSON.stringify([snapshot.sessions, snapshot.runGroups, snapshot.session?.id, historySearch.value, railSessionSearch.value])
+  const signature = JSON.stringify([snapshot.sessions, snapshot.runGroups, snapshot.session?.id, historySearch.value, railSessionSearch.value, [...activeSessionFilters].sort()])
   if (signature === sessionListSignature) return
   const focusedSession = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLButtonElement>("[data-session-id]") : undefined
   const focusedList = focusedSession && historyList.contains(focusedSession) ? historyList : focusedSession && railSessionList.contains(focusedSession) ? railSessionList : undefined
@@ -913,10 +957,23 @@ function renderSessionLists(): void {
   sessionListSignature = signature
   historyList.innerHTML = sessionListMarkup(snapshot.sessions, { query: historySearch.value, empty: "No matching sessions.", selectedSessionID: snapshot.session?.id, renderLimit: sessionRenderLimit })
   railSessionCount.textContent = String(snapshot.sessions.length)
-  railSessionList.innerHTML = sessionListMarkup(snapshot.sessions, { query: railSessionSearch.value, empty: railSessionSearch.value ? "No matching sessions." : "No sessions yet.", selectedSessionID: snapshot.session?.id, renderLimit: sessionRenderLimit })
+  const states = [...activeSessionFilters].filter((value): value is SessionListState => ["needs-input", "working", "completed"].includes(value))
+  railSessionFilters.querySelectorAll<HTMLButtonElement>("[data-session-filter]").forEach((button) => button.setAttribute("aria-pressed", String(activeSessionFilters.has(button.dataset.sessionFilter ?? ""))))
+  railSessionList.innerHTML = sessionListMarkup(snapshot.sessions, {
+    query: railSessionSearch.value,
+    empty: railSessionSearch.value || activeSessionFilters.size ? "No matching sessions." : "No sessions yet.",
+    selectedSessionID: snapshot.session?.id,
+    renderLimit: sessionRenderLimit,
+    filters: {
+      states,
+      includeArchived: activeSessionFilters.has("archived"),
+      sharedOnly: activeSessionFilters.has("shared"),
+      changedOnly: activeSessionFilters.has("changed"),
+    },
+  })
   const groups = snapshot.runGroups ?? []
   railRunGroups.hidden = groups.length === 0
-  railRunGroups.innerHTML = groups.map((group) => `<details class="rail-run-group"><summary>${escapeHtml(group.title)} <small>${group.runs.length} runs</small></summary><ul><li class="rail-run-context"><span>Current checkout</span><small>${escapeHtml(group.repository)} · ${escapeHtml(group.baseRef)}</small></li><li><details open><summary>Model worktree sessions</summary><ul>${group.runs.map((run) => run.session.directory === "pending"
+  railRunGroups.innerHTML = groups.map((group) => `<details class="rail-run-group"><summary>${escapeHtml(group.title)} <small>${group.runs.length} runs</small></summary><ul><li class="rail-run-context"><span>Current checkout</span><small>${escapeHtml(group.repository)} · ${escapeHtml(group.baseRef)}</small></li><li><details open><summary>Model worktree sessions</summary><ul>${group.runs.map((run) => run.session.sessionID === "pending"
     ? `<li class="rail-run-pending" data-run-id="${escapeHtml(run.id)}"><span>${escapeHtml(run.model)}</span><small>${escapeHtml(run.phase)} · ${run.phase === "failed" ? "Worktree unavailable" : "Preparing worktree…"}</small></li>`
     : `<li><button type="button" data-run-group="${escapeHtml(group.id)}" data-run-id="${escapeHtml(run.id)}" data-run-action="open"><span>${escapeHtml(run.model)}</span><small>${escapeHtml(run.phase)} · ${escapeHtml(run.session.directory)}</small></button></li>`).join("")}</ul></details></li></ul></details>`).join("")
   if (focusedList && focusedSessionID) {
@@ -1336,7 +1393,10 @@ function removeDraftLabel(sessionID: string, label: string): void {
 
 function insertComposerText(text: string): void {
   const sessionID = snapshot.session?.id
-  if (!text) return
+  if (!text) {
+    draft.focus()
+    return
+  }
   const start = draft.selectionStart
   const end = draft.selectionEnd
   const before = draft.value.slice(0, start)
@@ -1678,6 +1738,7 @@ function syncConnectionNotice(): boolean {
 
 function selectInspectorTab(tab: string, focusTab = true): void {
   if (!INSPECTOR_TABS.has(tab as InspectorTab)) return
+  if (narrowWorkbench() && document.body.classList.contains("rail-open")) closeRail(false)
   if (!inspectorOpen) inspectorShell.toggle()
   inspectorOpen = inspectorShell.open
   inspectorShell.select(tab)
@@ -1758,8 +1819,60 @@ function renderAttention(): void {
   routePendingAttention()
 }
 
+function goalFormPresentation(): { signature: string; markup: string } | undefined {
+  const goal = snapshot.session?.goal
+  if (!goal) return undefined
+  const sourceSignature = JSON.stringify([snapshot.session?.id, goal.objective, goal.acceptanceCriteria, goal.tokenBudget, goal.maxAutoTurns, goal.maxDurationSeconds, goal.verifier, goal.settlementGeneration])
+  if (!goalFormDraft || sourceSignature !== goalFormSourceSignature) {
+    goalFormSourceSignature = sourceSignature
+    goalFormDraft = createGoalFormDraft({
+      objective: goal.objective,
+      acceptanceCriteria: goal.acceptanceCriteria,
+      tokenBudget: goal.tokenBudget,
+      maxAutoTurns: goal.maxAutoTurns,
+      maxDurationSeconds: goal.maxDurationSeconds,
+      verifier: goal.verifier,
+      settlementGeneration: goal.settlementGeneration,
+    })
+  }
+  return {
+    signature: JSON.stringify(["goal-form", sourceSignature, goalFormDraft]),
+    markup: goalFormMarkup(goalFormDraft, {
+      models: snapshot.models.map((entry) => ({ value: `${entry.providerID}/${entry.id}`, label: entry.name, description: entry.providerID })),
+      agents: snapshot.agents.map((entry) => ({ value: entry.name, label: entry.name, description: entry.description })),
+    }),
+  }
+}
+
+function readGoalFormDraft(): GoalFormDraft | undefined {
+  const form = inspectorPanel.querySelector<HTMLFormElement>("[data-goal-form]")
+  const previous = goalFormDraft
+  if (!form || !previous) return previous
+  const value = (name: string): string => form.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[name="${name}"]`)?.value ?? ""
+  const unlimited = (name: "tokenBudget" | "maxAutoTurns" | "maxDurationSeconds"): boolean => Boolean(form.querySelector<HTMLInputElement>(`[data-goal-unlimited="${name}"]`)?.checked)
+  const criteria = [...form.querySelectorAll<HTMLElement>("[data-goal-criterion-id]")].map((row, index) => ({
+    id: row.dataset.goalCriterionId || `criterion-${index + 1}`,
+    value: row.querySelector<HTMLTextAreaElement>("textarea")?.value ?? "",
+  }))
+  return {
+    ...previous,
+    objective: value("objective"),
+    criteria,
+    tokenBudget: { unlimited: unlimited("tokenBudget"), value: value("tokenBudget") },
+    maxAutoTurns: { unlimited: unlimited("maxAutoTurns"), value: value("maxAutoTurns") },
+    maxDurationSeconds: { unlimited: unlimited("maxDurationSeconds"), value: value("maxDurationSeconds") },
+    verifierEnabled: Boolean(form.querySelector<HTMLInputElement>("[name=verifierEnabled]")?.checked),
+    verifierModel: value("verifierModel"),
+    verifierAgent: value("verifierAgent"),
+    verifierTimeoutMilliseconds: value("verifierTimeoutMilliseconds"),
+    repeatedBlockThreshold: value("repeatedBlockThreshold"),
+  }
+}
+
 function renderInspector(): void {
   inspector.hidden = !inspectorOpen
+  document.body.classList.toggle("inspector-open", inspectorOpen)
+  splitPanes?.reconcile()
   inspectorToggle.setAttribute("aria-expanded", String(inspectorOpen))
   const tabs = [...inspectorTabs.querySelectorAll<HTMLButtonElement>("[data-inspector-tab]")]
   for (const tab of tabs) {
@@ -1769,7 +1882,9 @@ function renderInspector(): void {
   }
   inspectorPanel.setAttribute("aria-labelledby", `inspector-tab-${inspectorTab}`)
   if (!inspectorOpen) return
-  const presentation = inspectorPresentation(snapshot, inspectorTab)
+  const presentation = inspectorTab === "goal"
+    ? goalFormPresentation() ?? inspectorPresentation(snapshot, inspectorTab)
+    : inspectorPresentation(snapshot, inspectorTab, undefined, { comparisonSorts })
   if (presentation.signature === inspectorSignature) return
   const previousTab = inspectorPanel.dataset.tab
   const scrollTop = previousTab === inspectorTab ? inspectorPanel.scrollTop : 0
@@ -1780,11 +1895,39 @@ function renderInspector(): void {
   inspectorSignature = presentation.signature
   inspectorPanel.dataset.tab = inspectorTab
   inspectorPanel.innerHTML = presentation.markup
+  restoreLocalInspectorFilters()
   inspectorPanel.scrollTop = scrollTop
   if (hadFocus) {
     const replacement = focusedKey ? inspectorPanel.querySelector<HTMLElement>(`[data-inspector-key="${CSS.escape(focusedKey)}"]`) : undefined
     ;(replacement ?? inspectorPanel).focus()
   }
+}
+
+function closeRecoveryPreview(): void {
+  const returnFocus = recoveryReturnFocus
+  recoveryOverlay.hidden = true
+  activeRecoveryPreview = undefined
+  recoveryReturnFocus = undefined
+  const unavailable = !returnFocus?.isConnected || Boolean(returnFocus.closest("[hidden]")) ||
+    (returnFocus instanceof HTMLButtonElement && returnFocus.disabled)
+  if (!unavailable && returnFocus) returnFocus.focus()
+  else sessionMenuToggle.focus()
+}
+
+function openRecoveryPreview(preview: RecoveryPreview): void {
+  const active = document.activeElement
+  recoveryReturnFocus = active instanceof HTMLElement && active !== document.body && !recoveryOverlay.contains(active) ? active : undefined
+  activeRecoveryPreview = preview
+  const redoOnly = preview.canRedo && !preview.canRevert && !preview.canFork
+  const files = preview.changedFiles.length
+    ? `<ul class="inspector-list">${preview.changedFiles.map((file) => `<li>${escapeHtml(file.file)}<small>currently reported · +${file.additions} −${file.deletions}</small></li>`).join("")}</ul>`
+    : `<p class="placeholder">OpenCode currently reports no changed files for this session.</p>`
+  const explanation = redoOnly
+    ? `<p><strong>This is OpenCode's native redo.</strong> It restores the transcript and file state held by OpenCode's current coupled revert marker. It does not create a new revert or fork.</p><dl class="inspector-metrics"><dt>Native revert boundary</dt><dd>${escapeHtml(preview.userText.slice(0, 500) || "OpenCode revert marker")}</dd></dl>`
+    : `<p><strong>Revert is one coupled OpenCode operation.</strong> It reverts the selected transcript tail and OpenCode-managed file changes together; files-only and transcript-only recovery are unavailable.</p><p><strong>Fork does not revert.</strong> It creates a new OpenCode session from the selected turn and leaves the current files unchanged.</p><dl class="inspector-metrics"><dt>Selected turn</dt><dd>${escapeHtml(preview.userText.slice(0, 500) || "User message")}</dd><dt>Transcript</dt><dd>${preview.removedTurns} turn${preview.removedTurns === 1 ? "" : "s"} · ${preview.removedMessageIDs.length} message${preview.removedMessageIDs.length === 1 ? "" : "s"}</dd></dl>`
+  recoveryContent.innerHTML = `${explanation}<h3>${redoOnly ? "Current OpenCode change summary" : "Current change set"}</h3>${files}<h3>Limits</h3><ul>${preview.limitations.map((entry) => `<li>${escapeHtml(entry)}</li>`).join("")}</ul><div class="recovery-actions">${preview.canRevert ? `<button type="button" data-recovery-mode="revert">Revert with OpenCode</button>` : ""}${preview.canFork ? `<button type="button" data-recovery-mode="fork">Fork OpenCode session here (files unchanged)</button>` : ""}${preview.canRedo ? `<button type="button" data-recovery-mode="redo">Redo OpenCode revert</button>` : ""}<button type="button" data-close-recovery>Cancel</button></div>`
+  recoveryOverlay.hidden = false
+  recoveryContent.querySelector<HTMLButtonElement>("button")?.focus()
 }
 
 function render(): void {
@@ -1797,6 +1940,7 @@ function render(): void {
   syncProjectionNotice(connectionUnavailable)
   const connecting = snapshot.connectionState === "connecting"
   sessionTitle.textContent = session?.title || "No session"
+  publicBadge.hidden = !session?.shared
   backParent.hidden = !session?.parentID && document.body.dataset.mode !== "editor"
   const backLabel = session?.parentID ? "Back to parent session" : "Go back"
   backParent.title = backLabel
@@ -1809,6 +1953,7 @@ function render(): void {
     : sessionOption ? escapeHtml(sessionStatusLabel(sessionOption)) : ""
   sessionCurrent.disabled = snapshot.sessions.length === 0
   sessionMenuToggle.disabled = !session
+  syncSessionMenuItems()
   createHeader.disabled = !snapshot.connected
   createEmpty.disabled = !snapshot.connected
   planTask.disabled = !snapshot.connected
@@ -1896,27 +2041,68 @@ function openHistory(): void {
   requestAnimationFrame(() => historySearch.focus())
 }
 
-function showRail(): void {
+function narrowWorkbench(): boolean {
+  return document.body.dataset.mode === "editor" && window.innerWidth <= 900
+}
+
+function persistRail(open: boolean): void {
+  const current = vscode.getState() ?? {}
+  vscode.setState({ ...current, layout: { ...current.layout, sessionsOpen: open } })
+}
+
+function showRail(persist = true): void {
+  if (narrowWorkbench() && inspectorOpen) {
+    inspectorShell.close()
+    inspectorOpen = inspectorShell.open
+    persistInspector()
+    renderInspector()
+  }
   if (!document.body.classList.contains("rail-open")) {
     railReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
   }
   document.body.classList.add("rail-open")
   railToggle.setAttribute("aria-expanded", "true")
+  if (narrowWorkbench()) {
+    rightRail.setAttribute("role", "dialog")
+    rightRail.setAttribute("aria-modal", "true")
+    conversationColumn.inert = true
+    inspector.inert = true
+    requestAnimationFrame(() => (railSessionSearch.offsetParent ? railSessionSearch : railClose).focus())
+  }
+  if (persist) persistRail(true)
+  splitPanes?.reconcile()
 }
 
-function closeRail(): void {
+function closeRail(restoreFocus = true, persist = true): void {
   document.body.classList.remove("rail-open")
   railToggle.setAttribute("aria-expanded", "false")
+  rightRail.removeAttribute("role")
+  rightRail.removeAttribute("aria-modal")
+  conversationColumn.inert = false
+  inspector.inert = false
+  if (persist) persistRail(false)
+  splitPanes?.reconcile()
   const target = railReturnFocus
   railReturnFocus = undefined
-  if (target?.isConnected) target.focus()
+  if (restoreFocus && target?.isConnected) target.focus()
+}
+
+function syncSessionMenuItems(query = sessionMenuSearch.value.trim().toLowerCase()): void {
+  sessionMenu.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+    const unavailable = button.dataset.sessionAction === "share" ? snapshot.session?.shared === true
+      : button.dataset.sessionAction === "unshare" || button.dataset.menuCommand === "copyShare" ? snapshot.session?.shared !== true
+      : button.dataset.sessionAction === "redo" ? !snapshot.session?.revertMessageID
+      : false
+    button.hidden = unavailable || (Boolean(query) && !button.textContent?.toLowerCase().includes(query))
+  })
+  sessionMenu.querySelectorAll<HTMLHRElement>("hr").forEach((separator) => separator.hidden = Boolean(query))
 }
 
 function closeSessionMenu(): void {
   sessionMenu.hidden = true
   sessionMenuToggle.setAttribute("aria-expanded", "false")
   sessionMenuSearch.value = ""
-  sessionMenu.querySelectorAll<HTMLElement>("button, hr").forEach((item) => item.hidden = false)
+  syncSessionMenuItems("")
 }
 
 function requestSessionSelection(sessionID: string): void {
@@ -2268,6 +2454,15 @@ attentionToggle.addEventListener("click", () => {
   const initialFocus = attentionList.querySelector<HTMLElement>("button") ?? attentionOverlay.querySelector<HTMLElement>(".attention-panel [data-close-attention]") ?? undefined
   attentionOverlayController.open(initialFocus)
 })
+helpToggle.addEventListener("click", () => keyboardHelpController.open(keyboardHelpOverlay.querySelector<HTMLElement>("button") ?? undefined))
+keyboardHelpOverlay.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : undefined
+  if (target?.closest("[data-close-keyboard-help]")) keyboardHelpController.close()
+  else if (target?.closest("[data-open-full-help]")) {
+    keyboardHelpController.close(false)
+    post({ type: "openHelp" })
+  }
+})
 attentionOverlay.addEventListener("click", (event) => {
   const close = event.target instanceof Element && event.target.closest("[data-close-attention]")
   if (close) {
@@ -2285,10 +2480,121 @@ attentionOverlay.addEventListener("click", (event) => {
   }
   else renderAttention()
 })
+recoveryOverlay.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : undefined
+  if (target?.closest("[data-close-recovery]")) {
+    closeRecoveryPreview()
+    return
+  }
+  const mode = target?.closest<HTMLButtonElement>("[data-recovery-mode]")?.dataset.recoveryMode
+  const preview = activeRecoveryPreview
+  if (!preview || !mode || !["revert", "fork", "redo"].includes(mode)) return
+  post({ type: "applyRecovery", sessionID: preview.sessionID, mode: mode as "revert" | "fork" | "redo", messageID: preview.messageID })
+  closeRecoveryPreview()
+})
 function persistInspector(): void {
   vscode.setState({ ...(vscode.getState() ?? {}), todoExpanded, ...inspectorShell.persisted() })
 }
+const comparisonSortKeys = new Set<RunComparisonSortKey>(["model", "status", "elapsed", "changedFiles", "taskOutcomes", "diagnostics", "verifier", "tokens", "cost", "blocker"])
+
+function normalizedInspectorFilter(value: string): string {
+  return value.trim().toLocaleLowerCase()
+}
+
+function applyReviewFilters(announceChange = false): void {
+  if (inspectorTab !== "review") return
+  const filters = localInspectorFilters.review
+  const findings = [...inspectorPanel.querySelectorAll<HTMLElement>("[data-review-finding]")]
+  let visible = 0
+  for (const finding of findings) {
+    const matches = (!filters.severity || finding.dataset.reviewSeverity === filters.severity) &&
+      (!filters.category || finding.dataset.reviewCategory === filters.category) &&
+      (!filters.disposition || finding.dataset.reviewDisposition === filters.disposition)
+    finding.hidden = !matches
+    if (matches) visible += 1
+  }
+  const message = `Showing ${visible} of ${findings.length} finding${findings.length === 1 ? "" : "s"}.`
+  const filterStatus = inspectorPanel.querySelector<HTMLElement>("[data-review-filter-status]")
+  if (filterStatus) filterStatus.textContent = message
+  if (announceChange) announce(message)
+}
+
+function applyJobFilters(announceChange = false): void {
+  if (inspectorTab !== "jobs") return
+  const filters = localInspectorFilters.jobs
+  const textFilter = normalizedInspectorFilter(filters.text)
+  const sessionFilter = normalizedInspectorFilter(filters.session)
+  const runFilter = normalizedInspectorFilter(filters.run)
+  const rows = [...inspectorPanel.querySelectorAll<HTMLElement>("[data-job-row]")]
+  let visible = 0
+  for (const row of rows) {
+    const matches = (!textFilter || normalizedInspectorFilter(row.textContent ?? "").includes(textFilter)) &&
+      (!filters.kind || row.dataset.jobKind === filters.kind) &&
+      (!sessionFilter || normalizedInspectorFilter(row.dataset.jobSessionId ?? "").includes(sessionFilter)) &&
+      (!runFilter || normalizedInspectorFilter(row.dataset.jobRunId ?? "").includes(runFilter))
+    row.hidden = !matches
+    if (matches) visible += 1
+  }
+  for (const group of inspectorPanel.querySelectorAll<HTMLElement>("[data-job-group]")) {
+    const visibleRows = group.querySelectorAll<HTMLElement>("[data-job-row]:not([hidden])")
+    group.hidden = visibleRows.length === 0
+    const count = group.querySelector<HTMLElement>("[data-job-group-count]")
+    if (count) count.textContent = String(visibleRows.length)
+  }
+  const message = `Showing ${visible} of ${rows.length} job${rows.length === 1 ? "" : "s"}.`
+  const filterStatus = inspectorPanel.querySelector<HTMLElement>("[data-job-filter-status]")
+  if (filterStatus) filterStatus.textContent = message
+  if (announceChange) announce(message)
+}
+
+function restoreLocalInspectorFilters(): void {
+  if (inspectorTab === "review") {
+    for (const control of inspectorPanel.querySelectorAll<HTMLSelectElement>("[data-review-filter]")) {
+      const key = control.dataset.reviewFilter
+      if (!reviewFilterKeys.has(key as ReviewFilterKey)) continue
+      const filterKey = key as ReviewFilterKey
+      control.value = localInspectorFilters.review[filterKey]
+      localInspectorFilters.review[filterKey] = control.value
+    }
+    applyReviewFilters()
+  } else if (inspectorTab === "jobs") {
+    for (const control of inspectorPanel.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-job-filter]")) {
+      const key = control.dataset.jobFilter
+      if (!jobFilterKeys.has(key as JobFilterKey)) continue
+      const filterKey = key as JobFilterKey
+      control.value = localInspectorFilters.jobs[filterKey]
+      localInspectorFilters.jobs[filterKey] = control.value
+    }
+    applyJobFilters()
+  }
+}
+
+function updateLocalInspectorFilter(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return false
+  const reviewKey = target.dataset.reviewFilter
+  if (reviewFilterKeys.has(reviewKey as ReviewFilterKey)) {
+    localInspectorFilters.review[reviewKey as ReviewFilterKey] = target.value
+    applyReviewFilters(true)
+    return true
+  }
+  const jobKey = target.dataset.jobFilter
+  if (jobFilterKeys.has(jobKey as JobFilterKey)) {
+    localInspectorFilters.jobs[jobKey as JobFilterKey] = target.value
+    applyJobFilters(true)
+    return true
+  }
+  return false
+}
+
+function setComparisonSort(artifactID: string, key: RunComparisonSortKey, direction: RunComparisonSort["direction"]): void {
+  if (!(snapshot.runComparisons ?? []).some((comparison) => comparison.artifactID === artifactID)) return
+  comparisonSorts = { ...comparisonSorts, [artifactID]: { key, direction } }
+  inspectorSignature = ""
+  renderInspector()
+  announce(`Run comparison sorted by ${key} ${direction}`)
+}
 inspectorToggle.addEventListener("click", () => {
+  if (!inspectorOpen && narrowWorkbench() && document.body.classList.contains("rail-open")) closeRail(false)
   inspectorShell.toggle()
   inspectorOpen = inspectorShell.open
   persistInspector()
@@ -2305,6 +2611,10 @@ inspectorClose.addEventListener("click", () => {
 inspectorTabs.addEventListener("click", (event) => {
   const tab = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-inspector-tab]") : undefined
   if (!tab?.dataset.inspectorTab) return
+  if (document.body.dataset.mode === "sidebar" && ["plan", "review", "evidence", "goal", "jobs", "lineage", "runs", "walkthrough", "health"].includes(tab.dataset.inspectorTab)) {
+    post({ type: "openInEditor", tab: tab.dataset.inspectorTab as InspectorTab })
+    return
+  }
   selectInspectorTab(tab.dataset.inspectorTab, false)
 })
 inspectorTabs.addEventListener("keydown", (event) => {
@@ -2317,13 +2627,157 @@ inspectorTabs.addEventListener("keydown", (event) => {
 })
 inspectorPanel.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target : undefined
+  const comparisonSort = target?.closest<HTMLButtonElement>("[data-comparison-sort]")
+  if (comparisonSort?.dataset.comparisonArtifactId && comparisonSortKeys.has(comparisonSort.dataset.comparisonSort as RunComparisonSortKey)) {
+    const artifactID = comparisonSort.dataset.comparisonArtifactId
+    const key = comparisonSort.dataset.comparisonSort as RunComparisonSortKey
+    const current = comparisonSorts[artifactID]
+    const direction = current?.key === key && current.direction === "ascending" ? "descending" : "ascending"
+    setComparisonSort(artifactID, key, direction)
+    return
+  }
+  const comparisonDirection = target?.closest<HTMLButtonElement>("[data-comparison-sort-direction]")
+  if (comparisonDirection?.dataset.comparisonArtifactId) {
+    const current = comparisonSorts[comparisonDirection.dataset.comparisonArtifactId] ?? { key: "model", direction: "ascending" }
+    setComparisonSort(comparisonDirection.dataset.comparisonArtifactId, current.key, current.direction === "ascending" ? "descending" : "ascending")
+    return
+  }
+  const preset = target?.closest<HTMLButtonElement>("[data-goal-preset]")?.dataset.goalPreset
+  if (preset && ["quick", "bounded", "thorough"].includes(preset) && goalFormDraft) {
+    goalFormDraft = applyGoalFormPreset(readGoalFormDraft() ?? goalFormDraft, preset as GoalFormPreset)
+    inspectorSignature = ""
+    renderInspector()
+    return
+  }
+  const criterionAction = target?.closest<HTMLButtonElement>("[data-goal-criterion-action]")?.dataset.goalCriterionAction
+  if (criterionAction && goalFormDraft) {
+    const current = readGoalFormDraft() ?? goalFormDraft
+    const id = target?.closest<HTMLElement>("[data-goal-criterion-id]")?.dataset.goalCriterionId
+    goalFormDraft = criterionAction === "add" ? addGoalCriterion(current)
+      : criterionAction === "remove" && id ? removeGoalCriterion(current, id)
+      : criterionAction === "up" && id ? moveGoalCriterion(current, id, -1)
+      : criterionAction === "down" && id ? moveGoalCriterion(current, id, 1)
+      : current
+    inspectorSignature = ""
+    renderInspector()
+    return
+  }
+  const goalFormAction = target?.closest<HTMLButtonElement>("[data-goal-form-action]")?.dataset.goalFormAction
+  if (goalFormAction === "reset") {
+    goalFormDraft = undefined
+    goalFormSourceSignature = ""
+    inspectorSignature = ""
+    renderInspector()
+    return
+  }
+  if (goalFormAction === "verify" && snapshot.session) {
+    post({ type: "goalAction", sessionID: snapshot.session.id, action: "verify" })
+    return
+  }
+  const receiptSource = target?.closest<HTMLButtonElement>("[data-context-receipt-id][data-context-receipt-item-id]")
+  if (receiptSource?.dataset.contextReceiptId && receiptSource.dataset.contextReceiptItemId && snapshot.session) {
+    post({
+      type: "contextReceiptAction",
+      sessionID: snapshot.session.id,
+      receiptID: receiptSource.dataset.contextReceiptId,
+      itemID: receiptSource.dataset.contextReceiptItemId,
+      action: "open-source",
+    })
+    return
+  }
   const file = target?.closest<HTMLButtonElement>("[data-inspector-file]")?.dataset.inspectorFile
   if (file && snapshot.session) post({ type: "openFile", sessionID: snapshot.session.id, file })
   const walkthrough = target?.closest<HTMLButtonElement>("[data-walkthrough-document][data-walkthrough-stop]")
   if (walkthrough?.dataset.walkthroughDocument && walkthrough.dataset.walkthroughStop) post({ type: "walkthroughAction", documentID: walkthrough.dataset.walkthroughDocument, stopID: walkthrough.dataset.walkthroughStop })
   const run = target?.closest<HTMLButtonElement>("[data-run-action]")
   const action = run?.dataset.runAction
-  if (run?.dataset.runGroup && action && ["open", "cancel", "retry", "refresh", "compare", "fuse", "diff", "review", "keep", "discard"].includes(action)) post({ type: "runAction", groupID: run.dataset.runGroup, runID: run.dataset.runId, action: action as "open" | "cancel" | "retry" | "refresh" | "compare" | "fuse" | "diff" | "review" | "keep" | "discard" })
+  if (run?.dataset.runGroup && action === "export-comparison" && run.dataset.comparisonArtifactId) {
+    const revision = Number(run.dataset.comparisonRevision)
+    if (Number.isSafeInteger(revision) && revision > 0) post({ type: "runAction", groupID: run.dataset.runGroup, action: "export-comparison", comparisonArtifactID: run.dataset.comparisonArtifactId, comparisonRevision: revision })
+  } else if (run?.dataset.runGroup && action && ["open", "cancel", "retry", "refresh", "compare", "fuse", "diff", "review", "keep", "discard"].includes(action)) {
+    if (["refresh", "compare", "fuse"].includes(action)) post({ type: "runAction", groupID: run.dataset.runGroup, action: action as "refresh" | "compare" | "fuse" })
+    else if (run.dataset.runId) post({ type: "runAction", groupID: run.dataset.runGroup, runID: run.dataset.runId, action: action as "open" | "cancel" | "retry" | "diff" | "review" | "keep" | "discard" })
+  }
+  const jobSession = target?.closest<HTMLButtonElement>("[data-job-session]:not([data-job-action])")?.dataset.jobSession
+  if (jobSession) post({ type: "selectSession", sessionID: jobSession })
+  const jobActionButton = target?.closest<HTMLButtonElement>("[data-job-action]")
+  if (jobActionButton?.dataset.jobSession && ["open", "background"].includes(jobActionButton.dataset.jobAction ?? "")) post({ type: "jobAction", sessionID: jobActionButton.dataset.jobSession, action: jobActionButton.dataset.jobAction as "open" | "background" })
+  const pty = target?.closest<HTMLButtonElement>("[data-pty-action]")
+  if (pty?.dataset.ptyId && pty.dataset.ptyAction === "cancel") post({ type: "ptyAction", id: pty.dataset.ptyId, action: "cancel" })
+  const artifact = target?.closest<HTMLButtonElement>("[data-artifact-action]")
+  const artifactAction = artifact?.dataset.artifactAction
+  const artifactID = artifact?.dataset.artifactId
+  const artifactRevision = Number(artifact?.dataset.artifactRevision)
+  if (snapshot.session && artifactID && artifactAction && ["open", "approve", "handoff", "archive", "delete", "open-finding", "set-finding-disposition", "regenerate"].includes(artifactAction)) {
+    post({
+      type: "artifactAction",
+      sessionID: snapshot.session.id,
+      artifactID,
+      action: artifactAction as "open" | "approve" | "handoff" | "archive" | "delete" | "open-finding" | "set-finding-disposition" | "regenerate",
+      expectedRevision: Number.isSafeInteger(artifactRevision) && artifactRevision > 0 ? artifactRevision : undefined,
+      findingID: artifact.dataset.findingId,
+      disposition: artifact.dataset.findingDisposition as "open" | "fixed" | "dismissed" | "accepted-risk" | undefined,
+    })
+  }
+  const healthAction = target?.closest<HTMLButtonElement>("[data-health-action]")?.dataset.healthAction
+  if (healthAction && ["refresh", "reconnect", "logs", "trace", "copy"].includes(healthAction)) post({ type: "healthAction", action: healthAction as "refresh" | "reconnect" | "logs" | "trace" | "copy" })
+  const browserAction = target?.closest<HTMLButtonElement>("[data-browser-action]")?.dataset.browserAction
+  if (browserAction === "capture" && snapshot.session) post({ type: "browserContextAction", sessionID: snapshot.session.id, action: "capture" })
+  const evidenceAction = target?.closest<HTMLButtonElement>("[data-evidence-action]")?.dataset.evidenceAction
+  if (evidenceAction === "capture") post({ type: "evidenceAction", action: "capture" })
+})
+inspectorPanel.addEventListener("input", (event) => {
+  if (updateLocalInspectorFilter(event.target)) return
+  if (inspectorTab === "goal") goalFormDraft = readGoalFormDraft()
+})
+inspectorPanel.addEventListener("change", (event) => {
+  if (updateLocalInspectorFilter(event.target)) return
+  const comparisonSort = event.target instanceof HTMLSelectElement && event.target.matches("[data-comparison-sort-select]") ? event.target : undefined
+  if (comparisonSort?.dataset.comparisonArtifactId && comparisonSortKeys.has(comparisonSort.value as RunComparisonSortKey)) {
+    setComparisonSort(comparisonSort.dataset.comparisonArtifactId, comparisonSort.value as RunComparisonSortKey, "ascending")
+    return
+  }
+  if (inspectorTab !== "goal") return
+  goalFormDraft = readGoalFormDraft()
+  const input = event.target instanceof HTMLInputElement ? event.target : undefined
+  const toggle = input?.dataset.goalUnlimited
+  if (toggle) inspectorPanel.querySelector<HTMLInputElement>(`[name="${CSS.escape(toggle)}"]`)!.disabled = input.checked
+})
+inspectorPanel.addEventListener("submit", (event) => {
+  const browserForm = event.target instanceof HTMLFormElement && event.target.matches("[data-browser-context-form]") ? event.target : undefined
+  if (browserForm) {
+    event.preventDefault()
+    if (!snapshot.session) return
+    const values = new FormData(browserForm)
+    const task = String(values.get("task") ?? "").trim()
+    const sources = [...values.getAll("source"), ...values.getAll("clipboard-source")].filter((value): value is string => typeof value === "string") as Array<"selection" | "console" | "element" | "terminal-task" | "diagnostics" | "debug" | "url" | "screenshot">
+    const approvedUrl = String(values.get("approvedUrl") ?? "").trim() || undefined
+    if (!task || !sources.length) {
+      status.textContent = !task ? "Enter a browser/debug task" : "Select at least one context source"
+      browserForm.querySelector<HTMLElement>(!task ? "[name='task']" : "input")?.focus()
+      return
+    }
+    if (sources.includes("url") && !approvedUrl) {
+      status.textContent = "Enter the approved URL"
+      browserForm.querySelector<HTMLElement>("[name='approvedUrl']")?.focus()
+      return
+    }
+    post({ type: "browserContextAction", sessionID: snapshot.session.id, action: "capture", task, sources, approvedUrl: sources.includes("url") ? approvedUrl : undefined })
+    return
+  }
+  const form = event.target instanceof HTMLFormElement && event.target.matches("[data-goal-form]") ? event.target : undefined
+  if (!form || !snapshot.session) return
+  event.preventDefault()
+  goalFormDraft = readGoalFormDraft()
+  if (!goalFormDraft) return
+  try {
+    const { expectedSettlementGeneration, ...configuration } = serializeGoalFormDraft(goalFormDraft)
+    post({ type: "configureGoal", sessionID: snapshot.session.id, expectedSettlementGeneration, configuration })
+  } catch {
+    inspectorSignature = ""
+    renderInspector()
+    inspectorPanel.querySelector<HTMLElement>("[aria-invalid=true]")?.focus()
+  }
 })
 railRunGroups.addEventListener("click", (event) => {
   const run = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-run-action]") : undefined
@@ -2359,6 +2813,11 @@ historyLoadOlder.addEventListener("click", () => {
 })
 createEmpty.addEventListener("click", () => post({ type: "createSession" }))
 planTask.addEventListener("click", () => post({ type: "planTask" }))
+empty.addEventListener("click", (event) => {
+  const command = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-empty-command]")?.dataset.emptyCommand : undefined
+  if (command === "help") post({ type: "openHelp" })
+  else if (command === "health") post({ type: "openInEditor", tab: "health" })
+})
 surfaceToggle.addEventListener("click", () => {
   flushPendingDraft()
   post({ type: document.body.dataset.mode === "editor" ? "openInSidebar" : "openInEditor" })
@@ -2377,14 +2836,13 @@ sessionMenuToggle.addEventListener("click", () => {
   const open = sessionMenu.hidden
   sessionMenu.hidden = !open
   sessionMenuToggle.setAttribute("aria-expanded", String(open))
-  if (open) sessionMenuSearch.focus()
+  if (open) {
+    syncSessionMenuItems()
+    sessionMenuSearch.focus()
+  }
 })
 sessionMenuSearch.addEventListener("input", () => {
-  const query = sessionMenuSearch.value.trim().toLowerCase()
-  sessionMenu.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
-    button.hidden = Boolean(query) && !button.textContent?.toLowerCase().includes(query)
-  })
-  sessionMenu.querySelectorAll<HTMLHRElement>("hr").forEach((separator) => separator.hidden = Boolean(query))
+  syncSessionMenuItems()
 })
 sessionMenu.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
@@ -2401,8 +2859,9 @@ sessionMenu.addEventListener("click", (event) => {
   const sessionID = snapshot.session?.id
   const action = button?.dataset.sessionAction
   if (!button || !sessionID || !action || !["rename", "delete", "fork", "undo", "redo", "compact", "share", "unshare", "export", "copyLast", "copyTranscript"].includes(action)) return
-  post({ type: "sessionAction", sessionID, action: action as Extract<WebviewToHostMessage, { type: "sessionAction" }>["action"] })
   closeSessionMenu()
+  sessionMenuToggle.focus()
+  post({ type: "sessionAction", sessionID, action: action as Extract<WebviewToHostMessage, { type: "sessionAction" }>["action"] })
 })
 sessionMenu.addEventListener("click", (event) => {
   const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-menu-command]") : undefined
@@ -2422,6 +2881,7 @@ sessionMenu.addEventListener("click", (event) => {
   } else if (command === "model") openModelPicker()
   else if (command === "variant" && (selectedModelOption()?.variants?.length ?? 0) > 0) openModelPicker(true)
   else if (command === "surface") post({ type: document.body.dataset.mode === "editor" ? "openInSidebar" : "openInEditor" })
+  else if (command === "copyShare" && snapshot.session?.shareUrl) post({ type: "copyText", text: snapshot.session.shareUrl })
   else if (command === "skills" && sessionID) {
     draft.value = "/"
     postDraftNow(sessionID, draft.value)
@@ -2457,6 +2917,16 @@ sessionMenu.addEventListener("click", (event) => {
 sessionCurrent.addEventListener("click", openHistory)
 historySearch.addEventListener("input", renderSessionLists)
 railSessionSearch.addEventListener("input", renderSessionLists)
+railSessionFilters.addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-session-filter]") : undefined
+  const filter = button?.dataset.sessionFilter
+  if (!filter || !validSessionFilters.has(filter)) return
+  if (activeSessionFilters.has(filter)) activeSessionFilters.delete(filter)
+  else activeSessionFilters.add(filter)
+  sessionListSignature = ""
+  vscode.setState({ ...(vscode.getState() ?? {}), sessionFilters: [...activeSessionFilters] })
+  renderSessionLists()
+})
 for (const [input, list] of [[historySearch, historyList], [railSessionSearch, railSessionList]] as const) {
   input.addEventListener("keydown", (event) => {
     const first = list.querySelector<HTMLButtonElement>("[data-session-id][tabindex='0']") ?? list.querySelector<HTMLButtonElement>("[data-session-id]")
@@ -2574,6 +3044,14 @@ function openSessionContextMenu(row: HTMLButtonElement, x?: number, y?: number):
   contextSessionID = sessionID
   contextReturnSessionID = sessionID
   contextReturnList = row.closest<HTMLElement>("#history-list, #rail-session-list") ?? undefined
+  const session = snapshot.sessions.find((candidate) => candidate.id === sessionID)
+  const pin = sessionContextMenu.querySelector<HTMLButtonElement>("[data-context-action='pin']")
+  if (pin) pin.textContent = session?.pinned ? "Unpin" : "Pin"
+  const archive = sessionContextMenu.querySelector<HTMLButtonElement>("[data-context-action='archive']")
+  if (archive) {
+    archive.disabled = Boolean(session?.archived)
+    archive.textContent = session?.archived ? "Archived" : "Archive"
+  }
   sessionContextMenu.hidden = false
   const bounds = row.getBoundingClientRect()
   const left = x ?? bounds.left + 16
@@ -2626,6 +3104,11 @@ sessionContextMenu.addEventListener("click", (event) => {
     if (!historyOverlay.hidden) closeHistory()
   } else if (["rename", "fork", "delete"].includes(action)) {
     post({ type: "sessionAction", sessionID, action: action as "rename" | "fork" | "delete" })
+  } else if (action === "pin") {
+    const session = snapshot.sessions.find((candidate) => candidate.id === sessionID)
+    post({ type: "sessionPresentation", sessionID, action: session?.pinned ? "unpin" : "pin" })
+  } else if (action === "archive") {
+    post({ type: "sessionPresentation", sessionID, action: "archive" })
   }
 })
 sessionContextMenu.addEventListener("keydown", (event) => {
@@ -2647,6 +3130,11 @@ goalDock.addEventListener("click", (event) => {
   if (!sessionID) return
   const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : undefined
   const action = target?.dataset.goalAction
+  if (action === "edit" || action === "configure") {
+    if (document.body.dataset.mode === "sidebar") post({ type: "openInEditor", tab: "goal" })
+    else selectInspectorTab("goal")
+    return
+  }
   if (["edit", "configure", "verify", "pause", "resume", "cancel"].includes(action ?? "")) post({ type: "goalAction", sessionID, action: action as "edit" | "configure" | "verify" | "pause" | "resume" | "cancel" })
 })
 todoDock.addEventListener("click", (event) => {
@@ -2671,7 +3159,7 @@ railToggle.addEventListener("click", () => {
   if (document.body.classList.contains("rail-open")) closeRail()
   else showRail()
 })
-railClose.addEventListener("click", closeRail)
+railClose.addEventListener("click", () => closeRail())
 document.querySelectorAll<HTMLButtonElement>("[data-prompt]").forEach((button) => button.addEventListener("click", () => {
   const prompt = button.dataset.prompt || ""
   if (!snapshot.session) post({ type: "createSession", draft: prompt })
@@ -2779,9 +3267,16 @@ messages.addEventListener("scroll", () => {
   conversationView.handleScroll()
 }, { passive: true })
 document.addEventListener("keydown", (event) => {
-  if (focusController.trapTab(event, attentionOverlay) || focusController.trapTab(event, attachmentPreview, "button:not([disabled]), [tabindex]:not([tabindex='-1'])") || focusController.trapTab(event, historyOverlay) || focusController.trapTab(event, modelPicker, "input:not([disabled]), button:not([disabled]):not([tabindex='-1']), [tabindex]:not([tabindex='-1'])")) return
+  if (focusController.trapTab(event, recoveryOverlay) || focusController.trapTab(event, keyboardHelpOverlay) || focusController.trapTab(event, attentionOverlay) || focusController.trapTab(event, attachmentPreview, "button:not([disabled]), [tabindex]:not([tabindex='-1'])") || focusController.trapTab(event, historyOverlay) || focusController.trapTab(event, modelPicker, "input:not([disabled]), button:not([disabled]):not([tabindex='-1']), [tabindex]:not([tabindex='-1'])") ||
+    (narrowWorkbench() && document.body.classList.contains("rail-open") && focusController.trapTab(event, rightRail))) return
   if (event.key === "Escape") {
-    if (!attentionOverlay.hidden) {
+    if (!recoveryOverlay.hidden) {
+      closeRecoveryPreview()
+    }
+    else if (!keyboardHelpOverlay.hidden) {
+      keyboardHelpController.close()
+    }
+    else if (!attentionOverlay.hidden) {
       attentionOverlayController.close()
     }
     else if (!attachmentPreview.hidden) {
@@ -2792,6 +3287,7 @@ document.addEventListener("keydown", (event) => {
     else if (!modelPicker.hidden) {
       closeModelPicker()
     }
+    else if (narrowWorkbench() && document.body.classList.contains("rail-open")) closeRail()
     else if (inspectorOpen) {
       inspectorShell.close()
       inspectorOpen = inspectorShell.open
@@ -2870,6 +3366,33 @@ transport.listen((message) => {
   }
   if (message.type === "insertText") {
     if (message.sessionID === snapshot.session?.id) insertComposerText(message.text)
+    return
+  }
+  if (message.type === "navigateWorkbench") {
+    selectInspectorTab(message.tab)
+    if (message.itemID) requestAnimationFrame(() => inspectorPanel.querySelector<HTMLElement>(`[data-artifact-id="${CSS.escape(message.itemID!)}"], [data-run-id="${CSS.escape(message.itemID!)}"], [data-worktree-id="${CSS.escape(message.itemID!)}"]`)?.focus())
+    return
+  }
+  if (message.type === "workbenchControl") {
+    if (message.target === "sessions") {
+      if (message.action === "toggle" && document.body.classList.contains("rail-open")) closeRail()
+      else showRail()
+    } else if (message.target === "jobs") {
+      if (message.action === "toggle" && inspectorOpen && inspectorTab === "jobs") {
+        inspectorShell.close()
+        inspectorOpen = inspectorShell.open
+        persistInspector()
+        renderInspector()
+        inspectorToggle.focus()
+      } else selectInspectorTab("jobs")
+    } else {
+      const initialFocus = attentionList.querySelector<HTMLElement>("button") ?? attentionOverlay.querySelector<HTMLElement>(".attention-panel [data-close-attention]") ?? undefined
+      attentionOverlayController.open(initialFocus)
+    }
+    return
+  }
+  if (message.type === "recoveryPreview") {
+    openRecoveryPreview(message.preview)
     return
   }
   if (message.type === "fileSuggestions") {
@@ -3092,16 +3615,91 @@ transport.listen((message) => {
     announce("OpenCode response complete")
   }
   snapshot = store.replace(incomingSnapshot)
+  const comparisonIDs = new Set((snapshot.runComparisons ?? []).map((comparison) => comparison.artifactID))
+  comparisonSorts = Object.fromEntries(Object.entries(comparisonSorts).filter(([artifactID]) => comparisonIDs.has(artifactID)))
   render()
 })
 
-if (document.body.dataset.mode === "editor") showRail()
+if (document.body.dataset.mode === "editor") {
+  splitPanes = new SplitPaneController({
+    root: document.body,
+    panes: [
+      {
+        key: "artifactWidth",
+        separator: artifactSplitter,
+        cssProperty: "--artifact-pane-width",
+        initialWidth: storedState?.layout?.artifactWidth ?? 420,
+        minimumWidth: 300,
+        maximumWidth: 900,
+        availableWidth: () => Math.max(300, Math.floor(window.innerWidth * 0.55)),
+        edge: "right",
+      },
+      {
+        key: "sessionsWidth",
+        separator: sessionsSplitter,
+        cssProperty: "--sessions-pane-width",
+        initialWidth: storedState?.layout?.sessionsWidth ?? 300,
+        minimumWidth: 220,
+        maximumWidth: 520,
+        availableWidth: () => Math.max(220, Math.floor(window.innerWidth * 0.42)),
+        edge: "right",
+      },
+    ],
+    persist: (widths) => {
+      const current = vscode.getState() ?? {}
+      vscode.setState({ ...current, layout: { ...current.layout, artifactWidth: widths.artifactWidth, sessionsWidth: widths.sessionsWidth } })
+    },
+  })
+  const restoreRail = storedState?.layout?.sessionsOpen
+  if (restoreRail === true || (restoreRail === undefined && window.innerWidth > 900)) showRail(false)
+  else {
+    closeRail(false, false)
+    if (window.innerWidth <= 650 && inspectorOpen) {
+      inspectorShell.close()
+      inspectorOpen = inspectorShell.open
+      renderInspector()
+    }
+  }
+}
+if (initialWorkbenchControl) requestAnimationFrame(() => {
+  document.body.removeAttribute("data-initial-control")
+  if (initialWorkbenchControl === "composer-focus") draft.focus()
+  else if (initialWorkbenchControl === "sessions-toggle") {
+    if (document.body.classList.contains("rail-open")) closeRail()
+    else showRail()
+  } else if (initialWorkbenchControl === "sessions-show") showRail()
+  else {
+    const initialFocus = attentionList.querySelector<HTMLElement>("button") ?? attentionOverlay.querySelector<HTMLElement>(".attention-panel [data-close-attention]") ?? undefined
+    attentionOverlayController.open(initialFocus)
+  }
+})
+window.addEventListener("resize", () => {
+  if (!document.body.classList.contains("rail-open")) return
+  if (narrowWorkbench()) {
+    if (inspectorOpen) {
+      inspectorShell.close()
+      inspectorOpen = inspectorShell.open
+      persistInspector()
+      renderInspector()
+    }
+    rightRail.setAttribute("role", "dialog")
+    rightRail.setAttribute("aria-modal", "true")
+    conversationColumn.inert = true
+    inspector.inert = true
+  } else {
+    rightRail.removeAttribute("role")
+    rightRail.removeAttribute("aria-modal")
+    conversationColumn.inert = false
+    inspector.inert = false
+  }
+})
 document.addEventListener("visibilitychange", () => {
   const active = snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry"
   syncAnimationTimers(Boolean(active))
 })
 window.addEventListener("beforeunload", () => {
   flushPendingDraft()
+  splitPanes?.dispose()
   transport.dispose()
 })
 resizeDraft()

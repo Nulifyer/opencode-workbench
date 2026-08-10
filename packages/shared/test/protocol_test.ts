@@ -36,6 +36,17 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "goalAction", sessionID: "session", action: "configure" })?.type === "goalAction", "goal configuration action rejected")
   assert(parseWebviewMessage({ type: "goalAction", sessionID: "session", action: "verify" })?.type === "goalAction", "goal verification action rejected")
   assert(parseWebviewMessage({ type: "runAction", groupID: "group", action: "compare" })?.type === "runAction", "group comparison action rejected")
+  const comparisonExport = parseWebviewMessage({ type: "runAction", groupID: "group", action: "export-comparison", comparisonArtifactID: "artifact", comparisonRevision: 3 })
+  assert(comparisonExport?.type === "runAction" && comparisonExport.action === "export-comparison" && comparisonExport.comparisonArtifactID === "artifact" && comparisonExport.comparisonRevision === 3, "exact comparison export action rejected")
+  assert(parseWebviewMessage({ type: "runAction", groupID: "group", action: "export-comparison", comparisonArtifactID: "artifact" }) === undefined, "comparison export without a revision accepted")
+  assert(parseWebviewMessage({ type: "runAction", groupID: "group", action: "export-comparison", comparisonArtifactID: "artifact", comparisonRevision: 0 }) === undefined, "comparison export with an invalid revision accepted")
+  assert(parseWebviewMessage({ type: "runAction", groupID: "group", runID: "run", action: "export-comparison", comparisonArtifactID: "artifact", comparisonRevision: 3 }) === undefined, "comparison export accepted unrelated run identity")
+  assert(parseWebviewMessage({ type: "runAction", groupID: "group", action: "compare", comparisonArtifactID: "artifact", comparisonRevision: 3 }) === undefined, "comparison refresh accepted export authority fields")
+  const ptyCancel = parseWebviewMessage({ type: "ptyAction", id: "pty-one", action: "cancel" })
+  assert(ptyCancel?.type === "ptyAction" && ptyCancel.id === "pty-one", "PTY cancellation rejected")
+  assert(parseWebviewMessage({ type: "ptyAction", id: "pty-one", action: "kill" }) === undefined, "unknown PTY action accepted")
+  assert(parseWebviewMessage({ type: "ptyAction", id: "pty-one", action: "cancel", extra: true }) === undefined, "extra PTY action fields accepted")
+  assert(parseWebviewMessage({ type: "ptyAction", id: "bad\npty", action: "cancel" }) === undefined, "unsafe PTY ID accepted")
   assert(parseWebviewMessage({ type: "runAction", groupID: "group", runID: "run", action: "diff" })?.type === "runAction", "run native diff action rejected")
   assert(parseWebviewMessage({ type: "runAction", groupID: "group", action: "discard" }) === undefined, "run action without run ID accepted")
   assert(parseWebviewMessage({ type: "walkthroughAction", documentID: "walkthrough", stopID: "stop" })?.type === "walkthroughAction", "walkthrough navigation action rejected")
@@ -44,6 +55,7 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "sessionAction", sessionID: "session", action: "retry", messageID: "message" })?.type === "sessionAction", "message retry rejected")
   assert(parseWebviewMessage({ type: "sessionAction", sessionID: "session", action: "delete", messageID: "message" }) === undefined, "message ID accepted for an unrelated action")
   assert(parseWebviewMessage({ type: "openInEditor" })?.type === "openInEditor", "valid editor request rejected")
+  assert(parseWebviewMessage({ type: "openInEditor", tab: "lineage" })?.type === "openInEditor", "lineage inspector request rejected")
   assert(parseWebviewMessage({ type: "openInSidebar" })?.type === "openInSidebar", "valid sidebar request rejected")
   assert(parseWebviewMessage({ type: "navigateBack" })?.type === "navigateBack", "valid back-navigation request rejected")
   assert(parseWebviewMessage({ type: "navigateBack", command: "workbench.action.closeWindow" }) === undefined, "back-navigation command injection accepted")
@@ -69,6 +81,11 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "send", sessionID: "session-1", text: "", contextIDs: ["context-1"] })?.type === "send", "context-only send rejected")
   assert(parseWebviewMessage({ type: "removeContextAttachment", sessionID: "session-1", attachmentID: "context-1" })?.type === "removeContextAttachment", "context removal rejected")
   assert(parseWebviewMessage({ type: "openContextAttachment", sessionID: "session-1", attachmentID: "context-1" })?.type === "openContextAttachment", "context opening rejected")
+  const receiptSource = parseWebviewMessage({ type: "contextReceiptAction", sessionID: "session-1", receiptID: "context:message-1", itemID: "source-1", action: "open-source" })
+  assert(receiptSource?.type === "contextReceiptAction" && receiptSource.receiptID === "context:message-1" && receiptSource.itemID === "source-1", "context receipt source opening rejected")
+  assert(parseWebviewMessage({ type: "contextReceiptAction", sessionID: "session-1", receiptID: "context:message-1", itemID: "source-1", action: "delete" }) === undefined, "unknown context receipt action accepted")
+  assert(parseWebviewMessage({ type: "contextReceiptAction", sessionID: "bad\nsession", receiptID: "context:message-1", itemID: "source-1", action: "open-source" }) === undefined, "unsafe context receipt action identity accepted")
+  assert(parseWebviewMessage({ type: "contextReceiptAction", sessionID: "session-1", receiptID: "context:message-1", itemID: "source-1", action: "open-source", uri: "file:///outside" }) === undefined, "context receipt action accepted caller-supplied URI authority")
   assert(parseWebviewMessage({ type: "attachWorkspacePath", sessionID: "session-1", path: "src/main.ts" })?.type === "attachWorkspacePath", "workspace path attachment rejected")
   assert(parseWebviewMessage({ type: "attachResource", sessionID: "session-1", uri: "mcp://docs" })?.type === "attachResource", "MCP resource attachment rejected")
   assert(parseWebviewMessage({ type: "openPlan", sessionID: "session-1" })?.type === "openPlan", "plan request rejected")
@@ -93,6 +110,129 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "unknown", command: "workbench.action.closeWindow" }) === undefined, "unknown message accepted")
 })
 
+Deno.test("validates help, evidence, and native job actions as exact protocol messages", () => {
+  assert(parseWebviewMessage({ type: "openHelp" })?.type === "openHelp", "help request rejected")
+  assert(parseWebviewMessage({ type: "openHelp", command: "workbench.action.closeWindow" }) === undefined, "help request accepted an injected command")
+  assert(parseWebviewMessage({ type: "evidenceAction", action: "capture" })?.type === "evidenceAction", "evidence capture rejected")
+  assert(parseWebviewMessage({ type: "evidenceAction", action: "export" }) === undefined, "unknown evidence action accepted")
+  assert(parseWebviewMessage({ type: "evidenceAction", action: "capture", output: "private output" }) === undefined, "evidence action accepted raw output")
+  for (const action of ["open", "background"] as const) {
+    const parsed = parseWebviewMessage({ type: "jobAction", sessionID: "session-child", action })
+    assert(parsed?.type === "jobAction" && parsed.sessionID === "session-child" && parsed.action === action, `${action} job action rejected`)
+  }
+  assert(parseWebviewMessage({ type: "jobAction", sessionID: "", action: "open" }) === undefined, "sessionless job action accepted")
+  assert(parseWebviewMessage({ type: "jobAction", sessionID: "session-child", action: "cancel" }) === undefined, "unknown job action accepted")
+  assert(parseWebviewMessage({ type: "jobAction", sessionID: "session-child", action: "open", command: "workbench.action.closeWindow" }) === undefined, "job action accepted an injected command")
+})
+
+Deno.test("validates exact Task Workbench pane controls", () => {
+  assert(parseHostMessage({ type: "workbenchControl", target: "sessions", action: "toggle" })?.type === "workbenchControl", "sessions toggle rejected")
+  assert(parseHostMessage({ type: "workbenchControl", target: "jobs", action: "show" })?.type === "workbenchControl", "jobs show rejected")
+  assert(parseHostMessage({ type: "workbenchControl", target: "attention", action: "show" })?.type === "workbenchControl", "attention show rejected")
+  assert(parseHostMessage({ type: "workbenchControl", target: "terminal", action: "show" }) === undefined, "unknown Workbench target accepted")
+  assert(parseHostMessage({ type: "workbenchControl", target: "sessions", action: "hide", command: "workbench.action.closeWindow" }) === undefined, "unsafe Workbench control accepted")
+})
+
+Deno.test("validates native redo as a zero-removal recovery preview", () => {
+  const redo = {
+    type: "recoveryPreview",
+    preview: {
+      sessionID: "session-1",
+      messageID: "message-1",
+      userText: "Original request",
+      removedMessageIDs: [],
+      removedTurns: 0,
+      changedFiles: [],
+      limitations: ["OpenCode controls native redo."],
+      canRevert: false,
+      canFork: false,
+      canRedo: true,
+    },
+  }
+  assert(parseHostMessage(redo)?.type === "recoveryPreview", "native redo preview was rejected")
+  assert(parseHostMessage({ ...redo, preview: { ...redo.preview, canRedo: false } }) === undefined, "zero-removal non-redo preview was accepted")
+  assert(parseHostMessage({ ...redo, preview: { ...redo.preview, canRevert: true } }) === undefined, "zero-removal redo preview also claiming revert was accepted")
+  assert(parseHostMessage({ ...redo, preview: { ...redo.preview, removedMessageIDs: ["message-1"] } }) === undefined, "zero-removal redo preview with removed messages was accepted")
+})
+
+Deno.test("validates bounded explicit browser-context requests", () => {
+  const sources = ["selection", "console", "diagnostics", "debug", "url", "screenshot"] as const
+  const parsed = parseWebviewMessage({ type: "browserContextAction", sessionID: "session", action: "capture", task: "Diagnose the selected browser failure", sources: [...sources], approvedUrl: "https://example.test/reproduction" })
+  assert(parsed?.type === "browserContextAction" && parsed.sessionID === "session" && parsed.task === "Diagnose the selected browser failure", "structured browser-context request rejected")
+  assert(parsed.sources?.join(",") === sources.join(",") && parsed.approvedUrl === "https://example.test/reproduction", "structured browser-context fields were discarded")
+  assert(parseWebviewMessage({ type: "browserContextAction", sessionID: "session", action: "capture" })?.type === "browserContextAction", "session-bound host-prompted browser-context fallback rejected")
+  assert(parseWebviewMessage({ type: "browserContextAction", action: "capture" }) === undefined, "sessionless browser-context request accepted")
+  assert(parseWebviewMessage({ type: "browserContextAction", sessionID: "bad\nsession", action: "capture" }) === undefined, "malformed browser-context session accepted")
+  const base = { type: "browserContextAction", sessionID: "session", action: "capture", task: "Diagnose", sources: ["selection"] }
+  assert(parseWebviewMessage({ ...base, task: " " }) === undefined, "blank browser-context task accepted")
+  assert(parseWebviewMessage({ ...base, task: "x".repeat(20_001) }) === undefined, "oversized browser-context task accepted")
+  assert(parseWebviewMessage({ ...base, sources: [] }) === undefined, "browser-context request without a source accepted")
+  assert(parseWebviewMessage({ ...base, sources: ["selection", "selection"] }) === undefined, "duplicate browser-context sources accepted")
+  assert(parseWebviewMessage({ ...base, sources: ["console", "element"] }) === undefined, "multiple clipboard browser-context sources accepted")
+  assert(parseWebviewMessage({ ...base, sources: ["console", "terminal-task"] }) === undefined, "multiple clipboard and terminal sources accepted")
+  assert(parseWebviewMessage({ ...base, sources: ["network"] }) === undefined, "unknown browser-context source accepted")
+  assert(parseWebviewMessage({ ...base, sources: ["selection", "console", "element", "terminal-task", "diagnostics", "debug", "url", "screenshot", "extra"], approvedUrl: "https://example.test" }) === undefined, "browser-context source limit exceeded")
+  assert(parseWebviewMessage({ ...base, sources: ["url"] }) === undefined, "URL source without an approved URL accepted")
+  assert(parseWebviewMessage({ ...base, sources: ["url"], approvedUrl: "" }) === undefined, "URL source with an empty approved URL accepted")
+  assert(parseWebviewMessage({ ...base, sources: ["url"], approvedUrl: "   " }) === undefined, "URL source with a blank approved URL accepted")
+  assert(parseWebviewMessage({ ...base, sources: ["url"], approvedUrl: "x".repeat(8_193) }) === undefined, "oversized approved URL accepted")
+  assert(parseWebviewMessage({ ...base, approvedUrl: "https://example.test" }) === undefined, "approved URL accepted without the URL source")
+  assert(parseWebviewMessage({ ...base, privateClipboard: "secret" }) === undefined, "browser-context request accepted unrecognized private data")
+})
+
+function minimalHostSnapshot(extra: Record<string, unknown> = {}): unknown {
+  return {
+    type: "snapshot",
+    snapshot: {
+      connected: true,
+      connectionState: "connected",
+      sessions: [{ id: "session", title: "Session", status: { type: "idle" }, unread: 0 }],
+      agents: [],
+      models: [],
+      ...extra,
+    },
+  }
+}
+
+Deno.test("validates session rail branch, worktree, and token metadata", () => {
+  const row = { id: "session", title: "Session", status: { type: "idle" }, unread: 0, branch: "feature/chat-workbench", worktree: "/worktrees/chat-workbench", tokens: 42 }
+  assert(parseHostMessage(minimalHostSnapshot({ sessions: [row] }))?.type === "snapshot", "valid session rail metadata rejected")
+  assert(parseHostMessage(minimalHostSnapshot({ sessions: [{ ...row, branch: "b".repeat(2_000), worktree: "w".repeat(8_192), tokens: Number.MAX_SAFE_INTEGER }] }))?.type === "snapshot", "session rail boundary metadata rejected")
+  assert(parseHostMessage(minimalHostSnapshot({ sessions: [{ ...row, branch: "b".repeat(2_001) }] })) === undefined, "oversized session branch accepted")
+  assert(parseHostMessage(minimalHostSnapshot({ sessions: [{ ...row, worktree: "w".repeat(8_193) }] })) === undefined, "oversized session worktree accepted")
+  for (const tokens of [-1, 1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+    assert(parseHostMessage(minimalHostSnapshot({ sessions: [{ ...row, tokens }] })) === undefined, `invalid session token count accepted: ${tokens}`)
+  }
+})
+
+Deno.test("validates native OpenCode PTY metadata without terminal output", () => {
+  const running = { id: "pty-running", title: "Focused tests", command: "deno", args: ["test", "--filter", "protocol"], cwd: "/work", status: "running", pid: 42 }
+  const exited = { ...running, id: "pty-exited", status: "exited", pid: 43, exitCode: -2_147_483_648 }
+  assert(parseHostMessage(minimalHostSnapshot({ ptys: [running, exited] }))?.type === "snapshot", "valid native PTY metadata rejected")
+  assert(parseHostMessage(minimalHostSnapshot({ ptys: [{ ...exited, exitCode: 2_147_483_647 }] }))?.type === "snapshot", "maximum native PTY exit code rejected")
+  const invalid = [
+    { ...running, id: "bad\npty" },
+    { ...running, title: "bad\0title" },
+    { ...running, command: "" },
+    { ...running, command: "bad\0command" },
+    { ...running, cwd: "" },
+    { ...running, cwd: "bad\0cwd" },
+    { ...running, args: ["bad\0argument"] },
+    { ...running, args: Array.from({ length: 257 }, () => "arg") },
+    { ...running, args: Array.from({ length: 6 }, () => "a".repeat(20_000)) },
+    { ...running, status: "waiting" },
+    { ...running, pid: -1 },
+    { ...running, pid: 2_147_483_648 },
+    { ...exited, exitCode: 1.5 },
+    { ...exited, exitCode: 2_147_483_648 },
+    { ...running, output: "private terminal output" },
+  ]
+  for (const [index, pty] of invalid.entries()) {
+    assert(parseHostMessage(minimalHostSnapshot({ ptys: [pty] })) === undefined, `invalid native PTY metadata accepted at case ${index}`)
+  }
+  assert(parseHostMessage(minimalHostSnapshot({ ptys: [running, running] })) === undefined, "duplicate native PTY ID accepted")
+})
+
 Deno.test("creates chronologically sortable OpenCode message IDs", () => {
   const first = createOpenCodeMessageID(1_700_000_000_000)
   const second = createOpenCodeMessageID(1_700_000_000_000)
@@ -109,6 +249,10 @@ Deno.test("validates host snapshots", () => {
       connected: true,
       connectionState: "connected",
       sessions: [{ id: "s", title: "Session", status: { type: "idle" }, unread: 0, directory: "/work", updatedAt: 1, attention: 1, questionCount: 1, permissionCount: 0, queued: 1, todo: { completed: 0, total: 1 }, changeCount: 0 }],
+      lineage: [
+        { sessionID: "s", rootID: "s", depth: 0, relation: "root", title: "Session", status: { type: "idle" }, updatedAt: 1, directory: "/work" },
+        { sessionID: "child", parentID: "s", rootID: "s", depth: 1, relation: "child", title: "Child", status: { type: "busy" }, updatedAt: 2, model: "p/m", agent: "build", tokens: 20, cost: 0.01 },
+      ],
       agents: [{ name: "build", model: { providerID: "p", modelID: "m" } }],
       providers: [{ id: "p", name: "Provider", source: "api" }],
       mentionAgents: [{ name: "research", mode: "subagent" }],
@@ -117,7 +261,15 @@ Deno.test("validates host snapshots", () => {
       models: [{ id: "m", name: "Model", providerID: "p", contextLimit: 10_000, inputLimit: 8_000, outputLimit: 2_000, capabilities: { reasoning: true, input: { text: true, image: true } }, variants: ["low", "high"] }],
       autoApproval: false,
       runtime: { lsp: [], formatters: [], mcp: [], updatedAt: 1 },
+      ptys: [
+        { id: "pty-running", title: "Tests", command: "deno", args: ["test"], cwd: "/work", status: "running", pid: 42 },
+        { id: "pty-exited", title: "Build", command: "deno", args: ["task", "build"], cwd: "/work", status: "exited", pid: 43, exitCode: 0 },
+      ],
       walkthroughs: [{ id: "walkthrough", diffHash: "abc", model: "p/m", promptVersion: "v1", language: "en", generatedAt: 1, coverage: "complete", stops: [{ id: "stop", title: "Change", explanation: "Inspect this change", importance: "key-change", anchors: [{ file: "src/main.ts", side: "modified", startLine: 1, endLine: 2 }] }] }],
+      artifacts: [{ schemaVersion: 1, id: "artifact-1", kind: "review", sessionID: "s", lifecycle: "active", revision: 1, createdAt: 1, updatedAt: 2, state: "ready", itemCount: 1, stale: false }],
+      reviewFindings: [{ sessionID: "s", artifactID: "artifact-1", artifactRevision: 1, artifactUpdatedAt: 2, stale: false, diffHash: `sha256:${"a".repeat(64)}`, findingID: "finding-1", title: "Missing guard", detail: "Validate the input.", category: "correctness", severity: "high", anchors: [{ file: "src/main.ts", side: "modified", startLine: 4, endLine: 5 }], disposition: "open" }],
+      evidence: [{ id: "evidence-1", kind: "test", label: "Focused tests", status: "passed", observedAt: 2, sessionID: "s", repository: "/work", summary: "All focused tests passed" }],
+      runComparisons: [{ artifactID: "comparison-1", revision: 1, groupID: "group-1", updatedAt: 2, rows: [{ runID: "run-1", status: "completed", model: "p/m", changedFiles: 2, additions: 4, deletions: 1, taskOutcomes: "passed", diagnostics: "clean", complete: true }] }],
       session: {
         id: "s",
         directory: "/work",
@@ -141,6 +293,39 @@ Deno.test("validates host snapshots", () => {
     },
   }
   assert(parseHostMessage(valid)?.type === "snapshot", "valid snapshot rejected")
+  const legacy = structuredClone(valid)
+  delete (legacy.snapshot as { artifacts?: unknown }).artifacts
+  delete (legacy.snapshot as { reviewFindings?: unknown }).reviewFindings
+  delete (legacy.snapshot as { evidence?: unknown }).evidence
+  delete (legacy.snapshot as { runComparisons?: unknown }).runComparisons
+  delete (legacy.snapshot as { ptys?: unknown }).ptys
+  delete (legacy.snapshot as { lineage?: unknown }).lineage
+  assert(parseHostMessage(legacy)?.type === "snapshot", "legacy snapshot without durable surfaces rejected")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, lineage: [valid.snapshot.lineage[0], valid.snapshot.lineage[0]] } }) === undefined, "duplicate lineage session accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, lineage: [{ ...valid.snapshot.lineage[0], depth: 101 }] } }) === undefined, "unbounded lineage depth accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, lineage: [{ ...valid.snapshot.lineage[0], transcript: "private" }] } }) === undefined, "transcript escaped through lineage metadata")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, ptys: [{ ...valid.snapshot.ptys[0], output: "private terminal output" }] } }) === undefined, "PTY terminal output escaped metadata validation")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, ptys: [valid.snapshot.ptys[0], valid.snapshot.ptys[0]] } }) === undefined, "duplicate PTY ID accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, ptys: [{ ...valid.snapshot.ptys[0], pid: 1.5 }] } }) === undefined, "invalid PTY pid accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, ptys: Array.from({ length: 501 }, (_, index) => ({ ...valid.snapshot.ptys[0], id: `pty-${index}` })) } }) === undefined, "oversized PTY collection accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, artifacts: [{ ...valid.snapshot.artifacts[0], payload: { objective: "private plan" } }] } }) === undefined, "artifact payload escaped through summary validation")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, reviewFindings: [{ ...valid.snapshot.reviewFindings[0], sessionID: "other" }] } }) === undefined, "cross-session review finding accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, reviewFindings: [{ ...valid.snapshot.reviewFindings[0], rawDiff: "+private" }] } }) === undefined, "raw diff escaped through review finding validation")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, reviewFindings: [valid.snapshot.reviewFindings[0], valid.snapshot.reviewFindings[0]] } }) === undefined, "duplicate review finding accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, reviewFindings: Array.from({ length: 201 }, (_, index) => ({ ...valid.snapshot.reviewFindings[0], findingID: `finding-${index}` })) } }) === undefined, "oversized review finding collection accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, evidence: [{ ...valid.snapshot.evidence[0], rawOutput: "private command output" }] } }) === undefined, "raw evidence output escaped through reference validation")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, runComparisons: [{ ...valid.snapshot.runComparisons[0], rawDiff: "+private change" }] } }) === undefined, "raw diff escaped through run-comparison projection validation")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, artifacts: [{ ...valid.snapshot.artifacts[0], sessionID: "other" }] } }) === undefined, "cross-session artifact summary accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, evidence: [{ ...valid.snapshot.evidence[0], sessionID: "other" }] } }) === undefined, "cross-session evidence reference accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, artifacts: [valid.snapshot.artifacts[0], valid.snapshot.artifacts[0]] } }) === undefined, "duplicate artifact summary accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, evidence: [valid.snapshot.evidence[0], valid.snapshot.evidence[0]] } }) === undefined, "duplicate evidence reference accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, artifacts: [{ ...valid.snapshot.artifacts[0], state: "stale", stale: false }] } }) === undefined, "inconsistent artifact stale state accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, artifacts: Array.from({ length: 501 }, (_, index) => ({ ...valid.snapshot.artifacts[0], id: `artifact-${index}` })) } }) === undefined, "oversized artifact summary collection accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, evidence: Array.from({ length: 2_001 }, (_, index) => ({ ...valid.snapshot.evidence[0], id: `evidence-${index}` })) } }) === undefined, "oversized evidence collection accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, runComparisons: Array.from({ length: 21 }, (_, index) => ({ ...valid.snapshot.runComparisons[0], artifactID: `comparison-${index}` })) } }) === undefined, "oversized run-comparison collection accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, runComparisons: [{ ...valid.snapshot.runComparisons[0], rows: Array.from({ length: 6 }, (_, index) => ({ ...valid.snapshot.runComparisons[0].rows[0], runID: `run-${index}` })) }] } }) === undefined, "run comparison with more than five rows accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, evidence: [{ ...valid.snapshot.evidence[0], summary: "authorization: Bearer private-token" }] } }) === undefined, "credential-shaped evidence summary accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, session: undefined, artifacts: [] } }) === undefined, "unscoped selected-session artifacts accepted")
   const projected = {
     ...valid,
     snapshot: {
@@ -149,7 +334,7 @@ Deno.test("validates host snapshots", () => {
         truncated: true,
         limitBytes: 24 * 1024 * 1024,
         encodedBytes: 1024,
-        omitted: { contextReceipts: 2, runGroups: 1, worktrees: 4, walkthroughStops: 8 },
+        omitted: { contextReceipts: 2, lineage: 3, runGroups: 1, worktrees: 4, walkthroughStops: 8, taskArtifacts: 3, reviewFindings: 2, evidence: 5, runComparisons: 2, ptys: 2 },
         message: "Some older records are hidden; stored records were not deleted.",
       },
     },
@@ -157,6 +342,7 @@ Deno.test("validates host snapshots", () => {
   assert(parseHostMessage(projected)?.type === "snapshot", "bounded snapshot projection metadata was rejected")
   assert(parseHostMessage({ ...projected, snapshot: { ...projected.snapshot, projection: { ...projected.snapshot.projection, encodedBytes: projected.snapshot.projection.limitBytes + 1 } } }) === undefined, "snapshot projection above its declared byte limit was accepted")
   assert(parseHostMessage({ ...projected, snapshot: { ...projected.snapshot, projection: { ...projected.snapshot.projection, omitted: { contextReceipts: 0 } } } }) === undefined, "empty snapshot omission count was accepted")
+  assert(parseHostMessage({ ...projected, snapshot: { ...projected.snapshot, projection: { ...projected.snapshot.projection, omitted: { artifacts: 1 } } } }) === undefined, "unknown snapshot omission key was accepted")
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, session: { ...valid.snapshot.session, history: { totalMessages: 6_000, visibleMessages: 0, hasOlder: true, limitedBy: "messages" } } } })?.type === "snapshot", "bounded transcript metadata was rejected")
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, session: { ...valid.snapshot.session, history: { totalMessages: 6_000, visibleMessages: 1, hasOlder: true } } } }) === undefined, "history metadata disagreed with the projected transcript")
   const goalMarker: unknown = structuredClone(valid)

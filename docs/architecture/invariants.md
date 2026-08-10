@@ -1,8 +1,8 @@
 # OpenCode Workbench invariants
 
-This document freezes the behavior of Workbench `v0.4.6` at commit
-`c6c415221a3c1d2ba893efae9a14136231cd37ea`. It describes current behavior; it
-does not authorize the target architecture in the evolution plan.
+This document defines the non-negotiable authority, persistence, and privacy
+boundaries of Workbench `v0.4.6`. It describes current behavior and constrains
+later UI evolution.
 
 ## Ownership
 
@@ -14,11 +14,18 @@ does not authorize the target architecture in the evolution plan.
 | Stable-mode queue | Workbench extension host until delivery | Keep bounded in-memory entries and their private file bytes; deliver via OpenCode `steer` or `queue` | `SessionController.sendToSession()` and `drainQueue()`; queue tests in `session-controller_test.ts` |
 | Permissions and questions | OpenCode | Preserve, display, and return exact supported responses | `parsePermission()`, `parseQuestion()`, coordinator methods; permission/question tests |
 | Goals, preferences, skill candidates | Companion OpenCode plugin | Project goal state and offer controls; never run a second model loop | `packages/opencode-plugin/src/index.ts`; plugin goal, memory, skill, and integration tests |
+| Session lineage, archive, sharing, revert state | OpenCode | Project native `parentID`, `time.archived`, `share`, and `revert`; invoke only proven native mutations | `OpenCodeClient`, `SessionController`, and recovery/session-list tests |
+| PTYs and background child sessions | OpenCode | Project the bounded native PTY feed; request native cancellation/backgrounding | OpenCode `/pty` and `/experimental/session/:id/background`; client/controller PTY tests |
+| Task artifacts and session pins | VS Code workspace state | Retain bounded presentation/action metadata keyed to canonical OpenCode session/message IDs | `TaskArtifactService`, `SessionPresentationService`, and shared artifact validators |
 | Editor state, tasks, terminals, diagnostics | VS Code | Expose a typed, authenticated, bounded bridge | `packages/vscode-extension/src/bridge.ts`; workspace and security tests |
 | Sidebar/editor synchronization | Extension host | Publish one bounded projection and synchronize private composer payloads | `ChatViewProvider`; communication and protocol tests |
 
 Exactly one `SessionController` owns stable-mode orchestration for a connected
-workspace. There is no production ACP adapter or Agent Host authority.
+workspace. OpenCode is the sole agent runtime and the sole authority for
+sessions, transcripts, models, tools, prompt execution, child-session lineage,
+and native terminal state. The extension host is a presentation/control plane;
+it does not run a second agent loop or provider SDK. There is no production ACP
+adapter or Agent Host authority.
 
 ## Lifecycle
 
@@ -104,6 +111,22 @@ cases in `session-controller_test.ts`, and
   transcripts. Only then does the connection become ready.
 - Recovered mappings for legacy-unsafe sessions reference OpenCode forks; they
   do not copy transcript data into Workbench storage.
+- Session archive is OpenCode's native `time.archived` mutation. The supported
+  OpenCode 1.18.15 contract does not prove a clear/unarchive mutation, so
+  Workbench offers archive but does not fabricate unarchive state. Pins are a
+  separate, bounded VS Code presentation preference and never alter OpenCode.
+- Public sharing and unsharing use OpenCode's native share endpoints. The
+  resulting `share.url` is projected as public state; Workbench does not mint,
+  proxy, or persist a second share identity.
+- PTY status, PID, command metadata, and exit code come from OpenCode. Cancel
+  deletes the native PTY only after identity validation, and backgrounding uses
+  OpenCode's child-session endpoint rather than a Workbench scheduler.
+- Undo/recovery previews are side-effect-free projections of an idle OpenCode
+  session. Applying a preview revalidates the session and invokes OpenCode's
+  coupled transcript-and-file revert boundary. Redo is offered only when the
+  native `revert` marker proves it is available. Current file totals are not
+  exact per-message attribution, and shell, external-service, and manual side
+  effects may remain.
 
 Evidence: `managed-server_test.ts`, `communication_test.ts`,
 `opencode_integration_test.ts`, and reconnect/recovery cases in
@@ -136,21 +159,31 @@ Evidence: `workspace-root_test.ts`, `security_test.ts`, and bridge cases in
 | --- | --- | --- |
 | OpenCode sessions/transcripts | OpenCode storage | Canonical transcript; Workbench does not create a transcript database |
 | Selected workspace root, selected session, recovery mapping | VS Code workspace state | IDs/URIs only; no prompt payload |
+| Session pins | VS Code workspace state | Bounded presentation metadata keyed by OpenCode session ID; archive/share/lineage remain native |
+| Task artifacts | VS Code workspace state | Bounded, revisioned presentation/action metadata keyed by OpenCode provenance; never a second transcript or plan/prompt body store |
 | Composer agent/model/variant preferences | VS Code global state | Metadata only |
 | External server password override | VS Code Secret Storage | Never settings, workspace state, registry, or logs |
 | Managed credentials and bridge bearer token | Extension-host memory; bridge token also in owner-only registry | Removed/invalidated on disposal |
 | Goal state | `$XDG_DATA_HOME/opencode-workbench/plugin/goals.json` (fallback under the user data home) | Bounded atomic schema v2 state with durable continuation IDs and transcript-based restart recovery |
 | Preferences, evidence, staged skill candidates | `$XDG_DATA_HOME/opencode-workbench/plugin/state.json` | Approved/staged metadata; secret and prompt-injection scanning |
-| Attachment bytes and unsaved-buffer text | Webview and extension-host memory until admission | Never VS Code state or transcript snapshots; historical snapshots omit data URLs/base64 |
-| Webview state | VS Code webview state | Only the todo-expanded presentation flag |
+| Attachment, screenshot, clipboard, and unsaved-buffer bytes | Webview and extension-host memory until admission | Never VS Code state or transcript snapshots; historical snapshots omit data URLs/base64 |
+| Webview state | VS Code webview state | Presentation only: pane widths/visibility, selected inspector tab, session filters, and todo expansion |
 
 Complete prompt payloads, attachment bytes, unsaved buffers, credentials, and
-bridge response bodies must not be added to new persisted metadata.
+bridge response bodies must not be added to new persisted metadata. Plan
+artifacts store a URI, exact revision, lifecycle, handoff references, and
+OpenCode producer provenance, never the objective or Markdown body. Review
+artifacts may store bounded structured findings and dispositions tied to an
+exact diff hash, but never the raw diff. Goal-verification artifacts retain
+bounded verdict/evidence/attempt metadata. Run comparisons retain objective
+rows only and never an AI-selected winner. Context-capture artifacts retain
+sanitized receipt/source metadata only; browser screenshot and clipboard bytes
+remain one-shot prompt material and are never persisted.
 
 ## Stable UI boundary
 
-- Both the secondary-sidebar view and editor panel use `ChatViewProvider` and
-  the same controller state.
+- Both the secondary-sidebar view and resizable editor Task Workbench use
+  `ChatViewProvider` and the same controller state.
 - The webview has a nonce CSP, `default-src 'none'`, no network permission, and
   runtime-validated bounded messages in both directions.
 - New surfaces negotiate protocol v2 with `hello`/`ready`. Every webview action
@@ -187,5 +220,10 @@ Evidence: `protocol_test.ts`, `protocol_v2_test.ts`, `event_stream_test.ts`,
 - ACP provider-free discovery does not expose companion tool schemas,
   permissions, questions, prompt lifecycle, usage, diffs, or queue semantics.
 - Native VS Code Agent Host registration and lossless mapping remain unknown.
+- Native unarchive is feature-gated until the supported OpenCode contract proves
+  a clear mutation; Workbench does not emulate it with local metadata.
+- OpenCode revert recovery cannot guarantee reversal of shell commands,
+  external-service calls, manual edits, or other effects outside the native
+  coupled transcript/file boundary.
 
 These are documented gaps, not permission to emulate missing behavior.

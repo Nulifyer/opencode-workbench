@@ -1,7 +1,20 @@
 import type { ChatSnapshot } from "@opencode-workbench/shared"
 import { sessionGroup, type SessionGroup } from "../presentation.js"
 
-type SessionOption = ChatSnapshot["sessions"][number]
+type SessionOption = ChatSnapshot["sessions"][number] & {
+  tokens?: number
+  branch?: string
+  worktree?: string
+}
+
+export type SessionListState = SessionOption["status"]["type"] | "needs-input" | "working" | "completed"
+
+export interface SessionListFilters {
+  states?: readonly SessionListState[]
+  includeArchived?: boolean
+  sharedOnly?: boolean
+  changedOnly?: boolean
+}
 
 export interface SessionListOptions {
   query?: string
@@ -9,10 +22,19 @@ export interface SessionListOptions {
   selectedSessionID?: string
   renderLimit?: number
   now?: number
+  filters?: SessionListFilters
+  /** Direct filter properties are retained for simple call sites. */
+  states?: readonly SessionListState[]
+  includeArchived?: boolean
+  sharedOnly?: boolean
+  changedOnly?: boolean
 }
 
-const SESSION_GROUPS: readonly SessionGroup[] = ["Needs input", "Working", "Completed", "Today", "Yesterday", "Previous 7 days", "Older"]
-const RECENT_GROUPS: readonly SessionGroup[] = ["Needs input", "Working", "Completed", "Today", "Yesterday"]
+type DisplayGroup = "Pinned" | SessionGroup
+type PresentedSessionState = ReturnType<typeof sessionState>
+
+const SESSION_GROUPS: readonly DisplayGroup[] = ["Pinned", "Needs input", "Working", "Completed", "Today", "Yesterday", "Previous 7 days", "Older"]
+const SESSION_STATE_PRIORITY: Readonly<Record<PresentedSessionState, number>> = { "needs-input": 0, working: 1, completed: 2, idle: 3 }
 
 const SESSION_ICONS = {
   question: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM8 13A5 5 0 1 1 8 3a5 5 0 0 1 0 10Zm-.7-3h1.4v1.4H7.3V10Zm.8-5.7c1.4 0 2.4.8 2.4 2 0 .9-.5 1.4-1.3 1.9-.6.3-.7.5-.7 1H7.2c0-1.1.3-1.5 1.2-2 .6-.4.8-.6.8-1 0-.5-.4-.8-1.1-.8-.6 0-1 .3-1.4.8l-1-.8c.6-.7 1.3-1.1 2.4-1.1Z"/></svg>`,
@@ -69,24 +91,100 @@ function workspaceName(directory?: string): string {
   return directory?.replace(/[\\/]$/, "").split(/[\\/]/).at(-1) || ""
 }
 
-function sessionButton(value: SessionOption, selectedSessionID: string | undefined, tabStop: string | undefined, now: number): string {
-  const detail = [workspaceName(value.directory), value.changeCount ? `${value.changeCount} changed` : "", value.todo?.total ? `${value.todo.completed}/${value.todo.total} todos` : "", value.queued ? `${value.queued} queued` : ""].filter(Boolean).join(" · ")
-  const status = sessionStatusLabel(value)
-  return `<button type="button" class="session-row ${value.id === selectedSessionID ? "selected" : ""}" data-session-id="${escapeHtml(value.id)}" tabindex="${value.id === tabStop ? 0 : -1}"${value.id === selectedSessionID ? ` aria-current="true"` : ""}${status ? ` title="${escapeHtml(status)}"` : ""}>${sessionIndicator(value)}<span class="session-row-copy"><span class="session-row-heading"><span class="session-row-title">${escapeHtml(value.title)}</span><time>${escapeHtml(relativeSessionTime(value.updatedAt, now))}</time></span>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</span></button>`
+function finiteCount(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined
 }
 
-function compareSessions(left: SessionOption, right: SessionOption, group: SessionGroup | undefined, now: number): number {
+function formattedCount(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+}
+
+function changedCount(value: SessionOption): number {
+  return finiteCount(value.changeCount) ?? finiteCount(value.summary?.files) ?? 0
+}
+
+function sessionState(value: SessionOption): Exclude<SessionListState, "error" | "busy" | "retry" | "idle"> | "idle" {
+  if (value.status.type === "error" || (value.questionCount ?? 0) > 0 || (value.permissionCount ?? 0) > 0 || (value.attention ?? 0) > 0) return "needs-input"
+  if (value.status.type === "busy" || value.status.type === "retry") return "working"
+  if (value.unread > 0) return "completed"
+  return "idle"
+}
+
+function displayGroup(value: SessionOption, now: number): DisplayGroup {
+  return value.pinned ? "Pinned" : sessionGroup(value, now)
+}
+
+function sessionBadges(value: SessionOption): { markup: string; labels: string[] } {
+  const labels = [value.pinned ? "Pinned" : "", value.archived ? "Archived" : "", value.shared ? "Shared" : ""].filter(Boolean)
+  if (!labels.length) return { markup: "", labels }
+  return {
+    markup: `<span class="session-row-badges" aria-label="${escapeHtml(labels.join(", "))}">${labels.map((label) => `<span class="session-badge" aria-hidden="true">${escapeHtml(label)}</span>`).join("")}</span>`,
+    labels,
+  }
+}
+
+function sessionButton(value: SessionOption, selectedSessionID: string | undefined, tabStop: string | undefined, now: number): string {
+  const changes = changedCount(value)
+  const tokens = finiteCount(value.tokens)
+  const cost = typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0 ? value.cost : undefined
+  const detail = [
+    workspaceName(value.directory),
+    changes ? `${changes} changed` : "",
+    value.todo?.total ? `${value.todo.completed}/${value.todo.total} todos` : "",
+    value.queued ? `${value.queued} queued` : "",
+    value.model ? `Model ${value.model}` : "",
+    value.agent ? `Agent ${value.agent}` : "",
+    tokens === undefined ? "" : `${formattedCount(tokens)} tokens`,
+    cost === undefined ? "" : `$${cost.toFixed(4)}`,
+    value.branch ? `Branch ${value.branch}` : "",
+    value.worktree ? `Worktree ${value.worktree}` : "",
+  ].filter(Boolean).join(" · ")
+  const status = sessionStatusLabel(value)
+  const badges = sessionBadges(value)
+  const relativeTime = relativeSessionTime(value.updatedAt, now)
+  const context = [value.title, ...badges.labels, status || "Idle", detail, relativeTime === "now" ? "Updated now" : `Updated ${relativeTime} ago`].filter(Boolean).join("; ")
+  return `<button type="button" class="session-row ${value.id === selectedSessionID ? "selected" : ""}" data-session-id="${escapeHtml(value.id)}" tabindex="${value.id === tabStop ? 0 : -1}"${value.id === selectedSessionID ? ` aria-current="true"` : ""} aria-label="${escapeHtml(context)}"${status ? ` title="${escapeHtml(status)}"` : ""}>${sessionIndicator(value)}<span class="session-row-copy"><span class="session-row-heading"><span class="session-row-title">${escapeHtml(value.title)}</span>${badges.markup}<time>${escapeHtml(relativeTime)}</time></span>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</span></button>`
+}
+
+function compareSessions(left: SessionOption, right: SessionOption, group: DisplayGroup | undefined, now: number): number {
+  if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
+  const stateDifference = SESSION_STATE_PRIORITY[sessionState(left)] - SESSION_STATE_PRIORITY[sessionState(right)]
+  if (stateDifference) return stateDifference
   if (!group) {
-    const priority = SESSION_GROUPS.indexOf(sessionGroup(left, now)) - SESSION_GROUPS.indexOf(sessionGroup(right, now))
+    const priority = SESSION_GROUPS.indexOf(displayGroup(left, now)) - SESSION_GROUPS.indexOf(displayGroup(right, now))
     if (priority) return priority
   }
-  if (!group || RECENT_GROUPS.includes(group)) return left.title.localeCompare(right.title)
   return (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || left.title.localeCompare(right.title)
 }
 
 function searchText(value: SessionOption, now: number): string {
   const aliases = value.unread > 0 ? "done unread" : ""
-  return `${value.title}\n${value.directory ?? ""}\n${sessionStatusLabel(value)}\n${sessionGroup(value, now)}\n${aliases}`.toLowerCase()
+  return [
+    value.title,
+    value.directory ?? "",
+    sessionStatusLabel(value),
+    displayGroup(value, now),
+    value.pinned ? "pin pinned" : "",
+    value.archived ? "archive archived" : "",
+    value.shared ? "share shared" : "",
+    value.model ?? "",
+    value.agent ?? "",
+    value.branch ?? "",
+    value.worktree ?? "",
+    aliases,
+  ].join("\n").toLowerCase()
+}
+
+function matchesFilters(value: SessionOption, options: SessionListOptions): boolean {
+  const filters = options.filters
+  const includeArchived = filters?.includeArchived ?? options.includeArchived ?? false
+  if (value.archived && !includeArchived) return false
+  if ((filters?.sharedOnly ?? options.sharedOnly ?? false) && !value.shared) return false
+  if ((filters?.changedOnly ?? options.changedOnly ?? false) && changedCount(value) === 0) return false
+  const states = filters?.states ?? options.states
+  if (!states?.length) return true
+  const state = sessionState(value)
+  return states.includes(state) || states.includes(value.status.type)
 }
 
 /** Renders the shared history/rail session navigation with deterministic grouping, search, and roving-tab state. */
@@ -94,10 +192,10 @@ export function sessionListMarkup(values: SessionOption[], options: SessionListO
   const now = options.now ?? Date.now()
   const query = options.query?.trim().toLowerCase() ?? ""
   const limit = Math.max(1, Math.floor(options.renderLimit ?? 200))
-  const filtered = values.filter((value) => !query || searchText(value, now).includes(query))
+  const filtered = values.filter((value) => matchesFilters(value, options) && (!query || searchText(value, now).includes(query)))
   const ordered = query
     ? [...filtered].sort((left, right) => compareSessions(left, right, undefined, now))
-    : SESSION_GROUPS.flatMap((group) => filtered.filter((value) => sessionGroup(value, now) === group).sort((left, right) => compareSessions(left, right, group, now)))
+    : SESSION_GROUPS.flatMap((group) => filtered.filter((value) => displayGroup(value, now) === group).sort((left, right) => compareSessions(left, right, group, now)))
   if (!ordered.length) return `<p class="placeholder">${escapeHtml(options.empty)}</p>`
 
   const visible = ordered.slice(0, limit)
@@ -106,7 +204,7 @@ export function sessionListMarkup(values: SessionOption[], options: SessionListO
   const list = (items: SessionOption[], label: string) => `<div role="list" aria-label="${escapeHtml(label)}">${items.map((value) => `<div role="listitem">${sessionButton(value, options.selectedSessionID, tabStop, now)}</div>`).join("")}</div>`
   if (query) return `<section class="history-group"><h2>Results</h2>${list(visible, "Search results")}${more}</section>`
   return SESSION_GROUPS.map((group) => {
-    const grouped = visible.filter((value) => sessionGroup(value, now) === group)
+    const grouped = visible.filter((value) => displayGroup(value, now) === group)
     return grouped.length ? `<section class="history-group"><h2>${group} <span>${grouped.length}</span></h2>${list(grouped, `${group} sessions`)}</section>` : ""
   }).join("") + more
 }

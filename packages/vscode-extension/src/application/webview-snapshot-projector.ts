@@ -2,7 +2,10 @@ import type {
   ChatSnapshot,
   ChatSnapshotProjection,
   ChatSnapshotProjectionOmissions,
+  EvidenceReference,
+  RunComparisonSnapshot,
   RunGroup,
+  TaskArtifactSummary,
   WalkthroughDocument,
   WorktreeJournalEntry,
 } from "@opencode-workbench/shared"
@@ -26,6 +29,7 @@ function omissionTotals(snapshot: ChatSnapshot): MutableOmissions {
   const session = snapshot.session
   return {
     sessions: snapshot.sessions.length,
+    lineage: snapshot.lineage?.length ?? 0,
     messages: session?.messages.length ?? 0,
     delegations: session?.delegations?.length ?? 0,
     queuedPrompts: session?.queue?.length ?? 0,
@@ -37,11 +41,16 @@ function omissionTotals(snapshot: ChatSnapshot): MutableOmissions {
     catalogItems: snapshot.agents.length + (snapshot.mentionAgents?.length ?? 0) + (snapshot.providers?.length ?? 0) +
       snapshot.models.length + (snapshot.resources?.length ?? 0) + (snapshot.commands?.length ?? 0),
     runtimeServices: (snapshot.runtime?.lsp.length ?? 0) + (snapshot.runtime?.formatters.length ?? 0) + (snapshot.runtime?.mcp.length ?? 0),
+    ptys: snapshot.ptys?.length ?? 0,
     attentionItems: snapshot.attentionItems?.length ?? 0,
     runGroups: snapshot.runGroups?.length ?? 0,
     worktrees: snapshot.worktrees?.length ?? 0,
     walkthroughs: snapshot.walkthroughs?.length ?? 0,
     walkthroughStops: snapshot.walkthroughs?.reduce((total, document) => total + document.stops.length, 0) ?? 0,
+    taskArtifacts: snapshot.artifacts?.length ?? 0,
+    reviewFindings: snapshot.reviewFindings?.length ?? 0,
+    evidence: snapshot.evidence?.length ?? 0,
+    runComparisons: snapshot.runComparisons?.length ?? 0,
   }
 }
 
@@ -63,9 +72,11 @@ function minimalSnapshot(
 ): ChatSnapshot {
   const source = snapshot.session
   const selectedSession = source ? snapshot.sessions.find((session) => session.id === source.id) : undefined
+  const selectedLineage = source ? snapshot.lineage?.find((node) => node.sessionID === source.id) : undefined
   const selectedAgent = source?.agent ? snapshot.agents.find((agent) => agent.name === source.agent) : undefined
   const selectedModel = source?.model ? snapshot.models.find((model) => `${model.providerID}/${model.id}` === source.model) : undefined
   if (selectedSession) omissions.sessions -= 1
+  if (selectedLineage) omissions.lineage -= 1
   if (selectedAgent) omissions.catalogItems -= 1
   if (selectedModel) omissions.catalogItems -= 1
 
@@ -94,6 +105,10 @@ function minimalSnapshot(
       delegations: source.delegations === undefined ? undefined : [],
       contextReceipts: source.contextReceipts === undefined ? undefined : [],
       history: projectedHistory(source, 0),
+      archived: source.archived,
+      shared: source.shared,
+      shareUrl: source.shareUrl,
+      revertMessageID: source.revertMessageID,
     }
     : undefined
 
@@ -102,6 +117,7 @@ function minimalSnapshot(
     connectionState: snapshot.connectionState,
     connectionError: snapshot.connectionError,
     sessions: selectedSession ? [selectedSession] : [],
+    lineage: snapshot.lineage === undefined ? undefined : selectedLineage ? [selectedLineage] : [],
     session,
     agents: selectedAgent ? [selectedAgent] : [],
     mentionAgents: snapshot.mentionAgents === undefined ? undefined : [],
@@ -114,11 +130,18 @@ function minimalSnapshot(
     runtime: snapshot.runtime
       ? { path: snapshot.runtime.path, vcs: snapshot.runtime.vcs, lsp: [], formatters: [], mcp: [], updatedAt: snapshot.runtime.updatedAt }
       : undefined,
+    ptys: snapshot.ptys === undefined ? undefined : [],
     attentionItems: snapshot.attentionItems === undefined ? undefined : [],
     composer: snapshot.composer,
     runGroups: snapshot.runGroups === undefined ? undefined : [],
     worktrees: snapshot.worktrees === undefined ? undefined : [],
     walkthroughs: snapshot.walkthroughs === undefined ? undefined : [],
+    artifacts: snapshot.artifacts === undefined ? undefined : [],
+    reviewFindings: snapshot.reviewFindings === undefined ? undefined : [],
+    evidence: snapshot.evidence === undefined ? undefined : [],
+    runComparisons: snapshot.runComparisons === undefined ? undefined : [],
+    health: snapshot.health,
+    trace: snapshot.trace,
     projection,
   }
 }
@@ -138,6 +161,18 @@ function worktreeRank(entry: WorktreeJournalEntry, referenced: ReadonlySet<strin
   if (referenced.has(entry.id)) return 0
   if (["failed", "cleanup-pending", "retained-dirty"].includes(entry.phase)) return 1
   return entry.phase === "removed" ? 3 : 2
+}
+
+function taskArtifactRank(artifact: TaskArtifactSummary): number {
+  if (artifact.stale || ["failed", "unavailable", "blocked", "needs-user", "incomplete", "limited"].includes(artifact.state)) return 0
+  return artifact.lifecycle === "active" ? 1 : 2
+}
+
+function evidenceRank(evidence: EvidenceReference): number {
+  if (evidence.status === "failed") return 0
+  if (evidence.status === "warning") return 1
+  if (evidence.status === "unknown") return 2
+  return 3
 }
 
 function exactOmissions(omissions: MutableOmissions): ChatSnapshotProjectionOmissions {
@@ -160,7 +195,8 @@ function finishProjection(snapshot: ChatSnapshot): number {
 /**
  * Builds a transport-only snapshot projection. Admission is deterministic and
  * biased toward the selected session, pending input, the newest transcript
- * tail, actionable runs/worktrees, recent receipts, and recent walkthroughs.
+ * tail, task artifacts, deterministic evidence, actionable runs/worktrees,
+ * recent receipts, and recent walkthroughs.
  * No source object or durable service is mutated.
  */
 export function projectChatSnapshotForWebview(
@@ -252,6 +288,26 @@ export function projectChatSnapshotForWebview(
     projectedSession.history = omissions.messages ? projectedHistory(sourceSession, projectedSession.messages.length) : sourceSession.history
   }
 
+  const artifactOrder = snapshot.artifacts
+    ? descendingIndexes(snapshot.artifacts, (left, right) => taskArtifactRank(left) - taskArtifactRank(right) || right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+    : []
+  if (snapshot.artifacts && candidate.artifacts) admitArray(snapshot.artifacts, candidate.artifacts, artifactOrder.slice(0, 1), "taskArtifacts")
+  const reviewSeverity = { critical: 0, high: 1, medium: 2, low: 3 } as const
+  const reviewFindingOrder = snapshot.reviewFindings
+    ? descendingIndexes(snapshot.reviewFindings, (left, right) => Number(left.disposition !== "open") - Number(right.disposition !== "open") ||
+      reviewSeverity[left.severity] - reviewSeverity[right.severity] || Number(right.stale) - Number(left.stale) ||
+      right.artifactUpdatedAt - left.artifactUpdatedAt || left.findingID.localeCompare(right.findingID))
+    : []
+  if (snapshot.reviewFindings && candidate.reviewFindings) admitArray(snapshot.reviewFindings, candidate.reviewFindings, reviewFindingOrder.slice(0, 1), "reviewFindings")
+  const comparisonOrder = snapshot.runComparisons
+    ? descendingIndexes(snapshot.runComparisons, (left: RunComparisonSnapshot, right: RunComparisonSnapshot) => right.updatedAt - left.updatedAt || left.artifactID.localeCompare(right.artifactID))
+    : []
+  if (snapshot.runComparisons && candidate.runComparisons) admitArray(snapshot.runComparisons, candidate.runComparisons, comparisonOrder.slice(0, 1), "runComparisons")
+  const evidenceOrder = snapshot.evidence
+    ? descendingIndexes(snapshot.evidence, (left, right) => evidenceRank(left) - evidenceRank(right) || right.observedAt - left.observedAt || left.id.localeCompare(right.id))
+    : []
+  if (snapshot.evidence && candidate.evidence) admitArray(snapshot.evidence, candidate.evidence, evidenceOrder.slice(0, 1), "evidence")
+
   const runGroupOrder = snapshot.runGroups
     ? descendingIndexes(snapshot.runGroups, (left, right) => runGroupRank(left) - runGroupRank(right) || right.createdAt - left.createdAt || left.id.localeCompare(right.id))
     : []
@@ -261,6 +317,21 @@ export function projectChatSnapshotForWebview(
     ? descendingIndexes(snapshot.worktrees, (left, right) => worktreeRank(left, firstReferencedWorktreeIDs) - worktreeRank(right, firstReferencedWorktreeIDs) || right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
     : []
   if (snapshot.worktrees && candidate.worktrees) admitArray(snapshot.worktrees, candidate.worktrees, firstWorktreeOrder.slice(0, 1), "worktrees")
+  const ptyOrder = snapshot.ptys
+    ? descendingIndexes(snapshot.ptys, (left, right) => Number(right.status === "running") - Number(left.status === "running") || left.id.localeCompare(right.id))
+    : []
+  if (snapshot.ptys && candidate.ptys) admitArray(snapshot.ptys, candidate.ptys, ptyOrder.slice(0, 1), "ptys")
+  const selectedLineageRoot = snapshot.lineage?.find((node) => node.sessionID === snapshot.session?.id)?.rootID
+  const lineageOrder = snapshot.lineage
+    ? descendingIndexes(snapshot.lineage, (left, right) => {
+      const leftSelected = selectedLineageRoot && left.rootID === selectedLineageRoot ? 0 : 1
+      const rightSelected = selectedLineageRoot && right.rootID === selectedLineageRoot ? 0 : 1
+      const leftAttention = Boolean(left.attention) || ["busy", "retry", "error"].includes(left.status.type) ? 0 : 1
+      const rightAttention = Boolean(right.attention) || ["busy", "retry", "error"].includes(right.status.type) ? 0 : 1
+      return leftSelected - rightSelected || leftAttention - rightAttention || left.depth - right.depth || right.updatedAt - left.updatedAt || left.sessionID.localeCompare(right.sessionID)
+    })
+    : []
+  if (snapshot.lineage && candidate.lineage) admitArray(snapshot.lineage, candidate.lineage, lineageOrder.slice(0, 1), "lineage")
   const receiptOrder = sourceSession?.contextReceipts
     ? descendingIndexes(sourceSession.contextReceipts, (left, right) => right.admittedAt - left.admittedAt || left.id.localeCompare(right.id))
     : []
@@ -302,6 +373,10 @@ export function projectChatSnapshotForWebview(
 
   // After every durable surface gets a chance to retain its most important
   // record, use the remaining budget in importance/newness order.
+  if (snapshot.artifacts && candidate.artifacts) admitArray(snapshot.artifacts, candidate.artifacts, artifactOrder, "taskArtifacts")
+  if (snapshot.reviewFindings && candidate.reviewFindings) admitArray(snapshot.reviewFindings, candidate.reviewFindings, reviewFindingOrder, "reviewFindings")
+  if (snapshot.runComparisons && candidate.runComparisons) admitArray(snapshot.runComparisons, candidate.runComparisons, comparisonOrder, "runComparisons")
+  if (snapshot.evidence && candidate.evidence) admitArray(snapshot.evidence, candidate.evidence, evidenceOrder, "evidence")
   if (snapshot.runGroups && candidate.runGroups) admitArray(snapshot.runGroups, candidate.runGroups, runGroupOrder, "runGroups")
   const retainedWorktreeIDs = new Set(candidate.runGroups?.flatMap((group) => group.runs.flatMap((run) => run.worktreeID ? [run.worktreeID] : [])) ?? [])
   if (snapshot.worktrees && candidate.worktrees) {
@@ -341,9 +416,11 @@ export function projectChatSnapshotForWebview(
     return leftAttention - rightAttention || (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || left.id.localeCompare(right.id)
   })
   admitArray(snapshot.sessions, candidate.sessions, sessionOrder, "sessions")
+  if (snapshot.lineage && candidate.lineage) admitArray(snapshot.lineage, candidate.lineage, lineageOrder, "lineage")
   if (snapshot.attentionItems && candidate.attentionItems) {
     admitArray(snapshot.attentionItems, candidate.attentionItems, snapshot.attentionItems.map((_, index) => index), "attentionItems")
   }
+  if (snapshot.ptys && candidate.ptys) admitArray(snapshot.ptys, candidate.ptys, ptyOrder, "ptys")
 
   admitArray(snapshot.agents, candidate.agents, snapshot.agents.map((_, index) => index), "catalogItems")
   if (snapshot.mentionAgents && candidate.mentionAgents) admitArray(snapshot.mentionAgents, candidate.mentionAgents, snapshot.mentionAgents.map((_, index) => index), "catalogItems")

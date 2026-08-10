@@ -2,17 +2,55 @@ import { createHash } from "node:crypto"
 import { sanitizeDurableMetadataUri, type ContextReceiptItem } from "@opencode-workbench/shared"
 import type { PromptFilePart } from "../opencode-client.js"
 
+export type BrowserContextSource = "selection" | "console" | "element" | "terminal-task" | "diagnostics" | "debug" | "url" | "screenshot"
+export type BrowserScreenshotMime = "image/png" | "image/jpeg" | "image/webp"
+
+export interface BrowserEditorSelection {
+  uri: string
+  startLine: number
+  startColumn: number
+  endLine: number
+  endColumn: number
+  revision?: string
+  text: string
+}
+
 export interface BrowserContextInput {
   task: string
-  editorSelection?: { uri: string; startLine: number; startColumn: number; endLine: number; endColumn: number; revision?: string; text: string }
+  editorSelection?: BrowserEditorSelection
   clipboardText?: { kind: "console" | "element" | "terminal-task"; text: string }
   diagnostics?: string
   debugState?: string
   approvedUrl?: string
-  screenshot?: { name: string; mime: "image/png" | "image/jpeg" | "image/webp"; bytes: Uint8Array }
+  screenshot?: { name: string; mime: BrowserScreenshotMime; bytes: Uint8Array }
 }
 
 export interface BrowserContextCapture { prompt: string; files: PromptFilePart[]; receiptItems: ContextReceiptItem[] }
+
+export const BROWSER_SCREENSHOT_BYTE_LIMIT = 10 * 1024 * 1024
+
+export function requestedBrowserEditorSelection(
+  sources: readonly BrowserContextSource[],
+  selection: BrowserEditorSelection | undefined,
+): BrowserEditorSelection | undefined {
+  if (!sources.includes("selection")) return undefined
+  if (!selection) throw new Error("The requested editor selection is unavailable. Select text in an editor and retry")
+  return selection
+}
+
+export function assertBrowserScreenshotFileBeforeRead(input: {
+  name: string
+  mime: BrowserScreenshotMime
+  size: number
+  isFile: boolean
+}): void {
+  const extension = /\.([^.]+)$/.exec(input.name)?.[1]?.toLowerCase()
+  const expectedMime = extension === "png" ? "image/png" : extension === "jpg" || extension === "jpeg" ? "image/jpeg" : extension === "webp" ? "image/webp" : undefined
+  if (!input.isFile || !Number.isSafeInteger(input.size) || input.size < 1 || input.size > BROWSER_SCREENSHOT_BYTE_LIMIT ||
+    !/^[^/\\]{1,200}\.(?:png|jpe?g|webp)$/i.test(input.name) || input.mime !== expectedMime) {
+    throw new Error("Screenshot must be a regular PNG, JPEG, or WebP file no larger than 10 MiB")
+  }
+}
 
 function bounded(value: string, limit: number, label: string): string {
   const trimmed = value.trim()
@@ -73,7 +111,7 @@ export function captureBrowserContext(input: BrowserContextInput): BrowserContex
   const files: PromptFilePart[] = []
   if (sections.length > 1) files.push({ type: "file", filename: "browser-context.md", mime: "text/markdown", url: `data:text/markdown;base64,${Buffer.from(sections.join("\n\n")).toString("base64")}` })
   if (input.screenshot) {
-    if (!/^[^/\\]{1,200}\.(?:png|jpe?g|webp)$/i.test(input.screenshot.name) || input.screenshot.bytes.byteLength < 1 || input.screenshot.bytes.byteLength > 10 * 1024 * 1024) throw new Error("Screenshot must be a PNG, JPEG, or WebP file no larger than 10 MiB")
+    assertBrowserScreenshotFileBeforeRead({ name: input.screenshot.name, mime: input.screenshot.mime, size: input.screenshot.bytes.byteLength, isFile: true })
     files.push({ type: "file", filename: input.screenshot.name, mime: input.screenshot.mime, url: `data:${input.screenshot.mime};base64,${Buffer.from(input.screenshot.bytes).toString("base64")}` })
     receiptItems.push({ id: "browser:screenshot", kind: "attachment", label: input.screenshot.name, bytes: input.screenshot.bytes.byteLength, contentHash: contentHash(input.screenshot.bytes) })
   }
