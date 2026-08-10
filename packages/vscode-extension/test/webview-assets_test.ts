@@ -468,6 +468,20 @@ Deno.test("Task Workbench navigation consolidates artifact and execution destina
   ]) if (!(webview + inspectorPresentation).includes(marker)) throw new Error(`Consolidated route or action omits ${marker}`)
 })
 
+Deno.test("Task Workbench starts closed, restores its last visibility, and opens for routed destinations", () => {
+  if (!webview.includes("inspectorOpen: storedState?.inspectorOpen ?? false")) {
+    throw new Error("Task Workbench should default closed while honoring an explicitly saved visibility")
+  }
+  if (webview.includes('storedState?.inspectorOpen ?? document.body.dataset.mode === "editor"')) {
+    throw new Error("Editor mode must not force the Task Workbench open on first use")
+  }
+  for (const marker of [
+    "...inspectorShell.persisted()",
+    "if (!inspectorOpen) inspectorShell.toggle()",
+    "persistInspector()",
+  ]) if (!webview.includes(marker)) throw new Error(`Task Workbench visibility lifecycle omits: ${marker}`)
+})
+
 Deno.test("startup snapshots omit session-scoped comparisons until OpenCode selects a session", () => {
   if (!chatView.includes("runComparisons: this.workbench.artifacts && selectedSessionID ? runComparisons : undefined")) {
     throw new Error("Startup can publish run comparisons without a selected OpenCode session")

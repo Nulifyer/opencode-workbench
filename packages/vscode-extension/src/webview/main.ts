@@ -146,7 +146,7 @@ let todoExpanded = storedState?.todoExpanded ?? true
 const initialInspectorTab = document.body.dataset.initialTab
 const inspectorShell = new InspectorShellController({
   ...storedState,
-  inspectorOpen: storedState?.inspectorOpen ?? document.body.dataset.mode === "editor",
+  inspectorOpen: storedState?.inspectorOpen ?? false,
   inspectorTab: initialInspectorTab ?? storedState?.inspectorTab,
 })
 const INSPECTOR_TABS = new Set<InspectorTab>(["activity", "plan", "changes", "review", "evidence", "goal", "jobs", "lineage", "runs", "context", "walkthrough", "health"])

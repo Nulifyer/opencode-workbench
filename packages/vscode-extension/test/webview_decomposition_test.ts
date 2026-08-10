@@ -27,6 +27,10 @@ Deno.test("webview domain helpers own queue, composer, session ordering, and ins
   assertEquals(sessionMarkup.indexOf("data-session-id=\"a\"") < sessionMarkup.indexOf("data-session-id=\"b\""), true)
   const inspector = new InspectorShellController({ inspectorOpen: true, inspectorTab: "runs" }); inspector.close(); inspector.select("goal")
   assertEquals(inspector.persisted(), { inspectorOpen: false, inspectorTab: "goal" })
+  const defaultInspector = new InspectorShellController()
+  assertEquals(defaultInspector.persisted(), { inspectorOpen: false, inspectorTab: "activity" })
+  const restoredInspector = new InspectorShellController(defaultInspector.persisted())
+  assertEquals(restoredInspector.persisted(), { inspectorOpen: false, inspectorTab: "activity" })
 })
 
 Deno.test("older history merges ahead of the visible transcript without duplicating its anchor", () => {
