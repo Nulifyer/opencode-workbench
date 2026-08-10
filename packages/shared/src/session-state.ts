@@ -35,6 +35,7 @@ export interface WorkbenchState {
   sessions: Record<string, SessionViewState>
   order: string[]
   selectedID?: string
+  selectionExplicitlyCleared: boolean
   connected: boolean
   connectionState: ConnectionState
 }
@@ -64,6 +65,7 @@ export type SessionAction =
 export const initialWorkbenchState: WorkbenchState = {
   sessions: Object.create(null) as Record<string, SessionViewState>,
   order: [],
+  selectionExplicitlyCleared: false,
   connected: false,
   connectionState: "connecting",
 }
@@ -191,7 +193,7 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
       .map((session) => session.id)
     const selectedID = state.selectedID && hasSession(sessions, state.selectedID)
       ? state.selectedID
-      : order.find((id) => !sessions[id]?.info.parentID) ?? order[0]
+      : state.selectionExplicitlyCleared ? undefined : order.find((id) => !sessions[id]?.info.parentID) ?? order[0]
     return { ...state, sessions, order, selectedID }
   }
 
@@ -199,7 +201,7 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
     if (action.sessionID && !hasSession(state.sessions, action.sessionID)) return state
     const sessions = copySessions(state.sessions)
     if (action.sessionID) sessions[action.sessionID] = { ...sessions[action.sessionID]!, unread: 0 }
-    return { ...state, selectedID: action.sessionID, sessions }
+    return { ...state, selectedID: action.sessionID, selectionExplicitlyCleared: action.sessionID === undefined, sessions }
   }
 
   if (action.type === "draft") {
@@ -312,7 +314,7 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
       variant: info.model?.variant ?? existing.variant,
     } : newSession(info)
     const order = [info.id, ...state.order.filter((id) => id !== info.id)]
-    return { ...state, sessions, order, selectedID: state.selectedID ?? info.id }
+    return { ...state, sessions, order, selectedID: state.selectedID ?? (state.selectionExplicitlyCleared ? undefined : info.id) }
   }
   if (event.type === "session.deleted") {
     const info = event.properties.info as SessionInfo | undefined
@@ -320,7 +322,14 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
     const sessions = copySessions(state.sessions)
     delete sessions[info.id]
     const order = state.order.filter((id) => id !== info.id)
-    return { ...state, sessions, order, selectedID: state.selectedID === info.id ? order.find((id) => !sessions[id]?.info.parentID) ?? order[0] : state.selectedID }
+    const deletedSelection = state.selectedID === info.id
+    return {
+      ...state,
+      sessions,
+      order,
+      selectedID: deletedSelection ? undefined : state.selectedID,
+      selectionExplicitlyCleared: state.selectionExplicitlyCleared || deletedSelection,
+    }
   }
 
   const sessionID = eventSessionID(event)

@@ -52,6 +52,23 @@ Deno.test("initial selection prefers a root session over newer subagents", () =>
   assert(state.selectedID === "one", "newest subagent replaced the root session selection")
 })
 
+Deno.test("deleting the selected session leaves an intentional empty selection", () => {
+  let state = sessionReducer(initialWorkbenchState, { type: "reconcile", sessions: [one, two] })
+  state = sessionReducer(state, { type: "select", sessionID: "one" })
+  state = sessionReducer(state, { type: "event", event: { type: "session.deleted", properties: { info: one } } })
+  assert(state.selectedID === undefined, "deleting the active session promoted another session")
+  assert(state.selectionExplicitlyCleared, "the intentional empty selection was not recorded")
+  assert(Object.hasOwn(state.sessions, "two"), "deleting the active session removed an unrelated session")
+
+  state = sessionReducer(state, { type: "reconcile", sessions: [two] })
+  assert(state.selectedID === undefined, "refreshing sessions replaced the intentional empty selection")
+  state = sessionReducer(state, { type: "event", event: { type: "session.updated", properties: { info: { ...two, title: "Updated" } } } })
+  assert(state.selectedID === undefined, "session metadata selected a session after an intentional clear")
+
+  state = sessionReducer(state, { type: "select", sessionID: "two" })
+  assert(state.selectedID === "two" && !state.selectionExplicitlyCleared, "an explicit session choice did not restore normal selection")
+})
+
 Deno.test("background completion marks unread without changing selection", () => {
   let state = sessionReducer(initialWorkbenchState, { type: "reconcile", sessions: [one, two] })
   state = sessionReducer(state, { type: "select", sessionID: "one" })

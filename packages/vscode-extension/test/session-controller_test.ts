@@ -43,6 +43,35 @@ Deno.test("chat snapshot exposes switchable sessions", async () => {
   controller.dispose()
 })
 
+Deno.test("deleting the active session opens the non-session screen until another session is chosen", async () => {
+  let available = [session("one", 2), session("two", 1)]
+  const selections: Array<string | undefined> = []
+  const fake = {
+    listSessions: async () => available,
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    deleteSession: async (sessionID: string) => {
+      available = available.filter((candidate) => candidate.id !== sessionID)
+      return true
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined, selectionChanged: (sessionID) => selections.push(sessionID) })
+  await controller.reconcile()
+
+  await controller.deleteSession("one")
+  if (controller.chatSnapshot().session !== undefined || controller.chatSnapshot().sessions.map((candidate) => candidate.id).join(",") !== "two") {
+    throw new Error("Deleting the active session did not retain the remaining rail while opening the non-session screen")
+  }
+  if (selections.length !== 1 || selections[0] !== undefined) throw new Error("Deleting the active session did not persist its cleared selection")
+
+  await controller.reconcile()
+  if (controller.chatSnapshot().session !== undefined) throw new Error("Session reconciliation replaced the intentional non-session screen")
+  await controller.select("two")
+  if (controller.chatSnapshot().session?.id !== "two") throw new Error("An explicit session choice did not leave the non-session screen")
+  controller.dispose()
+})
+
 Deno.test("settled turns refresh generated OpenCode session titles", async () => {
   let title = "New session"
   const fake = {

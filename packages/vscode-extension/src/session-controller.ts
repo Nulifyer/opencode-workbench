@@ -835,11 +835,16 @@ export class SessionController {
   }
 
   async deleteSession(sessionID: string): Promise<void> {
+    const deletedSelection = this.state.selectedID === sessionID
     if (await this.client.deleteSession(sessionID) !== true) throw new Error("OpenCode did not delete the session")
     this.sessionRevision += 1
     const info = this.state.sessions[sessionID]?.info
     this.cleanupSession(sessionID)
     if (info) this.dispatch({ type: "event", event: { type: "session.deleted", properties: { info } } })
+    if (deletedSelection && this.state.selectedID === undefined) {
+      this.selectionIntent += 1
+      this.callbacks.selectionChanged?.(undefined)
+    }
     const selectedID = this.state.selectedID
     if (selectedID && !this.state.sessions[selectedID]?.loaded) await this.loadTranscript(selectedID)
   }
@@ -1883,10 +1888,18 @@ export class SessionController {
       const changes = parseChanges(event.properties.diff)
       this.dispatch({ type: "changes", sessionID, changes })
     }
-    if (event.type === "session.deleted" && record(event.properties.info) && typeof event.properties.info.id === "string") {
-      this.cleanupSession(event.properties.info.id)
+    const deletedSessionID = event.type === "session.deleted" && record(event.properties.info) && typeof event.properties.info.id === "string"
+      ? event.properties.info.id
+      : undefined
+    const deletedSelection = deletedSessionID !== undefined && this.state.selectedID === deletedSessionID
+    if (deletedSessionID) {
+      this.cleanupSession(deletedSessionID)
     }
     this.dispatch({ type: "event", event: normalizedEvent })
+    if (deletedSelection && this.state.selectedID === undefined) {
+      this.selectionIntent += 1
+      this.callbacks.selectionChanged?.(undefined)
+    }
     if (sessionID && event.type === "message.updated" && record(info) && info.role === "assistant" && this.sessionFailures.has(sessionID)) {
       this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "error", message: this.sessionFailures.get(sessionID) } } } })
     }
