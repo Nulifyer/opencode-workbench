@@ -125,6 +125,9 @@ Deno.test("attention and inspector routing preserve focus and actionable context
     !focusController.includes("if (!root.contains(active)") || !focusController.includes(":not(.overlay-backdrop)")) {
     throw new Error("Empty attention dialogs do not move and contain keyboard focus within the dialog")
   }
+  for (const marker of ["resolvedLastItem", "pendingAttentionTarget = undefined", 'announce("All attention items resolved")']) {
+    if (!webview.includes(marker)) throw new Error(`Resolved attention lifecycle omits ${marker}`)
+  }
   if (!chatView.includes('aria-label="Close session details"') || !webview.includes('inspectorPanel.setAttribute("aria-label"') ||
     !webview.includes("const scrollTop = previousTab === inspectorTab") || !webview.includes("focusedKey") ||
     !inspectorPresentation.includes("stop.explanation")) throw new Error("Inspector tabs, scroll/focus retention, or walkthrough explanations are missing")

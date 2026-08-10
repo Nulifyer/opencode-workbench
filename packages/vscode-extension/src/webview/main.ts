@@ -1944,6 +1944,7 @@ function routePendingAttention(): void {
 function renderAttention(): void {
   const items = snapshot.attentionItems ?? []
   const count = items.length
+  const resolvedLastItem = lastAttentionCount !== undefined && lastAttentionCount > 0 && count === 0
   attentionCount.hidden = count === 0
   attentionCount.textContent = count > 99 ? "99+" : String(count)
   attentionToggle.classList.toggle("has-attention", count > 0)
@@ -1966,6 +1967,11 @@ function renderAttention(): void {
   if (lastAttentionCount !== undefined && count > lastAttentionCount) {
     const added = count - lastAttentionCount
     announce(`${added} new attention item${added === 1 ? "" : "s"}; ${count} total`)
+  }
+  if (resolvedLastItem) {
+    pendingAttentionTarget = undefined
+    if (!attentionOverlay.hidden) attentionOverlayController.close()
+    announce("All attention items resolved")
   }
   lastAttentionCount = count
   routePendingAttention()

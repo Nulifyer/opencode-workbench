@@ -779,6 +779,13 @@ Deno.test("delegated task snapshots include bounded child-session progress", asy
     !parseHostMessage({ type: "snapshot", snapshot })) {
     throw new Error("Delegated child progress was not loaded into a valid parent snapshot")
   }
+  internal.handleEvent({
+    type: "question.v2.replied",
+    properties: { id: "child-question", sessionID: "child" },
+  })
+  if (controller.chatSnapshot().attentionItems?.some((item) => item.id === "question:child:child-question")) {
+    throw new Error("OpenCode question replies using the native id field left stale attention behind")
+  }
   await controller.select("child")
   const childSnapshot = controller.chatSnapshot().session
   if (childSnapshot?.parentID !== "parent" || childSnapshot.permissions?.length !== 0 || childSnapshot.questions?.length !== 0) {

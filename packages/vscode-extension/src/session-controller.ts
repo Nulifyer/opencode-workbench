@@ -1978,7 +1978,11 @@ export class SessionController {
     const question = parseQuestion(event)
     if (question) this.storeQuestion(question)
     if (["question.replied", "question.rejected", "question.v2.replied", "question.v2.rejected"].includes(event.type) && sessionID) {
-      const requestID = typeof event.properties.requestID === "string" ? event.properties.requestID : undefined
+      const requestID = typeof event.properties.requestID === "string"
+        ? event.properties.requestID
+        : typeof event.properties.id === "string"
+        ? event.properties.id
+        : undefined
       if (requestID) this.removeQuestion(sessionID, requestID)
     }
     if (!KNOWN_OPENCODE_EVENTS.has(event.type) && !this.unknownEventTypes.has(event.type)) {
