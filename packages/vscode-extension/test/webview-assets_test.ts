@@ -53,12 +53,11 @@ Deno.test("webview exposes the screen-reader and keyboard interaction contract",
     'role="status" aria-live="polite"',
     'id="announcer" class="visually-hidden" aria-live="polite"',
     'role="dialog" aria-modal="true"',
-    'role="tablist" aria-label="Inspector sections"',
-    'role="tabpanel" aria-labelledby="inspector-tab-activity" tabindex="0"',
+    'id="inspector" class="session-details" aria-label="Session details"',
+    'id="inspector-panel" class="inspector-panel session-details-panel" tabindex="0"',
   ]) if (!chatView.includes(marker)) throw new Error(`Missing accessibility marker: ${marker}`)
   for (const behavior of [
-    'tab.tabIndex = selected ? 0 : -1',
-    'if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return',
+    'if (focusTab) requestAnimationFrame(() => inspectorPanel.focus())',
     'announce("OpenCode response complete")',
     'focusController.trapTab',
   ]) if (!webview.includes(behavior)) throw new Error(`Missing keyboard or announcement behavior: ${behavior}`)
@@ -126,7 +125,7 @@ Deno.test("attention and inspector routing preserve focus and actionable context
     !focusController.includes("if (!root.contains(active)") || !focusController.includes(":not(.overlay-backdrop)")) {
     throw new Error("Empty attention dialogs do not move and contain keyboard focus within the dialog")
   }
-  if (!chatView.includes('aria-controls="inspector-panel"') || !webview.includes('inspectorPanel.setAttribute("aria-labelledby"') ||
+  if (!chatView.includes('aria-label="Close session details"') || !webview.includes('inspectorPanel.setAttribute("aria-label"') ||
     !webview.includes("const scrollTop = previousTab === inspectorTab") || !webview.includes("focusedKey") ||
     !inspectorPresentation.includes("stop.explanation")) throw new Error("Inspector tabs, scroll/focus retention, or walkthrough explanations are missing")
   if (!inspectorPresentation.includes('class="run-pending-status" role="status"') || !inspectorPresentation.includes("Worktree unavailable; refresh this run group to recover.")) {
@@ -384,30 +383,30 @@ Deno.test("editor transition closes the originating sidebar and modernizes the W
     "this.closeVisibleSidebar()",
     'vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar")',
     "WebviewPanelSerializer to restore it",
-    'class="inspector-tab-group" role="presentation"',
-    'aria-valuemin="420" aria-valuemax="900" aria-valuenow="500"',
+    'class="session-details" aria-label="Session details"',
+    'id="sessions-splitter" class="pane-splitter editor-only"',
   ]) if (!chatView.includes(marker)) throw new Error(`Editor surface transition or grouped navigation omits: ${marker}`)
   for (const marker of [
     ".inspector-filters",
     ".activity-hero, .health-hero",
     ".health-event-list",
     ".inspector-card",
-    ".inspector-tab-group-label",
-    "grid-template-columns: 104px minmax(0, 1fr)",
+    ".session-details",
+    'grid-template-columns: minmax(420px, 1fr) 5px minmax(280px, var(--sessions-pane-width))',
   ]) if (!css.includes(marker)) throw new Error(`Modern Workbench styling omits: ${marker}`)
   for (const marker of ["health-hero", "activity-hero", "job-filters", "review-filters", "inspector-view-"]) {
     if (!inspectorPresentation.includes(marker)) throw new Error(`Inspector presentation omits: ${marker}`)
   }
 })
 
-Deno.test("Task Workbench tabs explain their purpose and Health uses the available pane height", () => {
+Deno.test("contextual session details explain their purpose and Health uses the available card height", () => {
   for (const marker of [
-    'aria-description="${tab.description}"',
-    "Plans appear after Plan Task creates a reviewable document",
-    "Goals start with a /goal command or plan handoff",
-  ]) if (!chatView.includes(marker)) throw new Error(`Task Workbench guidance omits: ${marker}`)
+    'const INSPECTOR_DESCRIPTIONS: Record<InspectorTab, string>',
+    'const INSPECTOR_LABELS: Record<InspectorTab, string>',
+    'inspector.querySelector<HTMLElement>(".session-details-header strong")',
+  ]) if (!webview.includes(marker)) throw new Error(`Contextual session guidance omits: ${marker}`)
 
-  for (const marker of ["inspector-view-info", "About this view:", "heading.insertAdjacentHTML"]) {
+  for (const marker of ["inspector-view-info", "About this view:", "sessionDetailsInfo.title = INSPECTOR_DESCRIPTIONS[inspectorTab]"]) {
     if (!(webview + css).includes(marker)) throw new Error(`Active Workbench heading guidance omits: ${marker}`)
   }
 
@@ -427,11 +426,11 @@ Deno.test("chat chrome prioritizes useful actions, health, sessions, and bounded
   const headerStart = chatView.indexOf('<div class="header-actions">')
   const headerEnd = chatView.indexOf("</div>", headerStart)
   const header = chatView.slice(headerStart, headerEnd)
-  const ordered = ["create-header", "attention-toggle", "help-toggle", "inspector-toggle", "surface-toggle", "rail-toggle", "session-menu-toggle"]
+  const ordered = ["create-header", "attention-toggle", "help-toggle", "surface-toggle", "rail-toggle", "session-menu-toggle"]
   for (let index = 1; index < ordered.length; index += 1) {
     if (header.indexOf(ordered[index - 1]!) >= header.indexOf(ordered[index]!)) throw new Error(`Header action order is not intentional at ${ordered[index]}`)
   }
-  if (!header.includes('${ICONS.workbench}')) throw new Error("Task Workbench should use its dedicated pane icon")
+  if (header.includes('id="inspector-toggle"')) throw new Error("The removed third-pane toggle must not remain in chat chrome")
   if (chatView.includes(">Open walkthrough<") || chatView.includes(">Check OpenCode health<")) throw new Error("Empty state still duplicates walkthrough or health navigation")
   for (const marker of ["healthWorkspaceDetail()", "workspace-health-dot", "OpenCode health", "session-change-summary", "data-session-changes-review"]) {
     if (!(webview + css + chatView).includes(marker)) throw new Error(`Chat chrome omits ${marker}`)
@@ -450,19 +449,18 @@ Deno.test("edited files offer a VS Code highlighted diff and theme-native inline
   }
 })
 
-Deno.test("Task Workbench navigation consolidates artifact and execution destinations", () => {
+Deno.test("contextual session work consolidates artifact and execution destinations", () => {
   for (const marker of [
-    '{ id: "activity", label: "Activity"',
-    '{ id: "plan", label: "Plan"',
-    '{ id: "goal", label: "Goal"',
-    '{ id: "context", label: "Context"',
-    '{ id: "changes", label: "Changes"',
-    '{ id: "jobs", label: "Jobs"',
-    '{ id: "health", label: "Health"',
-  ]) if (!chatView.includes(marker)) throw new Error(`Consolidated navigation omits ${marker}`)
+    'id="session-task-dock" class="session-task-dock"',
+    'id="goal-dock" class="dock summary-dock goal-dock"',
+    'id="session-change-summary" class="session-change-summary"',
+    'class="session-details-header"',
+  ]) if (!chatView.includes(marker)) throw new Error(`Contextual session work omits ${marker}`)
   for (const marker of [
     '["review", "evidence", "walkthrough"].includes(tab)',
     '["runs", "lineage"].includes(tab)',
+    'data-session-detail="plan"',
+    'data-session-detail="jobs"',
     'data-workbench-action="start-goal"',
     'data-workbench-action="refresh-session"',
   ]) if (!(webview + inspectorPresentation).includes(marker)) throw new Error(`Consolidated route or action omits ${marker}`)

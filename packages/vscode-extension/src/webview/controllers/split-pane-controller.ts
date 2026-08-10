@@ -21,7 +21,7 @@ export interface SplitPaneDefinition {
    * afford. The fixed maximum still applies.
    */
   availableWidth?: () => number
-  /** The pane controlled by the separator. Task Workbench panes sit right of it. */
+  /** The pane controlled by the separator. Editor-side panes sit right of it. */
   edge?: SplitPaneEdge
   step?: number
 }

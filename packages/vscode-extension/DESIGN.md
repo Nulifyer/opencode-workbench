@@ -155,9 +155,11 @@ to a new OpenCode Fusion session.
 ## UI Boundaries
 
 The chat is the primary view in a Secondary Side Bar container. Its header has
-a searchable session overlay. The same provider can open a resizable
-editor-area Task Workbench with conversation, inspector, and Sessions & Jobs
-panes. Both surfaces share controller state and use a nonce-based content
+a searchable session overlay. The same provider can open a two-column editor
+surface: session work on the left and a resizable Sessions list on the right.
+Plans, goals, changes/results, current jobs, context, and health appear as
+contextual cards within session work instead of a permanent third pane or tab
+rail. Both surfaces share controller state and use a nonce-based content
 security policy with no network access. Both directions use discriminated
 message schemas and runtime validators from `@opencode-workbench/shared`.
 

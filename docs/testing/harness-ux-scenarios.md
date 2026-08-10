@@ -49,11 +49,11 @@ second chat or model backend.
 Default shortcuts are limited to contexts where they cannot replace normal
 editor commands:
 
-- **Ctrl/Cmd+Shift+O** opens the editor Workbench only while the OpenCode sidebar
+- **Ctrl/Cmd+Shift+O** opens the editor chat only while the OpenCode sidebar
   has focus.
-- **Ctrl/Cmd+L** focuses the composer only while a Workbench webview has focus.
+- **Ctrl/Cmd+L** focuses the composer only while an OpenCode chat webview has focus.
 - **Escape** stops the active OpenCode session only while that session is busy
-  and a Workbench webview has focus.
+  and an OpenCode chat webview has focus.
 
-Task Workbench, Sessions, Jobs, Needs Attention, next-attention, and Help remain
-available through the Command Palette even when users avoid default shortcuts.
+Editor chat, Sessions, current jobs, Needs Attention, next-attention, and Help
+remain available through the Command Palette even when users avoid default shortcuts.

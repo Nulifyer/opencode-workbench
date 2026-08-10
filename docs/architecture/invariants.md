@@ -182,8 +182,10 @@ remain one-shot prompt material and are never persisted.
 
 ## Stable UI boundary
 
-- Both the secondary-sidebar view and resizable editor Task Workbench use
-  `ChatViewProvider` and the same controller state.
+- Both the secondary-sidebar view and two-column editor chat use
+  `ChatViewProvider` and the same controller state. The editor keeps session
+  work and Sessions as its only columns; advanced records render contextually
+  inside session work.
 - The webview has a nonce CSP, `default-src 'none'`, no network permission, and
   runtime-validated bounded messages in both directions.
 - New surfaces negotiate protocol v2 with `hello`/`ready`. Every webview action

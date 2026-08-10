@@ -1086,7 +1086,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!planSessionID) throw new Error("The open Markdown document is not linked to an OpenCode plan session")
       const planArtifactRecord = taskArtifacts.list(planSessionID).find((artifact) => artifact.kind === "plan" && artifact.lifecycle === "active")
       if (!planArtifactRecord || planArtifactRecord.kind !== "plan") throw new Error("The approved OpenCode plan artifact is no longer available")
-      if (!["approved", "handed-off"].includes(planArtifactRecord.payload.phase)) throw new Error("Approve this saved plan in the Task Workbench before handing it off")
+      if (!["approved", "handed-off"].includes(planArtifactRecord.payload.phase)) throw new Error("Approve this saved plan before handing it off")
       if (planArtifactRecord.payload.uri !== reference.uri || planArtifactRecord.payload.revision !== reference.revision) {
         throw new Error("The plan changed after approval; approve the current saved revision before handing it off")
       }

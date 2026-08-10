@@ -51,29 +51,12 @@ const ICONS = {
   attach: icon("M6.2 12.8a3.2 3.2 0 0 1 0-4.5l4.1-4.1a2.1 2.1 0 1 1 3 3l-4.5 4.5a1.1 1.1 0 0 1-1.6-1.6l4.1-4.1.9.9-4.1 4.1.7.7-.7-.7 4.5-4.5a.85.85 0 0 0-1.2-1.2L7.1 9.2a1.95 1.95 0 1 0 2.8 2.8l3.4-3.4.9.9-3.4 3.4a3.2 3.2 0 0 1-4.6-.1Z"),
   close: icon("M4.2 3.2 8 7l3.8-3.8 1 1L9 8l3.8 3.8-1 1L8 9l-3.8 3.8-1-1L7 8 3.2 4.2l1-1Z"),
   chevron: icon("m4.5 6 3.5 3.5L11.5 6l1 1L8 11.5 3.5 7l1-1Z"),
-  workbench: icon("M2 2.5h5.25v5.25H2V2.5Zm1.5 1.5v2.25h2.25V4H3.5Zm5.25-1.5H14v5.25H8.75V2.5Zm1.5 1.5v2.25h2.25V4h-2.25ZM2 9.25h5.25v4.25H2V9.25Zm1.5 1.5V12h2.25v-1.25H3.5Zm5.25-1.5H14v4.25H8.75V9.25Zm1.5 1.5V12h2.25v-1.25h-2.25Z"),
   rail: icon("M2 2.5h12v11H2v-11Zm1.5 1.5v8h6V4h-6Zm7.5 0v8h1.5V4H11Z"),
   send: icon("M2.2 2.4 14 8 2.2 13.6 3.5 8.8 9 8 3.5 7.2 2.2 2.4Z"),
   stop: icon("M4 4h8v8H4V4Z"),
   more: icon("M3 6.75A1.25 1.25 0 1 1 3 9.25a1.25 1.25 0 0 1 0-2.5Zm5 0A1.25 1.25 0 1 1 8 9.25a1.25 1.25 0 0 1 0-2.5Zm5 0A1.25 1.25 0 1 1 13 9.25a1.25 1.25 0 0 1 0-2.5Z"),
   back: icon("m9.8 3.2 1 1L7 8l3.8 3.8-1 1L5 8l4.8-4.8Z"),
 }
-
-const INSPECTOR_TAB_GROUPS: ReadonlyArray<{ label: string; tabs: ReadonlyArray<{ id: WorkbenchInspectorTab; label: string; description: string }> }> = [
-  { label: "Task", tabs: [
-    { id: "activity", label: "Activity", description: "Always-current status for the selected session: work state, queue, requests, and todos." },
-    { id: "plan", label: "Plan", description: "Plans appear after Plan Task creates a reviewable document; approve one before handing it to an implementation session." },
-    { id: "goal", label: "Goal", description: "Goals start with a /goal command or plan handoff and keep OpenCode working toward explicit criteria and limits across turns." },
-    { id: "context", label: "Context", description: "Token usage appears after responses; receipts record the exact files, selections, or captures admitted with each prompt." },
-  ] },
-  { label: "Work", tabs: [
-    { id: "changes", label: "Changes", description: "OpenCode session diffs plus the review findings, test evidence, and walkthroughs created from those exact changes." },
-    { id: "jobs", label: "Jobs", description: "Delegations, child sessions, terminals, isolated runs, worktrees, comparisons, and session ancestry in one execution view." },
-  ] },
-  { label: "System", tabs: [
-    { id: "health", label: "Health", description: "OpenCode connection, companion status, request queue, and sanitized Workbench protocol events." },
-  ] },
-]
 
 interface StoredContextAttachment {
   sessionID: string
@@ -265,7 +248,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.pendingEditorControl = initialControl
     const panel = vscode.window.createWebviewPanel(
       "opencodeWorkbench.chatEditor",
-      "OpenCode Task Workbench",
+      "OpenCode",
       vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")] },
     )
@@ -328,7 +311,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   async openNextAttention(): Promise<void> {
     const item = this.snapshot().attentionItems?.[0]
     if (!item) {
-      this.openInEditor("activity")
+      this.showAttention()
       return
     }
     if (item.sessionID && item.sessionID !== this.controller?.snapshot.selectedID && Object.hasOwn(this.controller?.snapshot.sessions ?? {}, item.sessionID)) {
@@ -449,7 +432,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <button id="create-header" class="icon-action" type="button" title="New session" aria-label="New session">${ICONS.add}</button>
         <button id="attention-toggle" class="icon-action attention-toggle" type="button" title="Needs Attention" aria-label="Needs Attention" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">!</span><small id="attention-count" hidden></small></button>
         <button id="help-toggle" class="icon-action" type="button" title="Keyboard help" aria-label="Keyboard help" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">?</span></button>
-        <button id="inspector-toggle" class="icon-action" type="button" title="Toggle Task Workbench" aria-label="Toggle Task Workbench" aria-expanded="false">${ICONS.workbench}</button>
         <button id="surface-toggle" class="icon-action" type="button" title="${mode === "sidebar" ? "Switch chat to editor" : "Switch chat to sidebar"}" aria-label="${mode === "sidebar" ? "Switch chat to editor" : "Switch chat to sidebar"}">${ICONS.editor}</button>
         <button id="rail-toggle" class="icon-action" type="button" title="Toggle sessions" aria-label="Toggle sessions" aria-expanded="${mode === "editor"}">${ICONS.rail}</button>
         <button id="session-menu-toggle" class="icon-action" type="button" title="Session actions" aria-label="Session actions" aria-haspopup="menu" aria-expanded="false">${ICONS.more}</button>
@@ -538,7 +520,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       <section class="history-panel keyboard-help-panel" role="dialog" aria-modal="true" aria-labelledby="keyboard-help-title">
         <div class="overlay-heading"><strong id="keyboard-help-title">OpenCode Workbench keyboard help</strong><button type="button" class="text-action" data-close-keyboard-help>Close</button></div>
         <p class="keyboard-help-note">Shortcuts are user-configurable in VS Code. These are the extension defaults.</p>
-        <dl class="inspector-metrics keyboard-help-list"><dt>Default: Ctrl/Cmd+Shift+O</dt><dd>Open Task Workbench</dd><dt>Default: Ctrl/Cmd+L</dt><dd>Focus composer</dd><dt>Escape</dt><dd>Stop active OpenCode work when the Workbench is focused</dd><dt>Arrow keys</dt><dd>Navigate menus, tabs, session lists, and splitters</dd><dt>Shift+F10</dt><dd>Open the selected session context menu</dd><dt>Home / End</dt><dd>Resize a focused pane to its minimum or maximum</dd></dl>
+        <dl class="inspector-metrics keyboard-help-list"><dt>Default: Ctrl/Cmd+Shift+O</dt><dd>Open chat in the editor</dd><dt>Default: Ctrl/Cmd+L</dt><dd>Focus composer</dd><dt>Escape</dt><dd>Stop active OpenCode work when chat is focused</dd><dt>Arrow keys</dt><dd>Navigate menus and session lists</dd><dt>Shift+F10</dt><dd>Open the selected session context menu</dd><dt>Home / End</dt><dd>Resize the Sessions column</dd></dl>
       </section>
     </div>
 
@@ -555,6 +537,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <button id="history-load-older" type="button">Load older messages</button>
         </section>
         <main id="messages" role="log" aria-label="OpenCode conversation"></main>
+        <section id="inspector" class="session-details" aria-label="Session details" hidden>
+          <div class="session-details-header"><div class="session-details-title"><strong>Session details</strong><span id="session-details-info" class="inspector-view-info" role="img" aria-label="About this view">i</span></div><button id="inspector-close" class="icon-action" type="button" aria-label="Close session details">${ICONS.close}</button></div>
+          <section id="inspector-panel" class="inspector-panel session-details-panel" tabindex="0"></section>
+        </section>
         <section id="session-change-summary" class="session-change-summary" aria-label="Session changes" hidden></section>
         <button id="jump-latest" class="jump-latest" type="button" hidden>↓ Latest <span id="jump-latest-count"></span></button>
         <div id="session-loading" class="session-loading" role="status" aria-live="polite" hidden><span class="session-loading-indicator" aria-hidden="true"></span><span>Loading session…</span></div>
@@ -579,6 +565,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <section id="question-dock" class="dock question-dock" aria-label="Questions from OpenCode" aria-live="assertive" hidden></section>
           <div class="summary-docks">
             <section id="goal-dock" class="dock summary-dock goal-dock" hidden></section>
+            <section id="session-task-dock" class="session-task-dock" aria-label="Session task artifacts" hidden></section>
             <section id="todo-dock" class="dock todo-dock" aria-label="Session todos" hidden></section>
           </div>
           <section id="queue-dock" class="dock queue-dock" aria-label="Queued prompts" hidden></section>
@@ -621,16 +608,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <div id="workspace-strip" class="workspace-strip" aria-label="Workspace status"></div>
         </footer>
       </section>
-
-      <div id="artifact-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize task artifacts" aria-valuemin="420" aria-valuemax="900" aria-valuenow="500" tabindex="0"></div>
-
-      <aside id="inspector" class="inspector" aria-label="OpenCode inspector" hidden>
-        <div class="inspector-header"><strong>Task Workbench</strong><button id="inspector-close" class="icon-action" type="button" aria-label="Close task workbench">${ICONS.close}</button></div>
-        <div id="inspector-tabs" class="inspector-tabs" role="tablist" aria-label="Inspector sections">
-          ${INSPECTOR_TAB_GROUPS.map((group, groupIndex) => `<div class="inspector-tab-group" role="presentation"><span class="inspector-tab-group-label" aria-hidden="true">${group.label}</span>${group.tabs.map((tab, tabIndex) => `<button id="inspector-tab-${tab.id}" type="button" role="tab" data-inspector-tab="${tab.id}" aria-controls="inspector-panel" aria-selected="${groupIndex === 0 && tabIndex === 0}" aria-description="${tab.description}" title="${tab.description}" tabindex="${groupIndex === 0 && tabIndex === 0 ? 0 : -1}"><span>${tab.label}</span></button>`).join("")}</div>`).join("")}
-        </div>
-        <section id="inspector-panel" class="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-activity" tabindex="0"></section>
-      </aside>
 
       <div id="sessions-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize sessions" aria-valuemin="280" aria-valuemax="520" aria-valuenow="320" tabindex="0"></div>
 
@@ -2081,7 +2058,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       const attention = snapshot.attentionItems?.length ?? 0
       this.view.badge = attention ? { value: attention, tooltip: `${attention} OpenCode item${attention === 1 ? " needs" : "s need"} attention` } : undefined
     }
-    if (message.type === "snapshot" && this.panel) this.panel.title = message.snapshot.session?.title ? `OpenCode · ${message.snapshot.session.title}` : "OpenCode Task Workbench"
+    if (message.type === "snapshot" && this.panel) this.panel.title = message.snapshot.session?.title ? `OpenCode · ${message.snapshot.session.title}` : "OpenCode"
     const publish = async (webview: vscode.Webview): Promise<void> => {
       await this.postTo(webview, message)
       if (message.type === "snapshot") await this.postEditorContext(webview)

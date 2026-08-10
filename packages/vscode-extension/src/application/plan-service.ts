@@ -9,7 +9,7 @@ export function structuredPlanPrompt(objective: string): string {
 
 export function planArtifact(objective: string, result?: string, sessionID?: string): string {
   const body = result?.trim() || "_OpenCode is preparing the plan…_"
-  return `# Implementation Plan\n\n> Objective: ${objective.trim()}\n${sessionID ? `> OpenCode session: ${sessionID}\n` : ""}\n${body}\n\n---\n\nEdit and save this artifact, approve the saved revision in the Task Workbench, then run **OpenCode: Handoff Approved Plan**.\n`
+  return `# Implementation Plan\n\n> Objective: ${objective.trim()}\n${sessionID ? `> OpenCode session: ${sessionID}\n` : ""}\n${body}\n\n---\n\nEdit and save this artifact, approve the saved revision from the session's Plan card, then run **OpenCode: Handoff Approved Plan**.\n`
 }
 
 export function createPlanReference(uri: string, content: string, approvedAt?: number): PlanReference {

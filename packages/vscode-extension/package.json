@@ -106,7 +106,7 @@
       { "command": "opencodeWorkbench.openChat", "title": "OpenCode: Open Chat", "icon": "$(sparkle)" },
       { "command": "opencodeWorkbench.openChatInEditor", "title": "OpenCode: Open Chat in Editor", "icon": "$(open-preview)" },
       { "command": "opencodeWorkbench.focusComposer", "title": "OpenCode: Focus Composer", "icon": "$(edit)" },
-      { "command": "opencodeWorkbench.toggleTaskWorkbench", "title": "OpenCode: Toggle Task Workbench", "icon": "$(layout-sidebar-right)" },
+      { "command": "opencodeWorkbench.toggleTaskWorkbench", "title": "OpenCode: Toggle Editor Chat", "icon": "$(layout-panel)" },
       { "command": "opencodeWorkbench.toggleSessions", "title": "OpenCode: Toggle Sessions", "icon": "$(list-tree)" },
       { "command": "opencodeWorkbench.toggleJobs", "title": "OpenCode: Toggle Jobs", "icon": "$(server-process)" },
       { "command": "opencodeWorkbench.showAttention", "title": "OpenCode: Show Needs Attention", "icon": "$(bell-dot)" },
