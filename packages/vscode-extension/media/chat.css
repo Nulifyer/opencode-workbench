@@ -361,12 +361,14 @@ a { color: var(--vscode-textLink-foreground); }
 .session-task-card:hover, .session-task-card:focus-visible { border-color: color-mix(in srgb, var(--vscode-focusBorder) 62%, var(--vscode-widget-border)); background: var(--vscode-list-hoverBackground); }
 .session-task-card strong, .session-task-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-task-card small { color: var(--vscode-descriptionForeground); }
-.goal-dock { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 34px; padding: 3px 5px 3px 9px; border-radius: 18px; }
+.goal-dock { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 34px; padding: 3px 5px 3px 9px; border-radius: 7px; }
 .goal-open { min-width: 0; display: grid; grid-column: 1; grid-row: 1; grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 2px 0; border: 0; color: inherit; background: transparent; text-align: left; }
 .goal-details { min-width: 0; grid-column: 1 / -1; grid-row: 2; padding: 2px 5px 6px 0; overflow-wrap: anywhere; }
 .goal-details > summary { cursor: pointer; color: var(--vscode-descriptionForeground); }
 .goal-actions { display: flex; grid-column: 2; grid-row: 1; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
-.goal-action { padding: 4px 8px; border-radius: 12px; font-size: 11px; white-space: nowrap; }
+.goal-action { min-height: 24px; padding: 2px 6px; border: 1px solid transparent; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 11px; white-space: nowrap; }
+.goal-action:hover, .goal-action:focus-visible { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.goal-action[data-goal-action="cancel"] { color: var(--vscode-errorForeground); }
 .goal-dock .goal-icon { color: var(--vscode-textLink-foreground); font-size: 15px; }
 .goal-dock .goal-state { color: var(--vscode-descriptionForeground); font-weight: 600; }
 .goal-dock strong { font-weight: 500; }

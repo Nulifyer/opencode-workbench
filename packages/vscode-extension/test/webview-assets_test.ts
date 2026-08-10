@@ -466,6 +466,15 @@ Deno.test("contextual session work consolidates artifact and execution destinati
   ]) if (!(webview + inspectorPresentation).includes(marker)) throw new Error(`Consolidated route or action omits ${marker}`)
 })
 
+Deno.test("goal dock actions use theme-native toolbar controls instead of pills", () => {
+  for (const marker of [
+    ".goal-action { min-height: 24px; padding: 2px 6px; border: 1px solid transparent; border-radius: 4px;",
+    "background: var(--vscode-toolbar-hoverBackground)",
+    '.goal-action[data-goal-action="cancel"] { color: var(--vscode-errorForeground); }',
+  ]) if (!css.includes(marker)) throw new Error(`Goal dock styling omits ${marker}`)
+  if (/\.goal-action\s*\{[^}]*border-radius:\s*(?:1[0-9]|[2-9][0-9])px/.test(css)) throw new Error("Goal dock actions must not use pill geometry")
+})
+
 Deno.test("Task Workbench starts closed, restores its last visibility, and opens for routed destinations", () => {
   if (!webview.includes("inspectorOpen: storedState?.inspectorOpen ?? false")) {
     throw new Error("Task Workbench should default closed while honoring an explicitly saved visibility")
