@@ -230,6 +230,16 @@ Deno.test("turn markers provide a usable pointer target", () => {
     !turnNavigationView.includes('part.tool === "update_goal_checkpoint"')) throw new Error("Fork or goal-checkpoint navigation markers are missing")
 })
 
+Deno.test("session filters keep compact rows in the editor rail", () => {
+  if (!css.includes("grid-template-rows: auto auto auto auto minmax(0, 1fr)")) {
+    throw new Error("Sessions rail does not allocate all five grid rows explicitly")
+  }
+  if (!/\.rail-session-filters\s*\{[^}]*align-content:\s*flex-start;[^}]*align-items:\s*center;/.test(css) ||
+    !/\.rail-session-filters button\s*\{[^}]*flex:\s*none;/.test(css)) {
+    throw new Error("Session filter chips can stretch into full-height rail tiles")
+  }
+})
+
 Deno.test("older transcript paging is explicit and preserves the visual prepend anchor", () => {
   if (!chatView.includes('id="history-boundary"') || !chatView.includes('id="history-load-older"') ||
     !chatView.includes('role="status" aria-live="polite"')) throw new Error("Bounded-history status and action are missing")

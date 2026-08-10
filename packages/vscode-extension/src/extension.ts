@@ -18,7 +18,7 @@ import { ChatViewProvider } from "./views/chat-view.js"
 import { resolveWorkspaceRoot } from "./workspace-root.js"
 import { ContextReceiptService } from "./application/context-service.js"
 import { createPlanReference, generatedPlanDisposition, planArtifact, structuredPlanPrompt } from "./application/plan-service.js"
-import { HealthService } from "./application/health-service.js"
+import { HealthService, workbenchHealthSummary } from "./application/health-service.js"
 import { controllerTraceCategory, TraceService } from "./application/trace-service.js"
 import { TypedGitRunner, WorktreeService } from "./application/worktree-service.js"
 import { MultiRunOrchestrator, RunGroupService } from "./application/run-group-service.js"
@@ -777,7 +777,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       evidence,
       recovery,
       sessionPresentation,
-      health: () => health?.snapshot(),
+      health: () => health ? workbenchHealthSummary(health.snapshot()) : undefined,
       trace: () => trace.snapshot().slice(-100).map((entry) => ({
         type: entry.type,
         timestamp: entry.timestamp,

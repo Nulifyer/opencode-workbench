@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert"
-import { HealthService } from "../src/application/health-service.ts"
+import { parseHostMessage } from "@opencode-workbench/shared"
+import { HealthService, workbenchHealthSummary } from "../src/application/health-service.ts"
 import { controllerTraceCategory, TraceService } from "../src/application/trace-service.ts"
 
 Deno.test("health center reports bounded current runtime state", () => {
@@ -13,6 +14,14 @@ Deno.test("health center reports bounded current runtime state", () => {
   const snapshot = service.snapshot()
   assertEquals(snapshot.capabilities, ["permissions", "questions"])
   assertEquals(snapshot.eventStream, { state: "connected", lastEventAt: 10, lastReconciliationAt: 11, reconnectCount: 1 })
+  const summary = workbenchHealthSummary(snapshot)
+  assertEquals(Object.keys(summary), [
+    "workbenchVersion", "vscodeVersion", "openCodeVersion", "serverMode", "serverState", "pluginState", "capabilities", "eventStream", "requestQueueDepth", "protocol",
+  ])
+  assertEquals(parseHostMessage({
+    type: "snapshot",
+    snapshot: { connected: false, connectionState: "connecting", sessions: [], agents: [], models: [], health: summary },
+  })?.type, "snapshot")
 })
 
 Deno.test("session traces are bounded and reject sensitive event categories", () => {

@@ -1,3 +1,5 @@
+import type { WorkbenchHealthSummary } from "@opencode-workbench/shared"
+
 export interface HealthSnapshot {
   workbenchVersion: string
   vscodeVersion: string
@@ -14,6 +16,21 @@ export interface HealthSnapshot {
   authorizedRoots: string[]
   ahpVersion?: string
   acpVersion?: string
+}
+
+export function workbenchHealthSummary(snapshot: HealthSnapshot): WorkbenchHealthSummary {
+  return {
+    workbenchVersion: snapshot.workbenchVersion,
+    vscodeVersion: snapshot.vscodeVersion,
+    openCodeVersion: snapshot.openCodeVersion,
+    serverMode: snapshot.serverMode,
+    serverState: snapshot.serverState,
+    pluginState: snapshot.pluginState,
+    capabilities: [...snapshot.capabilities],
+    eventStream: { ...snapshot.eventStream },
+    requestQueueDepth: snapshot.requestQueueDepth,
+    protocol: { ...snapshot.protocol },
+  }
 }
 
 export class HealthService {
