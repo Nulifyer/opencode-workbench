@@ -63,7 +63,9 @@ Deno.test("webview exposes the screen-reader and keyboard interaction contract",
     'focusController.trapTab',
   ]) if (!webview.includes(behavior)) throw new Error(`Missing keyboard or announcement behavior: ${behavior}`)
   if (!sessionList.includes('role="list"') || !sessionList.includes('role="listitem"')) throw new Error("Session hierarchy lacks semantic list roles")
-  if (!webview.includes("Current checkout") || !webview.includes("Model worktree sessions")) throw new Error("Run groups lack the progressive stable-mode worktree hierarchy")
+  if (!inspectorPresentation.includes('workflowSection("jobs", "Current jobs"') || !inspectorPresentation.includes('workflowSection("runs", "Isolated runs"')) {
+    throw new Error("Jobs view lacks the progressive execution hierarchy")
+  }
   if (!css.includes("@media (forced-colors: active)") || !css.includes(".message:focus-within .message-actions")) {
     throw new Error("High-contrast support or keyboard-visible message actions are missing")
   }
@@ -127,7 +129,7 @@ Deno.test("attention and inspector routing preserve focus and actionable context
   if (!chatView.includes('aria-controls="inspector-panel"') || !webview.includes('inspectorPanel.setAttribute("aria-labelledby"') ||
     !webview.includes("const scrollTop = previousTab === inspectorTab") || !webview.includes("focusedKey") ||
     !inspectorPresentation.includes("stop.explanation")) throw new Error("Inspector tabs, scroll/focus retention, or walkthrough explanations are missing")
-  if (!inspectorPresentation.includes('class="run-pending-status" role="status"') || !inspectorPresentation.includes("Worktree unavailable; refresh this run group to recover.") || !webview.includes('class="rail-run-pending"')) {
+  if (!inspectorPresentation.includes('class="run-pending-status" role="status"') || !inspectorPresentation.includes("Worktree unavailable; refresh this run group to recover.")) {
     throw new Error("Pending runs still expose an unusable Open action")
   }
 })
@@ -230,13 +232,10 @@ Deno.test("turn markers provide a usable pointer target", () => {
     !turnNavigationView.includes('part.tool === "update_goal_checkpoint"')) throw new Error("Fork or goal-checkpoint navigation markers are missing")
 })
 
-Deno.test("session filters keep compact rows in the editor rail", () => {
-  if (!css.includes("grid-template-rows: auto auto auto auto minmax(0, 1fr)")) {
-    throw new Error("Sessions rail does not allocate all five grid rows explicitly")
-  }
-  if (!/\.rail-session-filters\s*\{[^}]*align-content:\s*flex-start;[^}]*align-items:\s*center;/.test(css) ||
-    !/\.rail-session-filters button\s*\{[^}]*flex:\s*none;/.test(css)) {
-    throw new Error("Session filter chips can stretch into full-height rail tiles")
+Deno.test("session rail relies on smart grouping instead of redundant quick filters", () => {
+  if (!css.includes("grid-template-rows: auto auto minmax(0, 1fr)")) throw new Error("Sessions rail rows are not bounded")
+  if (chatView.includes("rail-session-filters") || chatView.includes("Sessions &amp; Jobs")) {
+    throw new Error("Sessions rail still advertises redundant filters or Jobs content")
   }
 })
 
@@ -398,11 +397,14 @@ Deno.test("editor transition closes the originating sidebar and modernizes the W
 
 Deno.test("Task Workbench tabs explain their purpose and Health uses the available pane height", () => {
   for (const marker of [
-    'class="inspector-tab-info"',
     'aria-description="${tab.description}"',
     "Plans appear after Plan Task creates a reviewable document",
     "Goals start with a /goal command or plan handoff",
   ]) if (!chatView.includes(marker)) throw new Error(`Task Workbench guidance omits: ${marker}`)
+
+  for (const marker of ["inspector-view-info", "About this view:", "heading.insertAdjacentHTML"]) {
+    if (!(webview + css).includes(marker)) throw new Error(`Active Workbench heading guidance omits: ${marker}`)
+  }
 
   for (const marker of [
     '.inspector-panel[data-tab="health"] { overflow: hidden; }',
@@ -413,6 +415,32 @@ Deno.test("Task Workbench tabs explain their purpose and Health uses the availab
 
   if (/\.health-event-list\s*\{[^}]*max-height:/.test(css)) {
     throw new Error("Recent sanitized events still has an arbitrary maximum height")
+  }
+})
+
+Deno.test("chat chrome prioritizes useful actions, health, sessions, and bounded navigation", () => {
+  const headerStart = chatView.indexOf('<div class="header-actions">')
+  const headerEnd = chatView.indexOf("</div>", headerStart)
+  const header = chatView.slice(headerStart, headerEnd)
+  const ordered = ["attention-toggle", "create-header", "inspector-toggle", "rail-toggle", "surface-toggle", "help-toggle", "session-menu-toggle"]
+  for (let index = 1; index < ordered.length; index += 1) {
+    if (header.indexOf(ordered[index - 1]!) >= header.indexOf(ordered[index]!)) throw new Error(`Header action order is not intentional at ${ordered[index]}`)
+  }
+  if (chatView.includes(">Open walkthrough<") || chatView.includes(">Check OpenCode health<")) throw new Error("Empty state still duplicates walkthrough or health navigation")
+  for (const marker of ["healthWorkspaceDetail()", "workspace-health-dot", "OpenCode health", "session-change-summary", "data-session-changes-review"]) {
+    if (!(webview + css + chatView).includes(marker)) throw new Error(`Chat chrome omits ${marker}`)
+  }
+  if (!turnNavigationView.includes("MAX_TURN_NAVIGATION_MARKERS = 20") || !css.includes("justify-content: space-evenly")) {
+    throw new Error("Long transcript navigation is not bounded to the viewport")
+  }
+})
+
+Deno.test("edited files offer a VS Code highlighted diff and theme-native inline rows", () => {
+  for (const marker of ["data-open-patch", 'type: "openPatch"', "diff-line-number", "vscode-diffEditor-insertedLineBackground", "vscode-diffEditor-removedLineBackground"]) {
+    if (!(webview + css).includes(marker)) throw new Error(`Diff review omits ${marker}`)
+  }
+  if (!inspectorPresentation.includes("data-inspector-patch") || !inspectorPresentation.includes("Highlighted diff")) {
+    throw new Error("Changes view does not expose the highlighted diff action")
   }
 })
 
@@ -614,7 +642,7 @@ Deno.test("edited filenames open files without toggling patch details", () => {
 
 Deno.test("expanded edited files do not repeat filename and stats", () => {
   if (!webview.includes('class="code-block diff-block edit-patch-block"') ||
-    !webview.includes("editPatchBlock(entry.patch)") ||
+    !webview.includes("editPatchBlock(entry.patch, entry.file)") ||
     !css.includes(".edit-patch-block > .copy-block { position: absolute") ||
     webview.includes("diffBlock(entry.file, entry.patch, entry.additions, entry.deletions)")) {
     throw new Error("Expanded patch details still repeat the edited-file row header")

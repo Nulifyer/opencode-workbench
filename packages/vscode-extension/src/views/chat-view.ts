@@ -446,11 +446,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       <span id="connection" class="connection offline" role="status" tabindex="-1" hidden>Offline</span>
       <div class="header-actions">
         <button id="attention-toggle" class="icon-action attention-toggle" type="button" title="Needs Attention" aria-label="Needs Attention" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">!</span><small id="attention-count" hidden></small></button>
-        <button id="inspector-toggle" class="icon-action" type="button" title="Toggle OpenCode inspector" aria-label="Toggle OpenCode inspector" aria-expanded="false"><span aria-hidden="true">ⓘ</span></button>
         <button id="create-header" class="icon-action" type="button" title="New session" aria-label="New session">${ICONS.add}</button>
+        <button id="inspector-toggle" class="icon-action" type="button" title="Toggle Task Workbench" aria-label="Toggle Task Workbench" aria-expanded="false"><span aria-hidden="true">ⓘ</span></button>
+        <button id="rail-toggle" class="icon-action" type="button" title="Toggle sessions" aria-label="Toggle sessions" aria-expanded="${mode === "editor"}">${ICONS.rail}</button>
         <button id="surface-toggle" class="icon-action" type="button" title="${mode === "sidebar" ? "Switch chat to editor" : "Switch chat to sidebar"}" aria-label="${mode === "sidebar" ? "Switch chat to editor" : "Switch chat to sidebar"}">${ICONS.editor}</button>
         <button id="help-toggle" class="icon-action" type="button" title="Keyboard help" aria-label="Keyboard help" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">?</span></button>
-        <button id="rail-toggle" class="icon-action" type="button" title="Toggle sessions" aria-label="Toggle sessions" aria-expanded="${mode === "editor"}">${ICONS.rail}</button>
         <button id="session-menu-toggle" class="icon-action" type="button" title="Session actions" aria-label="Session actions" aria-haspopup="menu" aria-expanded="false">${ICONS.more}</button>
       </div>
     </header>
@@ -538,7 +538,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <div class="overlay-heading"><strong id="keyboard-help-title">OpenCode Workbench keyboard help</strong><button type="button" class="text-action" data-close-keyboard-help>Close</button></div>
         <p class="keyboard-help-note">Shortcuts are user-configurable in VS Code. These are the extension defaults.</p>
         <dl class="inspector-metrics keyboard-help-list"><dt>Default: Ctrl/Cmd+Shift+O</dt><dd>Open Task Workbench</dd><dt>Default: Ctrl/Cmd+L</dt><dd>Focus composer</dd><dt>Escape</dt><dd>Stop active OpenCode work when the Workbench is focused</dd><dt>Arrow keys</dt><dd>Navigate menus, tabs, session lists, and splitters</dd><dt>Shift+F10</dt><dd>Open the selected session context menu</dd><dt>Home / End</dt><dd>Resize a focused pane to its minimum or maximum</dd></dl>
-        <div class="inspector-actions"><button type="button" data-open-full-help>Open Getting Started walkthrough</button></div>
       </section>
     </div>
 
@@ -554,6 +553,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <button id="history-load-older" type="button">Load older messages</button>
         </section>
         <main id="messages" role="log" aria-label="OpenCode conversation"></main>
+        <section id="session-change-summary" class="session-change-summary" aria-label="Session changes" hidden></section>
         <button id="jump-latest" class="jump-latest" type="button" hidden>↓ Latest <span id="jump-latest-count"></span></button>
         <div id="session-loading" class="session-loading" role="status" aria-live="polite" hidden><span class="session-loading-indicator" aria-hidden="true"></span><span>Loading session…</span></div>
         <div id="announcer" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
@@ -569,8 +569,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <div class="empty-actions">
             <button id="plan-task" class="primary-action" type="button">Plan a task first</button>
             <button id="create-empty" type="button">New session</button>
-            <button type="button" data-empty-command="help">Open walkthrough</button>
-            <button type="button" data-empty-command="health">Check OpenCode health</button>
           </div>
         </section>
 
@@ -627,27 +625,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       <aside id="inspector" class="inspector" aria-label="OpenCode inspector" hidden>
         <div class="inspector-header"><strong>Task Workbench</strong><button id="inspector-close" class="icon-action" type="button" aria-label="Close task workbench">${ICONS.close}</button></div>
         <div id="inspector-tabs" class="inspector-tabs" role="tablist" aria-label="Inspector sections">
-          ${INSPECTOR_TAB_GROUPS.map((group, groupIndex) => `<div class="inspector-tab-group" role="presentation"><span class="inspector-tab-group-label" aria-hidden="true">${group.label}</span>${group.tabs.map((tab, tabIndex) => `<button id="inspector-tab-${tab.id}" type="button" role="tab" data-inspector-tab="${tab.id}" aria-controls="inspector-panel" aria-selected="${groupIndex === 0 && tabIndex === 0}" aria-description="${tab.description}" title="${tab.description}" tabindex="${groupIndex === 0 && tabIndex === 0 ? 0 : -1}"><span>${tab.label}</span><span class="inspector-tab-info" title="${tab.description}" aria-hidden="true">i</span></button>`).join("")}</div>`).join("")}
+          ${INSPECTOR_TAB_GROUPS.map((group, groupIndex) => `<div class="inspector-tab-group" role="presentation"><span class="inspector-tab-group-label" aria-hidden="true">${group.label}</span>${group.tabs.map((tab, tabIndex) => `<button id="inspector-tab-${tab.id}" type="button" role="tab" data-inspector-tab="${tab.id}" aria-controls="inspector-panel" aria-selected="${groupIndex === 0 && tabIndex === 0}" aria-description="${tab.description}" title="${tab.description}" tabindex="${groupIndex === 0 && tabIndex === 0 ? 0 : -1}"><span>${tab.label}</span></button>`).join("")}</div>`).join("")}
         </div>
         <section id="inspector-panel" class="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-activity" tabindex="0"></section>
       </aside>
 
-      <div id="sessions-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize sessions and jobs" aria-valuemin="280" aria-valuemax="520" aria-valuenow="320" tabindex="0"></div>
+      <div id="sessions-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize sessions" aria-valuemin="280" aria-valuemax="520" aria-valuenow="320" tabindex="0"></div>
 
-      <aside id="right-rail" class="right-rail editor-only" aria-label="OpenCode sessions and jobs">
+      <aside id="right-rail" class="right-rail editor-only" aria-label="OpenCode sessions">
         <div class="rail-header sidebar-only"><strong>Sessions</strong><button id="rail-close" class="icon-action" type="button" title="Close sessions" aria-label="Close sessions">${ICONS.close}</button></div>
         <div id="rail-sessions" class="rail-panel">
-          <div id="rail-run-groups" class="rail-run-groups" hidden></div>
-          <div class="rail-heading"><strong>Sessions &amp; Jobs</strong><span id="rail-session-count">0</span></div>
+          <div class="rail-heading"><strong>Sessions</strong><span id="rail-session-count">0</span></div>
           <label class="rail-session-search"><span class="visually-hidden">Search sessions</span><input id="rail-session-search" type="search" placeholder="Search sessions" autocomplete="off"></label>
-          <div id="rail-session-filters" class="rail-session-filters" aria-label="Filter sessions">
-            <button type="button" data-session-filter="needs-input" aria-pressed="false">Needs input</button>
-            <button type="button" data-session-filter="working" aria-pressed="false">Working</button>
-            <button type="button" data-session-filter="completed" aria-pressed="false" title="Idle sessions with unread completed output">Unread completed</button>
-            <button type="button" data-session-filter="archived" aria-pressed="false">Show archived</button>
-            <button type="button" data-session-filter="shared" aria-pressed="false">Shared</button>
-            <button type="button" data-session-filter="changed" aria-pressed="false">Changed</button>
-          </div>
           <div id="rail-session-list"></div>
         </div>
       </aside>

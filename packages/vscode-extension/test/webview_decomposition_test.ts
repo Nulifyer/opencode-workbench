@@ -5,7 +5,7 @@ import { composerSubmitIntent } from "../src/webview/views/composer.ts"
 import { deliveryLabel, queueProjection } from "../src/webview/views/queue.ts"
 import { sessionListMarkup } from "../src/webview/views/session-list.ts"
 import { historyPresentation, mergeHistoryPage } from "../src/webview/views/history.ts"
-import { turnNavigationMarkers } from "../src/webview/views/turn-navigation.ts"
+import { MAX_TURN_NAVIGATION_MARKERS, turnNavigationMarkers } from "../src/webview/views/turn-navigation.ts"
 import { parseWithProtocolV1Adapter } from "../src/webview/transport/protocol-v1-adapter.ts"
 import { FocusController } from "../src/webview/controllers/focus-controller.ts"
 
@@ -67,6 +67,18 @@ Deno.test("turn navigation derives truthful fork and completed goal-checkpoint m
   assertEquals(markers[0]?.target, "message:prompt")
   assertEquals(markers[1]?.current, true)
   assertEquals(markers[2]?.label, "Goal checkpoint recorded")
+})
+
+Deno.test("turn navigation bounds long histories while retaining the current turn", () => {
+  const messages = Array.from({ length: 200 }, (_, index) => ({
+    info: { id: `prompt-${index}`, sessionID: "long", role: "user" as const },
+    parts: [{ id: `text-${index}`, sessionID: "long", messageID: `prompt-${index}`, type: "text", text: `Prompt ${index}` }],
+  }))
+  const session = { id: "long", title: "Long", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const, messages, messageRevisions: {} }
+  const markers = turnNavigationMarkers(session)
+  assertEquals(markers.length, MAX_TURN_NAVIGATION_MARKERS)
+  assertEquals(markers.at(-1)?.id, "message:prompt-199")
+  assertEquals(markers.at(-1)?.current, true)
 })
 
 Deno.test("modal focus trapping recovers when focus starts outside the overlay", () => {

@@ -10,6 +10,26 @@ export interface TurnNavigationMarker {
   current?: boolean
 }
 
+export const MAX_TURN_NAVIGATION_MARKERS = 20
+
+/** Keeps long transcripts navigable without allowing the marker rail to grow past the viewport. */
+export function boundedTurnNavigationMarkers(markers: readonly TurnNavigationMarker[], limit = MAX_TURN_NAVIGATION_MARKERS): TurnNavigationMarker[] {
+  const boundedLimit = Math.max(2, Math.floor(limit))
+  if (markers.length <= boundedLimit) return [...markers]
+  const current = markers.findIndex((marker) => marker.current)
+  const priority = [0, markers.length - 1, current, ...markers.flatMap((marker, index) => !marker.id.startsWith("message:") ? [index] : [])].filter((index) => index >= 0)
+  const chosen = new Set(priority.slice(0, boundedLimit))
+  const remaining = boundedLimit - chosen.size
+  if (remaining > 0) {
+    const candidates = markers.map((_, index) => index).filter((index) => !chosen.has(index))
+    for (let slot = 0; slot < remaining && candidates.length; slot += 1) {
+      const candidateIndex = Math.min(candidates.length - 1, Math.floor(((slot + 0.5) * candidates.length) / remaining))
+      chosen.add(candidates[candidateIndex]!)
+    }
+  }
+  return [...chosen].sort((left, right) => left - right).map((index) => markers[index]!)
+}
+
 export function turnNavigationMarkers(session: SessionSnapshot): TurnNavigationMarker[] {
   const markers: TurnNavigationMarker[] = []
   const firstMessage = session.messages[0]
@@ -53,5 +73,5 @@ export function turnNavigationMarkers(session: SessionSnapshot): TurnNavigationM
     target: `question:${question.id}`,
     label: `Question: ${question.questions[0]?.header ?? "OpenCode input"}`,
   })
-  return markers
+  return boundedTurnNavigationMarkers(markers)
 }

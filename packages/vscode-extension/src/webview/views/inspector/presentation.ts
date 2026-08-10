@@ -282,7 +282,7 @@ function activityMarkup(session: NonNullable<ChatSnapshot["session"]>): string {
 function changesMarkup(session: NonNullable<ChatSnapshot["session"]>): string {
   const changes = session.changes ?? []
   return `<h2>Changes</h2>${changes.length
-    ? `<ul class="inspector-list">${changes.map((change) => `<li><button type="button" data-inspector-key="file:${escapeHtml(change.file)}" data-inspector-file="${escapeHtml(change.file)}">${escapeHtml(change.file)}</button><small>+${change.additions} −${change.deletions}${change.status ? ` · ${escapeHtml(change.status)}` : ""}</small></li>`).join("")}</ul>`
+    ? `<ul class="inspector-list change-list">${changes.map((change) => `<li><strong>${escapeHtml(change.file)}</strong><small>+${change.additions} −${change.deletions}${change.status ? ` · ${escapeHtml(change.status)}` : ""}</small><div class="inspector-actions"><button type="button" data-inspector-key="file:${escapeHtml(change.file)}" data-inspector-file="${escapeHtml(change.file)}">Open file</button>${change.patch ? `<button type="button" data-inspector-patch="${escapeHtml(change.file)}">Highlighted diff</button>` : ""}</div></li>`).join("")}</ul>`
     : `<p class="placeholder">OpenCode reports that this session has not changed any files. Changes made outside this session are intentionally not attributed to it.</p><div class="inspector-actions"><button type="button" data-workbench-action="refresh-session">Refresh session data</button></div>`}`
 }
 

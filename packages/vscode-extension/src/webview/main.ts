@@ -13,7 +13,7 @@ import { nextMenuIndex, type MenuNavigationKey } from "./controllers/menu-naviga
 import { SplitPaneController } from "./controllers/split-pane-controller.js"
 import { ConversationView } from "./views/conversation.js"
 import { deliveryLabel, queueProjection } from "./views/queue.js"
-import { SESSION_COMPLETED_ICON, sessionListMarkup, sessionStatusLabel, type SessionListState } from "./views/session-list.js"
+import { SESSION_COMPLETED_ICON, sessionListMarkup, sessionStatusLabel } from "./views/session-list.js"
 import { InspectorShellController } from "./views/inspector/shell.js"
 import { inspectorPresentation, type InspectorTab, type RunComparisonSort, type RunComparisonSortKey } from "./views/inspector/presentation.js"
 import { composerSubmitIntent } from "./views/composer.js"
@@ -26,7 +26,6 @@ interface WebviewState {
   inspectorOpen?: boolean
   inspectorTab?: string
   layout?: { artifactWidth?: number; sessionsWidth?: number; sessionsOpen?: boolean }
-  sessionFilters?: string[]
 }
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void; getState(): WebviewState | undefined; setState(state: WebviewState): void }
@@ -130,11 +129,10 @@ const sessionMenu = element<HTMLElement>("session-menu")
 const sessionMenuSearch = element<HTMLInputElement>("session-menu-search")
 const sessionContextMenu = element<HTMLElement>("session-context-menu")
 const railSessions = element<HTMLElement>("rail-sessions")
-const railRunGroups = element<HTMLElement>("rail-run-groups")
 const railSessionCount = element<HTMLElement>("rail-session-count")
 const railSessionSearch = element<HTMLInputElement>("rail-session-search")
-const railSessionFilters = element<HTMLElement>("rail-session-filters")
 const railSessionList = element<HTMLElement>("rail-session-list")
+const sessionChangeSummary = element<HTMLElement>("session-change-summary")
 const artifactSplitter = element<HTMLElement>("artifact-splitter")
 const sessionsSplitter = element<HTMLElement>("sessions-splitter")
 const store = new WorkbenchWebviewStore()
@@ -142,8 +140,6 @@ let snapshot: ChatSnapshot = store.snapshot
 const storedState = vscode.getState()
 const validInitialWorkbenchControls = new Set(["composer-focus", "sessions-toggle", "sessions-show", "attention-show"])
 const initialWorkbenchControl = validInitialWorkbenchControls.has(document.body.dataset.initialControl ?? "") ? document.body.dataset.initialControl : undefined
-const validSessionFilters = new Set(["needs-input", "working", "completed", "archived", "shared", "changed"])
-const activeSessionFilters = new Set((storedState?.sessionFilters ?? []).filter((value) => validSessionFilters.has(value)))
 let todoExpanded = storedState?.todoExpanded ?? true
 const initialInspectorTab = document.body.dataset.initialTab
 const inspectorShell = new InspectorShellController({
@@ -486,15 +482,32 @@ function diffStats(patch: string): { additions: number; deletions: number } {
 }
 
 function diffMarkup(patch: string): string {
+  let oldLine: number | undefined
+  let newLine: number | undefined
   return patch.split("\n").map((line) => {
     const kind = diffLineKind(line)
-    return `<span class="diff-${kind}">${escapeHtml(line || " ")}</span>`
-  }).join("\n")
+    const hunk = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/.exec(line)
+    if (hunk) {
+      oldLine = Number(hunk[1])
+      newLine = Number(hunk[2])
+    }
+    const oldNumber = kind === "add" || kind === "hunk" || kind === "meta" ? "" : oldLine
+    const newNumber = kind === "remove" || kind === "hunk" || kind === "meta" ? "" : newLine
+    if (kind === "add" && newLine !== undefined) newLine += 1
+    else if (kind === "remove" && oldLine !== undefined) oldLine += 1
+    else if (kind === "context") {
+      if (oldLine !== undefined) oldLine += 1
+      if (newLine !== undefined) newLine += 1
+    }
+    const marker = kind === "add" ? "+" : kind === "remove" ? "−" : " "
+    const code = kind === "add" || kind === "remove" ? line.slice(1) : line
+    return `<span class="diff-line diff-${kind}"><span class="diff-line-number" aria-hidden="true">${oldNumber ?? ""}</span><span class="diff-line-number" aria-hidden="true">${newNumber ?? ""}</span><span class="diff-line-marker" aria-hidden="true">${marker}</span><span class="diff-line-code">${escapeHtml(code || " ")}</span></span>`
+  }).join("")
 }
 
-function editPatchBlock(patch: string): string {
+function editPatchBlock(patch: string, file: string): string {
   const preview = patch.length > 50_000 ? `${patch.slice(0, 50_000)}\n\n[Preview truncated; open the patch for complete output.]` : patch
-  return `<div class="code-block diff-block edit-patch-block"><button type="button" class="copy-block" data-copy-block title="Copy diff" aria-label="Copy diff">${COPY_ICON}</button><pre><code>${diffMarkup(preview)}</code></pre></div>`
+  return `<div class="code-block diff-block edit-patch-block"><button type="button" class="copy-block" data-copy-block title="Copy diff" aria-label="Copy diff">${COPY_ICON}</button><pre><code>${diffMarkup(preview)}</code></pre><div class="edit-patch-actions"><button type="button" data-open-patch="${escapeHtml(file)}">Open highlighted diff in VS Code</button></div></div>`
 }
 
 interface EditEntry {
@@ -522,7 +535,7 @@ function editEntries(part: MessagePart, key: string): EditEntry[] {
 function editEntryHtml(entry: EditEntry): string {
   const stats = `<span class="edit-stats"><b>+${entry.additions}</b> <i>−${entry.deletions}</i></span>`
   const openLabel = `Open ${fileName(entry.file)} in VS Code`
-  return `<details class="edit-entry" data-detail-key="${escapeHtml(entry.key)}"><summary>${EDIT_ICON}<button type="button" class="edit-file" data-file="${escapeHtml(entry.file)}" title="${escapeHtml(openLabel)}" aria-label="${escapeHtml(openLabel)}">${escapeHtml(fileName(entry.file))}</button>${stats}</summary>${entry.patch ? editPatchBlock(entry.patch) : `<p class="placeholder">No patch preview available.</p>`}</details>`
+  return `<details class="edit-entry" data-detail-key="${escapeHtml(entry.key)}"><summary>${EDIT_ICON}<button type="button" class="edit-file" data-file="${escapeHtml(entry.file)}" title="${escapeHtml(openLabel)}" aria-label="${escapeHtml(openLabel)}">${escapeHtml(fileName(entry.file))}</button>${stats}</summary>${entry.patch ? editPatchBlock(entry.patch, entry.file) : `<p class="placeholder">No patch preview available.</p>`}</details>`
 }
 
 function groupedEditsHtml(parts: MessagePart[], key: string, active: boolean): string {
@@ -754,7 +767,9 @@ function userHtml(message: MessageBundle): string {
     const display = attachmentDisplay(filename)
     const preview = display.label ? previews.find((item) => item.label === display.label) : undefined
     const thumbnail = preview?.thumbnail ? `<button type="button" class="transcript-attachment-thumbnail" data-transcript-preview="${escapeHtml(display.label!)}" aria-label="Preview ${escapeHtml(display.name)}"><img src="${preview.thumbnail}" alt=""></button>` : FILE_ICON
-    return `<span class="attachment-chip transcript-attachment" title="${escapeHtml(typeof part.mime === "string" ? part.mime : "Attachment")}">${thumbnail}<span>${escapeHtml(display.name)}</span></span>`
+    const mime = typeof part.mime === "string" ? part.mime : "Attachment"
+    const previewState = preview?.thumbnail ? "Click the thumbnail to preview" : mime.startsWith("image/") ? "Preview unavailable after reload" : "Attachment metadata"
+    return `<span class="attachment-chip transcript-attachment" title="${escapeHtml(`${mime} · ${previewState}`)}">${thumbnail}<span><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.label ?? mime)}</small></span></span>`
   }).join("")
   const timestamp = message.info.time?.created ? new Date(message.info.time.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
   const receipt = snapshot.session?.contextReceipts?.find((candidate) => candidate.promptID === message.info.id)
@@ -792,6 +807,19 @@ function renderTurnNavigation(session?: NonNullable<ChatSnapshot["session"]>): v
   const markers = turnNavigationMarkers(session)
   turnNavigation.hidden = markers.length < 2
   turnNavigation.innerHTML = markers.map((marker, index) => `<button type="button" data-marker-target="${escapeHtml(marker.target)}" title="${escapeHtml(marker.label)}" aria-label="${escapeHtml(marker.label)}"${marker.current ? ` aria-current="true"` : ""} tabindex="${index === markers.length - 1 ? 0 : -1}"></button>`).join("")
+}
+
+function renderSessionChangeSummary(session?: NonNullable<ChatSnapshot["session"]>, active = false): void {
+  const changes = session?.changes ?? []
+  const visible = Boolean(session && session.messages.length && changes.length && !active)
+  sessionChangeSummary.hidden = !visible
+  if (!visible) {
+    sessionChangeSummary.replaceChildren()
+    return
+  }
+  const additions = changes.reduce((total, change) => total + change.additions, 0)
+  const deletions = changes.reduce((total, change) => total + change.deletions, 0)
+  sessionChangeSummary.innerHTML = `<div class="session-change-heading"><span class="session-change-icon" aria-hidden="true">${EDIT_ICON}</span><div><strong>Edited ${changes.length} file${changes.length === 1 ? "" : "s"}</strong><small><b>+${additions}</b> <i>−${deletions}</i></small></div><button type="button" data-session-changes-review>Review</button></div><ul>${changes.slice(0, 8).map((change) => `<li><button type="button" data-file="${escapeHtml(change.file)}">${escapeHtml(change.file)}</button><span><b>+${change.additions}</b> <i>−${change.deletions}</i></span></li>`).join("")}</ul>${changes.length > 8 ? `<small class="session-change-more">${changes.length - 8} more files in Changes</small>` : ""}`
 }
 
 function renderHistoryBoundary(session?: NonNullable<ChatSnapshot["session"]>): void {
@@ -955,7 +983,7 @@ function moveModelOptionFocus(key: string): void {
 }
 
 function renderSessionLists(): void {
-  const signature = JSON.stringify([snapshot.sessions, snapshot.runGroups, snapshot.session?.id, historySearch.value, railSessionSearch.value, [...activeSessionFilters].sort()])
+  const signature = JSON.stringify([snapshot.sessions, snapshot.session?.id, historySearch.value, railSessionSearch.value])
   if (signature === sessionListSignature) return
   const focusedSession = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLButtonElement>("[data-session-id]") : undefined
   const focusedList = focusedSession && historyList.contains(focusedSession) ? historyList : focusedSession && railSessionList.contains(focusedSession) ? railSessionList : undefined
@@ -963,25 +991,12 @@ function renderSessionLists(): void {
   sessionListSignature = signature
   historyList.innerHTML = sessionListMarkup(snapshot.sessions, { query: historySearch.value, empty: "No matching sessions.", selectedSessionID: snapshot.session?.id, renderLimit: sessionRenderLimit })
   railSessionCount.textContent = String(snapshot.sessions.length)
-  const states = [...activeSessionFilters].filter((value): value is SessionListState => ["needs-input", "working", "completed"].includes(value))
-  railSessionFilters.querySelectorAll<HTMLButtonElement>("[data-session-filter]").forEach((button) => button.setAttribute("aria-pressed", String(activeSessionFilters.has(button.dataset.sessionFilter ?? ""))))
   railSessionList.innerHTML = sessionListMarkup(snapshot.sessions, {
     query: railSessionSearch.value,
-    empty: railSessionSearch.value || activeSessionFilters.size ? "No matching sessions." : "No sessions yet.",
+    empty: railSessionSearch.value ? "No matching sessions." : "No sessions yet.",
     selectedSessionID: snapshot.session?.id,
     renderLimit: sessionRenderLimit,
-    filters: {
-      states,
-      includeArchived: activeSessionFilters.has("archived"),
-      sharedOnly: activeSessionFilters.has("shared"),
-      changedOnly: activeSessionFilters.has("changed"),
-    },
   })
-  const groups = snapshot.runGroups ?? []
-  railRunGroups.hidden = groups.length === 0
-  railRunGroups.innerHTML = groups.map((group) => `<details class="rail-run-group"><summary>${escapeHtml(group.title)} <small>${group.runs.length} runs</small></summary><ul><li class="rail-run-context"><span>Current checkout</span><small>${escapeHtml(group.repository)} · ${escapeHtml(group.baseRef)}</small></li><li><details open><summary>Model worktree sessions</summary><ul>${group.runs.map((run) => run.session.sessionID === "pending"
-    ? `<li class="rail-run-pending" data-run-id="${escapeHtml(run.id)}"><span>${escapeHtml(run.model)}</span><small>${escapeHtml(run.phase)} · ${run.phase === "failed" ? "Worktree unavailable" : "Preparing worktree…"}</small></li>`
-    : `<li><button type="button" data-run-group="${escapeHtml(group.id)}" data-run-id="${escapeHtml(run.id)}" data-run-action="open"><span>${escapeHtml(run.model)}</span><small>${escapeHtml(run.phase)} · ${escapeHtml(run.session.directory)}</small></button></li>`).join("")}</ul></details></li></ul></details>`).join("")
   if (focusedList && focusedSessionID) {
     const replacement = [...focusedList.querySelectorAll<HTMLButtonElement>("[data-session-id]")].find((button) => button.dataset.sessionId === focusedSessionID)
     if (replacement) {
@@ -1106,6 +1121,26 @@ function workspaceDetail(kind: string, label: string, title: string, content: st
   return `<details class="workspace-detail workspace-${kind}"><summary title="${escapeHtml(tooltip)}">${escapeHtml(label)}</summary><div class="workspace-detail-popover"><strong>${escapeHtml(title)}</strong>${content}</div></details>`
 }
 
+function healthWorkspaceDetail(): string {
+  const health = snapshot.health
+  const healthy = Boolean(snapshot.connected && health?.serverState === "connected" && health.eventStream.state === "connected")
+  const reconnecting = snapshot.connectionState === "reconnecting" || health?.serverState === "starting" || health?.eventStream.state === "reconnecting"
+  const tone = healthy ? "healthy" : reconnecting ? "pending" : "unhealthy"
+  const state = healthy ? "Connected" : reconnecting ? "Reconnecting" : "Needs attention"
+  const tooltip = health
+    ? `${state}\nServer: ${health.serverState}\nEvent stream: ${health.eventStream.state}\nCompanion: ${health.pluginState}\nOpenCode: ${health.openCodeVersion ?? "Unknown"}`
+    : `${state}\nHealth details are not available yet.`
+  const rows = health ? [
+    ["Server", health.serverState],
+    ["Event stream", health.eventStream.state],
+    ["Companion", health.pluginState],
+    ["OpenCode", health.openCodeVersion ?? "Unknown"],
+    ["Request queue", String(health.requestQueueDepth)],
+  ] : [["Status", state]]
+  const content = `<dl class="workspace-context-list">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label!)}</dt><dd>${escapeHtml(value!)}</dd></div>`).join("")}</dl>`
+  return `<details class="workspace-detail workspace-health"><summary title="${escapeHtml(tooltip)}" aria-label="OpenCode health: ${escapeHtml(state)}"><span class="workspace-health-dot ${tone}" aria-hidden="true"></span><span>OpenCode</span></summary><div class="workspace-detail-popover"><strong>OpenCode health</strong>${content}</div></details>`
+}
+
 function contextDetails(context: NonNullable<NonNullable<ChatSnapshot["session"]>["context"]>): string {
   const rows = [
     ["Model", context.model ?? "Unknown"],
@@ -1125,14 +1160,14 @@ function contextDetails(context: NonNullable<NonNullable<ChatSnapshot["session"]
 
 function renderWorkspaceStrip(session?: NonNullable<ChatSnapshot["session"]>): void {
   const runtime = snapshot.runtime
-  const signature = JSON.stringify([runtime?.vcs, runtime?.lsp, runtime?.formatters, runtime?.mcp, session?.context])
+  const signature = JSON.stringify([snapshot.connected, snapshot.connectionState, snapshot.health, runtime?.lsp, runtime?.formatters, runtime?.mcp, session?.context])
   if (signature === workspaceSignature) return
   workspaceSignature = signature
   const lspHealthy = runtime?.lsp.filter((service) => runtimeServicePresentation(service, "lsp").healthy).length ?? 0
   const formatterHealthy = runtime?.formatters.filter((service) => runtimeServicePresentation(service, "formatter").healthy).length ?? 0
   const mcpHealthy = runtime?.mcp.filter((service) => runtimeServicePresentation(service, "mcp").healthy).length ?? 0
   const context = session?.context
-  const left = runtime?.vcs?.branch ? `<span class="branch">${escapeHtml(runtime.vcs.branch)}</span>` : ""
+  const left = healthWorkspaceDetail()
   const lsp = runtime?.lsp ?? []
   const formatters = runtime?.formatters ?? []
   const mcp = runtime?.mcp ?? []
@@ -1902,6 +1937,13 @@ function renderInspector(): void {
   inspectorSignature = presentation.signature
   inspectorPanel.dataset.tab = inspectorTab
   inspectorPanel.innerHTML = presentation.markup
+  const heading = inspectorPanel.querySelector<HTMLHeadingElement>("h2")
+  const selectedTab = tabs.find((tab) => tab.dataset.inspectorTab === inspectorTab)
+  const description = selectedTab?.getAttribute("aria-description") || selectedTab?.title
+  if (heading && description) {
+    heading.classList.add("inspector-view-title")
+    heading.insertAdjacentHTML("beforeend", `<span class="inspector-view-info" role="img" aria-label="About this view: ${escapeHtml(description)}" title="${escapeHtml(description)}">i</span>`)
+  }
   restoreLocalInspectorFilters()
   inspectorPanel.scrollTop = scrollTop
   if (hadFocus) {
@@ -1993,6 +2035,7 @@ function render(): void {
   approvalToggle.title = auto ? "Warning: permission requests are automatically allowed once. Activate to require approval." : "Ask before OpenCode performs permission-gated actions. Activate to auto-allow once."
   if (!session) {
     clearTranscript()
+    renderSessionChangeSummary()
     syncDraft()
     queueSignature = ""
     permissionSignature = ""
@@ -2004,6 +2047,7 @@ function render(): void {
     queueDock.hidden = permissionDock.hidden = questionDock.hidden = goalDock.hidden = todoDock.hidden = true
   } else {
     renderTranscript(session, Boolean(active))
+    renderSessionChangeSummary(session, Boolean(active))
     renderTurnNavigation(session)
     renderHistoryBoundary(session)
     syncDraft(session)
@@ -2465,10 +2509,6 @@ helpToggle.addEventListener("click", () => keyboardHelpController.open(keyboardH
 keyboardHelpOverlay.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target : undefined
   if (target?.closest("[data-close-keyboard-help]")) keyboardHelpController.close()
-  else if (target?.closest("[data-open-full-help]")) {
-    keyboardHelpController.close(false)
-    post({ type: "openHelp" })
-  }
 })
 attentionOverlay.addEventListener("click", (event) => {
   const close = event.target instanceof Element && event.target.closest("[data-close-attention]")
@@ -2695,6 +2735,8 @@ inspectorPanel.addEventListener("click", (event) => {
   }
   const file = target?.closest<HTMLButtonElement>("[data-inspector-file]")?.dataset.inspectorFile
   if (file && snapshot.session) post({ type: "openFile", sessionID: snapshot.session.id, file })
+  const patch = target?.closest<HTMLButtonElement>("[data-inspector-patch]")?.dataset.inspectorPatch
+  if (patch && snapshot.session) post({ type: "openPatch", sessionID: snapshot.session.id, file: patch })
   const walkthrough = target?.closest<HTMLButtonElement>("[data-walkthrough-document][data-walkthrough-stop]")
   if (walkthrough?.dataset.walkthroughDocument && walkthrough.dataset.walkthroughStop) post({ type: "walkthroughAction", documentID: walkthrough.dataset.walkthroughDocument, stopID: walkthrough.dataset.walkthroughStop })
   const run = target?.closest<HTMLButtonElement>("[data-run-action]")
@@ -2794,10 +2836,6 @@ inspectorPanel.addEventListener("submit", (event) => {
     renderInspector()
     inspectorPanel.querySelector<HTMLElement>("[aria-invalid=true]")?.focus()
   }
-})
-railRunGroups.addEventListener("click", (event) => {
-  const run = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-run-action]") : undefined
-  if (run?.dataset.runGroup && run.dataset.runId) post({ type: "runAction", groupID: run.dataset.runGroup, runID: run.dataset.runId, action: "open" })
 })
 turnNavigation.addEventListener("click", (event) => {
   const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-marker-target]") : undefined
@@ -2933,16 +2971,6 @@ sessionMenu.addEventListener("click", (event) => {
 sessionCurrent.addEventListener("click", openHistory)
 historySearch.addEventListener("input", renderSessionLists)
 railSessionSearch.addEventListener("input", renderSessionLists)
-railSessionFilters.addEventListener("click", (event) => {
-  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-session-filter]") : undefined
-  const filter = button?.dataset.sessionFilter
-  if (!filter || !validSessionFilters.has(filter)) return
-  if (activeSessionFilters.has(filter)) activeSessionFilters.delete(filter)
-  else activeSessionFilters.add(filter)
-  sessionListSignature = ""
-  vscode.setState({ ...(vscode.getState() ?? {}), sessionFilters: [...activeSessionFilters] })
-  renderSessionLists()
-})
 for (const [input, list] of [[historySearch, historyList], [railSessionSearch, railSessionList]] as const) {
   input.addEventListener("keydown", (event) => {
     const first = list.querySelector<HTMLButtonElement>("[data-session-id][tabindex='0']") ?? list.querySelector<HTMLButtonElement>("[data-session-id]")
@@ -3191,7 +3219,11 @@ document.addEventListener("click", (event) => {
   if (!button) return
   event.preventDefault()
   event.stopPropagation()
-  const text = button.closest<HTMLElement>(".code-block")?.querySelector("pre")?.textContent
+  const block = button.closest<HTMLElement>(".code-block")
+  const diffLines = [...(block?.querySelectorAll<HTMLElement>(".diff-line") ?? [])]
+  const text = diffLines.length
+    ? diffLines.map((line) => `${line.classList.contains("diff-add") ? "+" : line.classList.contains("diff-remove") ? "-" : ""}${line.querySelector<HTMLElement>(".diff-line-code")?.textContent ?? ""}`).join("\n")
+    : block?.querySelector("pre")?.textContent
   if (text === undefined) return
   post({ type: "copyText", text })
   announce("Copied to clipboard")
@@ -3274,6 +3306,11 @@ messages.addEventListener("click", (event) => {
     post({ type: "openLink", url: anchor.dataset.url })
     return
   }
+  const patch = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-open-patch]") : undefined
+  if (patch?.dataset.openPatch && snapshot.session) {
+    post({ type: "openPatch", sessionID: snapshot.session.id, file: patch.dataset.openPatch })
+    return
+  }
   const file = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-file]") : undefined
   const sessionID = snapshot.session?.id
   if (file?.dataset.file && sessionID) {
@@ -3291,6 +3328,22 @@ messages.addEventListener("click", (event) => {
 })
 jumpLatest.addEventListener("click", () => {
   conversationView.jumpToLatest()
+})
+sessionChangeSummary.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : undefined
+  if (target?.closest("[data-session-changes-review]")) {
+    inspectorOpen = true
+    inspectorTab = "changes"
+    inspectorShell.open = true
+    inspectorShell.select("changes")
+    inspectorSignature = ""
+    persistInspector()
+    renderInspector()
+    inspectorPanel.focus()
+    return
+  }
+  const file = target?.closest<HTMLButtonElement>("[data-file]")?.dataset.file
+  if (file && snapshot.session) post({ type: "openFile", sessionID: snapshot.session.id, file })
 })
 messages.addEventListener("scroll", () => {
   conversationView.handleScroll()
