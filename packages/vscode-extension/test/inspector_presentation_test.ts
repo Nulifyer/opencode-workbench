@@ -90,6 +90,34 @@ Deno.test("inspector presentation covers activity, changes, context, goal, and e
   assert(goal.signature !== context.signature)
 })
 
+Deno.test("health presentation keeps the complete bounded trace and groups its four actions", () => {
+  const value = snapshot()
+  value.health = {
+    workbenchVersion: "0.4.7",
+    vscodeVersion: "1.100.0",
+    openCodeVersion: "1.18.15",
+    serverMode: "managed",
+    serverState: "connected",
+    pluginState: "available",
+    capabilities: [],
+    eventStream: { state: "connected", lastEventAt: 20, reconnectCount: 0 },
+    requestQueueDepth: 0,
+    protocol: { version: 1 },
+  }
+  value.trace = Array.from({ length: 20 }, (_, index) => ({
+    timestamp: index + 1,
+    type: `event-${index + 1}`,
+  }))
+
+  const markup = inspectorPresentation(value, "health", (timestamp) => `T${timestamp}`).markup
+  assertStringIncludes(markup, 'role="group" aria-label="Health actions"')
+  assertStringIncludes(markup, "<span>20</span>")
+  assertStringIncludes(markup, "event-20")
+  assertStringIncludes(markup, "event-1")
+  assert(markup.indexOf("event-20") < markup.indexOf("event-1"))
+  assertEquals((markup.match(/data-health-action=/g) ?? []).length, 4)
+})
+
 Deno.test("inspector run presentation exposes only actions valid for pending, retained, and discarded runs", () => {
   const value = snapshot()
   value.runGroups = [{

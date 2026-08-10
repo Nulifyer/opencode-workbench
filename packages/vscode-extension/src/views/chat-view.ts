@@ -58,24 +58,24 @@ const ICONS = {
   back: icon("m9.8 3.2 1 1L7 8l3.8 3.8-1 1L5 8l4.8-4.8Z"),
 }
 
-const INSPECTOR_TAB_GROUPS: ReadonlyArray<{ label: string; tabs: ReadonlyArray<{ id: WorkbenchInspectorTab; label: string }> }> = [
+const INSPECTOR_TAB_GROUPS: ReadonlyArray<{ label: string; tabs: ReadonlyArray<{ id: WorkbenchInspectorTab; label: string; description: string }> }> = [
   { label: "Task", tabs: [
-    { id: "activity", label: "Activity" },
-    { id: "plan", label: "Plan" },
-    { id: "goal", label: "Goal" },
-    { id: "context", label: "Context" },
+    { id: "activity", label: "Activity", description: "Current session status, queued prompts, permissions, questions, and todos." },
+    { id: "plan", label: "Plan", description: "Planning documents to review, approve, and hand off before implementation. A plan does not keep OpenCode running automatically." },
+    { id: "goal", label: "Goal", description: "A persistent objective with acceptance criteria, execution limits, and optional verification that can keep OpenCode working across turns." },
+    { id: "context", label: "Context", description: "Actual token usage, context limits, and the exact files, selections, or captures admitted with prompts." },
   ] },
   { label: "Artifacts", tabs: [
-    { id: "changes", label: "Changes" },
-    { id: "review", label: "Review" },
-    { id: "evidence", label: "Evidence" },
-    { id: "walkthrough", label: "Walkthrough" },
+    { id: "changes", label: "Changes", description: "Files and line counts currently reported as changed by the selected OpenCode session." },
+    { id: "review", label: "Review", description: "Saved review findings tied to an exact captured diff, with severity and disposition controls." },
+    { id: "evidence", label: "Evidence", description: "Deterministic test, task, diagnostic, and diff observations captured for this session." },
+    { id: "walkthrough", label: "Walkthrough", description: "A guided explanation of a completed change set, anchored to exact files and diff locations." },
   ] },
   { label: "Execution", tabs: [
-    { id: "jobs", label: "Jobs" },
-    { id: "runs", label: "Runs" },
-    { id: "lineage", label: "Lineage" },
-    { id: "health", label: "Health" },
+    { id: "jobs", label: "Jobs", description: "Delegated OpenCode sessions, isolated runs, worktrees, and native terminal jobs grouped by state." },
+    { id: "runs", label: "Runs", description: "Isolated or multi-model run groups with objective comparison, diff, review, keep, discard, and fusion actions." },
+    { id: "lineage", label: "Lineage", description: "The parent and child ancestry of OpenCode sessions, annotated with related runs and worktrees." },
+    { id: "health", label: "Health", description: "OpenCode connection, companion status, request queue, and sanitized Workbench protocol events." },
   ] },
 ]
 
@@ -632,7 +632,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       <aside id="inspector" class="inspector" aria-label="OpenCode inspector" hidden>
         <div class="inspector-header"><strong>Task Workbench</strong><button id="inspector-close" class="icon-action" type="button" aria-label="Close task workbench">${ICONS.close}</button></div>
         <div id="inspector-tabs" class="inspector-tabs" role="tablist" aria-label="Inspector sections">
-          ${INSPECTOR_TAB_GROUPS.map((group, groupIndex) => `<div class="inspector-tab-group" role="presentation"><span class="inspector-tab-group-label" aria-hidden="true">${group.label}</span>${group.tabs.map((tab, tabIndex) => `<button id="inspector-tab-${tab.id}" type="button" role="tab" data-inspector-tab="${tab.id}" aria-controls="inspector-panel" aria-selected="${groupIndex === 0 && tabIndex === 0}" tabindex="${groupIndex === 0 && tabIndex === 0 ? 0 : -1}">${tab.label}</button>`).join("")}</div>`).join("")}
+          ${INSPECTOR_TAB_GROUPS.map((group, groupIndex) => `<div class="inspector-tab-group" role="presentation"><span class="inspector-tab-group-label" aria-hidden="true">${group.label}</span>${group.tabs.map((tab, tabIndex) => `<button id="inspector-tab-${tab.id}" type="button" role="tab" data-inspector-tab="${tab.id}" aria-controls="inspector-panel" aria-selected="${groupIndex === 0 && tabIndex === 0}" aria-description="${tab.description}" title="${tab.description}" tabindex="${groupIndex === 0 && tabIndex === 0 ? 0 : -1}"><span>${tab.label}</span><span class="inspector-tab-info" title="${tab.description}" aria-hidden="true">i</span></button>`).join("")}</div>`).join("")}
         </div>
         <section id="inspector-panel" class="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-activity" tabindex="0"></section>
       </aside>

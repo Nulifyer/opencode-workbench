@@ -396,7 +396,9 @@ body[data-mode="editor"] .inspector:not([hidden]), body[data-mode="sidebar"] .in
 .inspector-tabs { min-height: 0; display: flex; flex-direction: column; align-items: stretch; gap: 8px; overflow: auto; padding: 9px 5px; border-right: 1px solid color-mix(in srgb, var(--vscode-widget-border) 72%, transparent); background: color-mix(in srgb, var(--vscode-sideBar-background) 94%, var(--vscode-editorWidget-background)); }
 .inspector-tab-group { display: grid; gap: 1px; }
 .inspector-tab-group-label { padding: 2px 7px 3px; color: var(--vscode-descriptionForeground); font-size: 9px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; opacity: .78; }
-.inspector-tabs button { width: 100%; min-height: 28px; flex: none; padding: 4px 7px; border: 0; border-left: 2px solid transparent; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; text-align: left; white-space: nowrap; }
+.inspector-tabs button { width: 100%; min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 6px; flex: none; padding: 4px 7px; border: 0; border-left: 2px solid transparent; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; text-align: left; white-space: nowrap; }
+.inspector-tab-info { width: 15px; height: 15px; display: inline-grid; flex: none; place-items: center; border: 1px solid currentColor; border-radius: 50%; font-family: var(--vscode-font-family); font-size: 9px; font-weight: 700; line-height: 1; opacity: .62; }
+.inspector-tabs button:hover .inspector-tab-info, .inspector-tabs button:focus-visible .inspector-tab-info, .inspector-tabs button[aria-selected="true"] .inspector-tab-info { opacity: .9; }
 .inspector-tabs button:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
 .inspector-tabs button[aria-selected="true"] { color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); border-left-color: var(--vscode-focusBorder); background: var(--vscode-list-activeSelectionBackground); }
 .inspector-panel { min-height: 0; height: auto; padding: 14px 16px 20px; overflow: auto; background: var(--vscode-sideBar-background); scrollbar-gutter: stable; }
@@ -493,7 +495,12 @@ body[data-progress-motion="static"] .header-active-indicator::before, body[data-
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 18px; }
 .section-heading h3 { margin: 0; }
 .section-heading > span, .count-badge { min-width: 20px; padding: 1px 6px; border-radius: 9px; color: var(--vscode-badge-foreground, var(--vscode-foreground)); background: var(--vscode-badge-background, var(--vscode-toolbar-hoverBackground)); font-size: 10px; text-align: center; }
-.health-event-list { max-height: min(42vh, 360px); margin-top: 8px; overflow-y: auto; padding-right: 2px; }
+.inspector-panel[data-tab="health"] { overflow: hidden; }
+.inspector-view-health { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.health-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.health-actions button { width: 100%; }
+.trace-section { min-height: 0; display: flex; flex: 1; flex-direction: column; overflow: hidden; }
+.health-event-list { min-height: 0; flex: 1; margin-top: 8px; overflow-y: auto; padding-right: 2px; }
 .health-event-list > li { display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: start; gap: 9px; padding: 7px 8px; border: 0; border-radius: 4px; background: transparent; }
 .health-event-list > li:hover { border: 0; background: var(--vscode-list-hoverBackground); }
 .health-event-list .event-indicator { width: 6px; height: 6px; margin-top: 5px; opacity: .65; }

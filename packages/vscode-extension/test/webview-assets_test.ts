@@ -396,6 +396,26 @@ Deno.test("editor transition closes the originating sidebar and modernizes the W
   }
 })
 
+Deno.test("Task Workbench tabs explain their purpose and Health uses the available pane height", () => {
+  for (const marker of [
+    'class="inspector-tab-info"',
+    'aria-description="${tab.description}"',
+    "A plan does not keep OpenCode running automatically.",
+    "can keep OpenCode working across turns.",
+  ]) if (!chatView.includes(marker)) throw new Error(`Task Workbench guidance omits: ${marker}`)
+
+  for (const marker of [
+    '.inspector-panel[data-tab="health"] { overflow: hidden; }',
+    ".inspector-view-health { height: 100%;",
+    ".health-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }",
+    ".health-event-list { min-height: 0; flex: 1;",
+  ]) if (!css.includes(marker)) throw new Error(`Health pane layout omits: ${marker}`)
+
+  if (/\.health-event-list\s*\{[^}]*max-height:/.test(css)) {
+    throw new Error("Recent sanitized events still has an arbitrary maximum height")
+  }
+})
+
 Deno.test("permission Allow menu uses a centered down-chevron icon", () => {
   if (!webview.includes("${CHEVRON_DOWN_ICON}</summary>") || webview.includes(">⌄</summary>")) {
     throw new Error("Permission Allow menu still uses a text arrow")
