@@ -69,6 +69,7 @@ export interface ComposerPreferences {
 }
 
 const RECOVERY_DUPLICATE_WINDOW_MS = 30_000
+const DEFAULT_SESSION_TITLE = /^New session(?: - \d{4}-\d{2}-\d{2}T[^\s]+)?$/i
 
 export type ControllerUpdate = import("./application/session-repository.js").SessionRepositoryUpdate
 
@@ -80,6 +81,18 @@ function record(value: unknown): value is JsonRecord {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function automaticSessionTitle(session: WorkbenchState["sessions"][string]): string | undefined {
+  if (session.info.parentID || !DEFAULT_SESSION_TITLE.test(session.info.title.trim())) return undefined
+  const text = session.messages
+    .find((entry) => entry.info.role === "user")
+    ?.parts.find((part) => part.type === "text" && !part.synthetic)?.text
+  if (!text) return undefined
+  const normalized = text.replace(/\s+/g, " ").trim().replace(/^\/goal\s+/i, "Goal: ")
+  if (!normalized) return undefined
+  const clipped = normalized.length <= 80 ? normalized : `${normalized.slice(0, 77).replace(/\s+\S*$/, "").trimEnd() || normalized.slice(0, 77)}…`
+  return /^[a-z]/.test(clipped) ? clipped[0]!.toUpperCase() + clipped.slice(1) : clipped
 }
 
 function sessionTokenTotal(tokens: SessionInfo["tokens"]): number | undefined {
@@ -208,6 +221,7 @@ export class SessionController {
   private readonly todoGenerations = new Map<string, number>()
   private readonly changeGenerations = new Map<string, number>()
   private readonly changeRevisions = new Map<string, number>()
+  private readonly automaticTitleAttempts = new Set<string>()
   private selectionIntent = 0
   private readonly catalogService: CatalogService
   private restoreSelectionID?: string
@@ -373,13 +387,28 @@ export class SessionController {
     this.repository.dispatch(action)
   }
 
-  private scheduleSessionListRefresh(): void {
+  private scheduleSessionListRefresh(sessionID?: string): void {
     if (this.disposed) return
     if (this.sessionListRefreshTimer) clearTimeout(this.sessionListRefreshTimer)
     this.sessionListRefreshTimer = setTimeout(() => {
       this.sessionListRefreshTimer = undefined
-      void this.reconcile().catch((error) => this.callbacks.error(`Could not refresh OpenCode session metadata: ${message(error)}`))
-    }, 120)
+      void this.reconcile()
+        .then(() => sessionID ? this.ensureAutomaticTitle(sessionID) : undefined)
+        .catch((error) => this.callbacks.error(`Could not refresh OpenCode session metadata: ${message(error)}`))
+    }, 400)
+  }
+
+  private async ensureAutomaticTitle(sessionID: string): Promise<void> {
+    if (this.disposed || this.automaticTitleAttempts.has(sessionID)) return
+    const session = this.state.sessions[sessionID]
+    if (!session || session.status.type === "busy" || session.status.type === "retry") return
+    const title = automaticSessionTitle(session)
+    if (!title) return
+    this.automaticTitleAttempts.add(sessionID)
+    const info = await this.client.renameSession(sessionID, title)
+    if (this.disposed || !Object.hasOwn(this.state.sessions, sessionID)) return
+    this.sessionRevision += 1
+    this.dispatch({ type: "event", event: { type: "session.updated", properties: { info } } })
   }
 
   private async readRuntime(): Promise<RuntimeStatus> {
@@ -993,6 +1022,16 @@ export class SessionController {
     await this.selectKnown(this.recoveryPresentation().representative.get(sessionID) ?? sessionID)
   }
 
+  async refreshSessionData(sessionID: string): Promise<void> {
+    this.requireSession(sessionID)
+    await Promise.allSettled([
+      this.loadTranscript(sessionID, false),
+      this.loadTodos(sessionID),
+      this.loadChanges(sessionID),
+    ])
+    await this.loadDelegationTranscripts(sessionID)
+  }
+
   private async selectKnown(sessionID: string): Promise<void> {
     this.dispatch({ type: "select", sessionID })
     this.callbacks.selectionChanged?.(sessionID)
@@ -1291,6 +1330,7 @@ export class SessionController {
     this.todoGenerations.delete(sessionID)
     this.changeRevisions.delete(sessionID)
     this.changeGenerations.delete(sessionID)
+    this.automaticTitleAttempts.delete(sessionID)
     const refreshTimer = this.transcriptRefreshTimers.get(sessionID)
     if (refreshTimer) clearTimeout(refreshTimer)
     this.transcriptRefreshTimers.delete(sessionID)
@@ -1874,7 +1914,7 @@ export class SessionController {
       }
       if (status) this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status } } })
       if (status?.type === "idle" || status?.type === "error") {
-        this.scheduleSessionListRefresh()
+        this.scheduleSessionListRefresh(sessionID)
         void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
       }
     }
@@ -1909,7 +1949,7 @@ export class SessionController {
       // OpenCode can generate a session title without publishing a matching
       // session.updated event. Refresh its authoritative session list once the
       // turn settles so title, summary, cost, share, and archive state converge.
-      this.scheduleSessionListRefresh()
+      this.scheduleSessionListRefresh(sessionID)
       void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
     }
     const permission = parsePermission(event)

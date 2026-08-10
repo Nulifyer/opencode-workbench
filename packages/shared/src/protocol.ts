@@ -68,6 +68,7 @@ export type WebviewToHostMessage =
   | { type: "applyRecovery"; sessionID: string; mode: "revert" | "fork" | "redo"; messageID?: string }
   | { type: "healthAction"; action: "refresh" | "reconnect" | "logs" | "trace" | "copy" }
   | { type: "evidenceAction"; action: "capture" }
+  | { type: "workbenchAction"; sessionID: string; action: "refresh-session" | "review" | "walkthrough" | "compare-models" }
   | { type: "contextReceiptAction"; sessionID: string; receiptID: string; itemID: string; action: "open-source" }
   | { type: "browserContextAction"; sessionID: string; action: "capture"; task?: string; sources?: Array<"selection" | "console" | "element" | "terminal-task" | "diagnostics" | "debug" | "url" | "screenshot">; approvedUrl?: string }
   | { type: "runAction"; groupID: string; action: "refresh" | "compare" | "fuse" }
@@ -659,6 +660,11 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         : undefined
     case "evidenceAction":
       return exactKeys(value, ["type", "action"]) && value.action === "capture" ? { type: "evidenceAction", action: "capture" } : undefined
+    case "workbenchAction":
+      return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) &&
+          ["refresh-session", "review", "walkthrough", "compare-models"].includes(String(value.action))
+        ? { type: "workbenchAction", sessionID: value.sessionID, action: value.action as "refresh-session" | "review" | "walkthrough" | "compare-models" }
+        : undefined
     case "contextReceiptAction":
       return exactKeys(value, ["type", "sessionID", "receiptID", "itemID", "action"]) && value.action === "open-source" &&
           validID(value.sessionID) && validID(value.receiptID) && validID(value.itemID) &&

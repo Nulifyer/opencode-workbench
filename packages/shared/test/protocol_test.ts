@@ -19,6 +19,8 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "createSession", draft: "", submit: true }) === undefined, "empty session-creating submit accepted")
   assert(parseWebviewMessage({ type: "planTask" })?.type === "planTask", "plan-first command rejected")
   assert(parseWebviewMessage({ type: "planTask", command: "workbench.action.closeWindow" }) === undefined, "plan-first command injection accepted")
+  assert(parseWebviewMessage({ type: "workbenchAction", sessionID: "session-1", action: "review" })?.type === "workbenchAction", "bounded Workbench action rejected")
+  assert(parseWebviewMessage({ type: "workbenchAction", sessionID: "session-1", action: "unknown" }) === undefined, "unknown Workbench action accepted")
   assert(parseWebviewMessage({ type: "loadOlderHistory", sessionID: "session-1", beforeMessageID: "message-200" })?.type === "loadOlderHistory", "older-history request rejected")
   assert(parseWebviewMessage({ type: "loadOlderHistory", sessionID: "session-1", beforeMessageID: "" }) === undefined, "empty older-history cursor accepted")
   assert(parseWebviewMessage({ type: "reorderQueue", sessionID: "session-1", promptIDs: ["one", "two"] })?.type === "reorderQueue", "valid queue order rejected")

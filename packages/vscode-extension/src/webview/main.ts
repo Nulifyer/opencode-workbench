@@ -153,7 +153,12 @@ const inspectorShell = new InspectorShellController({
 })
 const INSPECTOR_TABS = new Set<InspectorTab>(["activity", "plan", "changes", "review", "evidence", "goal", "jobs", "lineage", "runs", "context", "walkthrough", "health"])
 let inspectorOpen = inspectorShell.open
-let inspectorTab: InspectorTab = INSPECTOR_TABS.has(inspectorShell.tab as InspectorTab) ? inspectorShell.tab as InspectorTab : "activity"
+function consolidatedInspectorTab(tab: string): InspectorTab {
+  if (["review", "evidence", "walkthrough"].includes(tab)) return "changes"
+  if (["runs", "lineage"].includes(tab)) return "jobs"
+  return INSPECTOR_TABS.has(tab as InspectorTab) ? tab as InspectorTab : "activity"
+}
+let inspectorTab: InspectorTab = consolidatedInspectorTab(inspectorShell.tab)
 inspectorShell.select(inspectorTab)
 let overlayReturnFocus: HTMLElement | undefined
 let railReturnFocus: HTMLElement | undefined
@@ -1739,6 +1744,7 @@ function syncConnectionNotice(): boolean {
 
 function selectInspectorTab(tab: string, focusTab = true): void {
   if (!INSPECTOR_TABS.has(tab as InspectorTab)) return
+  tab = consolidatedInspectorTab(tab)
   if (narrowWorkbench() && document.body.classList.contains("rail-open")) closeRail(false)
   if (!inspectorOpen) inspectorShell.toggle()
   inspectorOpen = inspectorShell.open
@@ -2503,7 +2509,7 @@ function normalizedInspectorFilter(value: string): string {
 }
 
 function applyReviewFilters(announceChange = false): void {
-  if (inspectorTab !== "review") return
+  if (inspectorTab !== "review" && inspectorTab !== "changes") return
   const filters = localInspectorFilters.review
   const findings = [...inspectorPanel.querySelectorAll<HTMLElement>("[data-review-finding]")]
   let visible = 0
@@ -2549,7 +2555,7 @@ function applyJobFilters(announceChange = false): void {
 }
 
 function restoreLocalInspectorFilters(): void {
-  if (inspectorTab === "review") {
+  if (inspectorTab === "review" || inspectorTab === "changes") {
     for (const control of inspectorPanel.querySelectorAll<HTMLSelectElement>("[data-review-filter]")) {
       const key = control.dataset.reviewFilter
       if (!reviewFilterKeys.has(key as ReviewFilterKey)) continue
@@ -2727,6 +2733,14 @@ inspectorPanel.addEventListener("click", (event) => {
   if (browserAction === "capture" && snapshot.session) post({ type: "browserContextAction", sessionID: snapshot.session.id, action: "capture" })
   const evidenceAction = target?.closest<HTMLButtonElement>("[data-evidence-action]")?.dataset.evidenceAction
   if (evidenceAction === "capture") post({ type: "evidenceAction", action: "capture" })
+  const workbenchAction = target?.closest<HTMLButtonElement>("[data-workbench-action]")?.dataset.workbenchAction
+  if (workbenchAction === "plan") post({ type: "planTask" })
+  else if (workbenchAction === "start-goal") {
+    insertComposerText("/goal ")
+    draft.focus()
+  } else if (snapshot.session && ["refresh-session", "review", "walkthrough", "compare-models"].includes(workbenchAction ?? "")) {
+    post({ type: "workbenchAction", sessionID: snapshot.session.id, action: workbenchAction as "refresh-session" | "review" | "walkthrough" | "compare-models" })
+  }
 })
 inspectorPanel.addEventListener("input", (event) => {
   if (updateLocalInspectorFilter(event.target)) return

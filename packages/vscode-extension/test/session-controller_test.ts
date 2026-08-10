@@ -65,6 +65,34 @@ Deno.test("settled turns refresh generated OpenCode session titles", async () =>
   controller.dispose()
 })
 
+Deno.test("settled native prompts fall back to an OpenCode-persisted prompt title", async () => {
+  let current = { ...session("one", 2), title: "New session - 2026-08-10T14:49:00.301Z" }
+  const renamed: string[] = []
+  const fake = {
+    listSessions: async () => [current],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [{
+      info: { id: "user", sessionID: "one", role: "user", time: { created: 1 } },
+      parts: [{ id: "part", sessionID: "one", messageID: "user", type: "text", text: "hello from the workbench" }],
+    }],
+    renameSession: async (_sessionID: string, title: string) => {
+      renamed.push(title)
+      current = { ...current, title, time: { ...current.time, updated: 3 } }
+      return current
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const internal = controller as unknown as { ensureAutomaticTitle(sessionID: string): Promise<void> }
+  await internal.ensureAutomaticTitle("one")
+  if (renamed.join(",") !== "Hello from the workbench") throw new Error("Automatic title was not persisted through OpenCode")
+  if (controller.chatSnapshot().session?.title !== "Hello from the workbench") throw new Error("Persisted automatic title was not projected")
+  await internal.ensureAutomaticTitle("one")
+  if (renamed.length !== 1) throw new Error("Automatic title fallback ran more than once")
+  controller.dispose()
+})
+
 Deno.test("LSP events refresh runtime status", async () => {
   let lspCalls = 0
   const fake = {

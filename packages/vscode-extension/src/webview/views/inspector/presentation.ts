@@ -73,12 +73,12 @@ function presentationData(snapshot: ChatSnapshot, tab: InspectorTab): unknown {
   const session = snapshot.session
   if (!session) return undefined
   if (tab === "activity") return [session.status, session.queue?.length, session.permissions?.length, session.questions?.length, session.todos]
-  if (tab === "changes") return session.changes
+  if (tab === "changes") return [session.changes, snapshot.artifacts, snapshot.reviewFindings, snapshot.evidence, snapshot.walkthroughs]
   if (tab === "context") return [session.context, session.contextReceipts, snapshot.artifacts?.filter((artifact) => artifact.kind === "context-capture")]
   if (tab === "goal") return [session.goal, snapshot.artifacts?.filter((artifact) => artifact.kind === "goal-verification")]
   if (tab === "runs") return [snapshot.runGroups, snapshot.worktrees, snapshot.runComparisons]
   if (tab === "walkthrough") return snapshot.walkthroughs
-  if (tab === "jobs") return [session.delegations, snapshot.lineage, snapshot.runGroups, snapshot.worktrees, snapshot.ptys]
+  if (tab === "jobs") return [session.delegations, snapshot.lineage, snapshot.runGroups, snapshot.worktrees, snapshot.ptys, snapshot.runComparisons]
   if (tab === "lineage") return snapshot.lineage?.map((entry) => [entry.sessionID, entry.parentID, entry.rootID, entry.status.type, entry.title])
   if (tab === "health") return [snapshot.health, snapshot.trace]
   if (tab === "plan") return snapshot.artifacts
@@ -93,7 +93,15 @@ function artifactMarkup(snapshot: ChatSnapshot, tab: "plan" | "review"): string 
   const archived = allArtifacts.length - artifacts.length
   const bounded = projectionNotice(snapshot, tab === "review" ? ["taskArtifacts", "reviewFindings"] : ["taskArtifacts"])
   const archivedNotice = archived ? `<p class="placeholder">${archived} archived ${tab} artifact${archived === 1 ? " is" : "s are"} hidden from the active workflow.</p>` : ""
-  if (!artifacts.length) return `<h2>${tab === "plan" ? "Plans" : "Reviews"}</h2>${bounded}${archivedNotice}<p class="placeholder">No active ${tab} artifacts are available for this OpenCode session yet.</p>`
+  if (!artifacts.length) {
+    const action = tab === "plan"
+      ? `<button type="button" data-workbench-action="plan">Plan a task</button>`
+      : `<button type="button" data-workbench-action="review">Review current changes</button>`
+    const explanation = tab === "plan"
+      ? "Plans are created by the Plan Task flow, saved as explicit documents, then approved and handed off for implementation. Chatting normally does not create a plan artifact."
+      : "Reviews are generated on demand from an exact Git diff. They are model assessments anchored to changed lines, not an automatic part of every chat."
+    return `<h2>${tab === "plan" ? "Plans" : "Reviews"}</h2>${bounded}${archivedNotice}<p class="placeholder">${explanation}</p><div class="inspector-actions">${action}</div>`
+  }
   const activeArtifactIDs = new Set(artifacts.map((artifact) => artifact.id))
   const activeFindings = tab === "review" ? (snapshot.reviewFindings ?? []).filter((finding) => activeArtifactIDs.has(finding.artifactID)) : []
   const reviewFilters = activeFindings.length ? `<div class="inspector-filters review-filters" role="group" aria-label="Review finding filters"><label>Severity <select data-inspector-key="review-filter:severity" data-review-filter="severity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label><label>Category <select data-inspector-key="review-filter:category" data-review-filter="category"><option value="">All categories</option>${[...new Set(activeFindings.map((finding) => finding.category))].sort().map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("")}</select></label><label>Disposition <select data-inspector-key="review-filter:disposition" data-review-filter="disposition"><option value="">All dispositions</option><option value="open">Open</option><option value="fixed">Fixed</option><option value="dismissed">Dismissed</option><option value="accepted-risk">Accepted risk</option></select></label></div><p class="placeholder filter-status" role="status" aria-live="polite" data-review-filter-status>Showing ${activeFindings.length} of ${activeFindings.length} finding${activeFindings.length === 1 ? "" : "s"}.</p>` : ""
@@ -253,8 +261,16 @@ function healthMarkup(snapshot: ChatSnapshot, formatDate: (value: number) => str
   if (!health) return `<h2>Health</h2><p class="placeholder">Health data is not available yet.</p>`
   const lastEvent = health.eventStream.lastEventAt === undefined ? "None" : formatDate(health.eventStream.lastEventAt)
   const recent = snapshot.trace?.slice().reverse() ?? []
+  const grouped = new Map<string, { type: string; transition?: string; timestamp: number; count: number }>()
+  for (const entry of recent) {
+    const key = `${entry.type}\0${entry.transition ?? ""}`
+    const existing = grouped.get(key)
+    if (existing) existing.count += 1
+    else grouped.set(key, { type: entry.type, transition: entry.transition, timestamp: entry.timestamp, count: 1 })
+  }
+  const eventGroups = [...grouped.values()]
   const healthy = health.serverState === "connected" && health.eventStream.state === "connected"
-  return `<h2>Health</h2><div class="health-hero ${healthy ? "healthy" : "unhealthy"}"><span class="health-indicator" aria-hidden="true"></span><div><strong>${healthy ? "OpenCode is connected" : "OpenCode needs attention"}</strong><small>${escapeHtml(health.serverState)} server · ${escapeHtml(health.eventStream.state)} event stream</small></div></div><section class="inspector-card health-summary"><h3>Runtime</h3><dl class="inspector-metrics"><dt>OpenCode</dt><dd>${escapeHtml(health.openCodeVersion ?? "Unknown")}</dd><dt>Companion</dt><dd>${escapeHtml(health.pluginState)}</dd><dt>Last event</dt><dd>${escapeHtml(lastEvent)}</dd><dt>Queue</dt><dd>${health.requestQueueDepth}</dd></dl><div class="inspector-actions health-actions" role="group" aria-label="Health actions"><button type="button" data-health-action="refresh">Refresh</button><button type="button" data-health-action="reconnect">Reconnect</button><button type="button" data-health-action="logs">Open logs</button><button type="button" data-health-action="trace">Raw trace</button></div></section><section class="trace-section"><div class="section-heading"><h3>Recent sanitized events</h3><span>${recent.length}</span></div>${recent.length ? `<ul class="inspector-list health-event-list">${recent.map((entry) => `<li><span class="event-indicator" aria-hidden="true"></span><div><strong>${escapeHtml(entry.type)}</strong><small>${escapeHtml(formatDate(entry.timestamp))}${entry.transition ? ` · ${escapeHtml(entry.transition)}` : ""}</small></div></li>`).join("")}</ul>` : `<p class="placeholder">No trace events recorded.</p>`}</section>`
+  return `<h2>Health</h2><div class="health-hero ${healthy ? "healthy" : "unhealthy"}"><span class="health-indicator" aria-hidden="true"></span><div><strong>${healthy ? "OpenCode is connected" : "OpenCode needs attention"}</strong><small>${escapeHtml(health.serverState)} server · ${escapeHtml(health.eventStream.state)} event stream</small></div></div><section class="inspector-card health-summary"><h3>Runtime</h3><dl class="inspector-metrics"><dt>OpenCode</dt><dd>${escapeHtml(health.openCodeVersion ?? "Unknown")}</dd><dt>Companion</dt><dd>${escapeHtml(health.pluginState)}</dd><dt>Last event</dt><dd>${escapeHtml(lastEvent)}</dd><dt>Queue</dt><dd>${health.requestQueueDepth}</dd></dl><div class="inspector-actions health-actions" role="group" aria-label="Health actions"><button type="button" data-health-action="refresh">Refresh</button><button type="button" data-health-action="reconnect">Reconnect</button><button type="button" data-health-action="logs">Open logs</button><button type="button" data-health-action="trace">Raw trace</button></div></section><section class="trace-section"><div class="section-heading"><h3>Recent sanitized events</h3><span>${recent.length}</span></div>${eventGroups.length ? `<p class="placeholder trace-summary">${eventGroups.length} event kind${eventGroups.length === 1 ? "" : "s"} across the ${recent.length} most recent sanitized events.</p><ul class="inspector-list health-event-list">${eventGroups.map((entry) => `<li><span class="event-indicator" aria-hidden="true"></span><div><strong>${escapeHtml(entry.type)}${entry.count > 1 ? ` <span class="event-count">×${entry.count}</span>` : ""}</strong><small>Latest ${escapeHtml(formatDate(entry.timestamp))}${entry.transition ? ` · ${escapeHtml(entry.transition)}` : ""}</small></div></li>`).join("")}</ul>` : `<p class="placeholder">No trace events recorded.</p>`}</section>`
 }
 
 function activityMarkup(session: NonNullable<ChatSnapshot["session"]>): string {
@@ -267,7 +283,7 @@ function changesMarkup(session: NonNullable<ChatSnapshot["session"]>): string {
   const changes = session.changes ?? []
   return `<h2>Changes</h2>${changes.length
     ? `<ul class="inspector-list">${changes.map((change) => `<li><button type="button" data-inspector-key="file:${escapeHtml(change.file)}" data-inspector-file="${escapeHtml(change.file)}">${escapeHtml(change.file)}</button><small>+${change.additions} −${change.deletions}${change.status ? ` · ${escapeHtml(change.status)}` : ""}</small></li>`).join("")}</ul>`
-    : `<p class="placeholder">No reported changes.</p>`}`
+    : `<p class="placeholder">OpenCode reports that this session has not changed any files. Changes made outside this session are intentionally not attributed to it.</p><div class="inspector-actions"><button type="button" data-workbench-action="refresh-session">Refresh session data</button></div>`}`
 }
 
 function auxiliaryArtifactMarkup(snapshot: ChatSnapshot, kind: "goal-verification" | "context-capture", title: string): string {
@@ -300,7 +316,7 @@ function contextMarkup(snapshot: ChatSnapshot, formatDate: (value: number) => st
 function goalMarkup(snapshot: ChatSnapshot): string {
   const session = snapshot.session!
   const goal = session.goal
-  const current = !goal ? `<h2>Goal</h2><p class="placeholder">No active goal.</p>`
+  const current = !goal ? `<h2>Goal</h2><p class="placeholder">No goal is active. A goal is an execution contract—not a plan document. Start one with <code>/goal your objective</code>, or hand an approved plan off in Goal mode.</p><div class="inspector-actions"><button type="button" data-workbench-action="start-goal">Start a goal</button></div>`
     : `<h2>Goal</h2><p><strong>${escapeHtml(goal.objective ?? "Active goal")}</strong></p><dl class="inspector-metrics"><dt>Status</dt><dd>${escapeHtml(goal.status ?? "unknown")}</dd><dt>Turns</dt><dd>${goal.autoTurns ?? 0}${goal.maxAutoTurns ? `/${goal.maxAutoTurns}` : ""}</dd><dt>Tokens</dt><dd>${goal.tokensUsed ?? 0}${goal.tokenBudget ? `/${goal.tokenBudget}` : ""}</dd>${goal.blocker ? `<dt>Blocker</dt><dd>${escapeHtml(goal.blocker)}</dd>` : ""}</dl>`
   return `${current}${auxiliaryArtifactMarkup(snapshot, "goal-verification", "Verification history")}`
 }
@@ -310,7 +326,7 @@ function runsMarkup(snapshot: ChatSnapshot, comparisonSorts: Readonly<Record<str
   const runWorktreeIDs = new Set(groups.flatMap((group) => group.runs.flatMap((run) => run.worktreeID ? [run.worktreeID] : [])))
   const standaloneWorktrees = (snapshot.worktrees ?? []).filter((entry) => !runWorktreeIDs.has(entry.id) && entry.phase !== "removed")
   const bounded = projectionNotice(snapshot, ["runGroups", "worktrees"])
-  if (!groups.length && !standaloneWorktrees.length) return `<h2>Runs</h2>${bounded}<p class="placeholder">This workspace has no visible isolated worktrees or run groups.</p>`
+  if (!groups.length && !standaloneWorktrees.length) return `<h2>Runs</h2>${bounded}<p class="placeholder">No isolated or multi-model runs have been started. Ordinary chat work remains in the current checkout and does not appear here.</p><div class="inspector-actions"><button type="button" data-workbench-action="compare-models">Compare models in isolated runs</button></div>`
   const worktreeMarkup = standaloneWorktrees.length
     ? `<section><h3>Isolated worktrees</h3><ul class="inspector-list">${standaloneWorktrees.slice().reverse().map((entry) => `<li data-worktree-id="${escapeHtml(entry.id)}"><strong>${escapeHtml(entry.branch)}</strong><small>${escapeHtml(entry.phase)} · ${escapeHtml(entry.path)}</small>${entry.error ? `<p>${escapeHtml(entry.error.message)}</p>` : ""}</li>`).join("")}</ul></section>`
     : ""
@@ -336,8 +352,34 @@ function runsMarkup(snapshot: ChatSnapshot, comparisonSorts: Readonly<Record<str
 function walkthroughMarkup(snapshot: ChatSnapshot, formatDate: (value: number) => string): string {
   const documents = snapshot.walkthroughs ?? []
   const bounded = projectionNotice(snapshot, ["walkthroughs", "walkthroughStops"])
-  if (!documents.length) return `<h2>Walkthrough</h2>${bounded}<p class="placeholder">Generate a walkthrough after a complete diff snapshot is available.</p>`
+  if (!documents.length) return `<h2>Walkthrough</h2>${bounded}<p class="placeholder">Walkthroughs are generated on demand from a complete exact diff and link explanations back to changed lines.</p><div class="inspector-actions"><button type="button" data-workbench-action="walkthrough">Generate changes walkthrough</button></div>`
   return `<h2>Walkthrough</h2>${bounded}${documents.slice().reverse().map((document) => `<section><h3>${escapeHtml(formatDate(document.generatedAt))}</h3><small>${escapeHtml(document.coverage)} · ${escapeHtml(document.model)} · ${escapeHtml(document.diffHash.slice(0, 12))}</small><ol class="inspector-list walkthrough-list">${document.stops.map((stop) => `<li><button type="button" data-inspector-key="walkthrough:${escapeHtml(document.id)}:${escapeHtml(stop.id)}" data-walkthrough-document="${escapeHtml(document.id)}" data-walkthrough-stop="${escapeHtml(stop.id)}">${escapeHtml(stop.title)}</button><p class="walkthrough-explanation">${escapeHtml(stop.explanation)}</p><small>${escapeHtml(stop.importance)} · ${stop.anchors.length} anchor${stop.anchors.length === 1 ? "" : "s"}</small></li>`).join("")}</ol></section>`).join("")}`
+}
+
+function withoutPrimaryHeading(markup: string): string {
+  return markup.replace(/^<h2>[^<]*<\/h2>/, "")
+}
+
+function workflowSection(id: string, title: string, description: string, content: string): string {
+  return `<section class="inspector-workflow-section" aria-labelledby="workflow-${id}"><div class="workflow-heading"><h3 id="workflow-${id}">${title}</h3><p>${description}</p></div>${withoutPrimaryHeading(content)}</section>`
+}
+
+function changesWorkspaceMarkup(snapshot: ChatSnapshot, formatDate: (value: number) => string): string {
+  const session = snapshot.session!
+  return `<h2>Changes &amp; quality</h2><p class="placeholder workbench-purpose">This page starts with OpenCode’s session-scoped file diff. Review, evidence, and walkthrough records appear only after you explicitly create them from that diff.</p>${[
+    workflowSection("session-changes", "Session changes", "Files OpenCode attributes to this session; unrelated workspace edits are excluded.", changesMarkup(session)),
+    workflowSection("review", "Review findings", "Model assessments generated on demand from an exact captured Git diff.", artifactMarkup(snapshot, "review")),
+    workflowSection("evidence", "Verification evidence", "Deterministic task, test, diagnostic, and diff observations captured for this session.", evidenceMarkup(snapshot, formatDate)),
+    workflowSection("walkthrough", "Walkthrough", "An optional guided explanation anchored to the exact changed lines.", walkthroughMarkup(snapshot, formatDate)),
+  ].join("")}`
+}
+
+function executionWorkspaceMarkup(snapshot: ChatSnapshot, comparisonSorts: Readonly<Record<string, RunComparisonSort>>): string {
+  return `<h2>Jobs &amp; runs</h2><p class="placeholder workbench-purpose">Live delegated work, terminals, child sessions, isolated model runs, and their OpenCode ancestry share one execution view.</p>${[
+    workflowSection("jobs", "Current jobs", "Delegations, child sessions, worktrees, and native OpenCode terminals grouped by state.", jobsMarkup(snapshot)),
+    workflowSection("runs", "Isolated runs", "Multi-model or isolated worktrees with diff, review, comparison, keep, discard, and fusion controls.", runsMarkup(snapshot, comparisonSorts)),
+    workflowSection("lineage", "Session map", "The canonical OpenCode parent/child tree behind delegated and isolated work.", lineageMarkup(snapshot)),
+  ].join("")}`
 }
 
 /** Produces bounded, escaped Inspector markup while leaving focus and scroll reconciliation to the view shell. */
@@ -348,15 +390,15 @@ export function inspectorPresentation(
   options: InspectorPresentationOptions = {},
 ): InspectorPresentation {
   const session = snapshot.session
-  const signature = JSON.stringify([session?.id, tab, presentationData(snapshot, tab), tab === "runs" ? options.comparisonSorts : undefined])
+  const signature = JSON.stringify([session?.id, tab, presentationData(snapshot, tab), tab === "runs" || tab === "jobs" ? options.comparisonSorts : undefined])
   if (!session) return { signature, markup: `<div class="inspector-view inspector-view-empty"><p class="placeholder">Select a session to inspect.</p></div>` }
   const markup = tab === "activity" ? activityMarkup(session)
     : tab === "plan" || tab === "review" ? artifactMarkup(snapshot, tab)
     : tab === "evidence" ? evidenceMarkup(snapshot, formatDate)
-    : tab === "changes" ? changesMarkup(session)
+    : tab === "changes" ? changesWorkspaceMarkup(snapshot, formatDate)
     : tab === "context" ? `${contextMarkup(snapshot, formatDate)}${projectionNotice(snapshot, ["contextReceipts", "taskArtifacts"])}`
     : tab === "goal" ? `${goalMarkup(snapshot)}${projectionNotice(snapshot, ["taskArtifacts"])}`
-    : tab === "jobs" ? jobsMarkup(snapshot)
+    : tab === "jobs" ? executionWorkspaceMarkup(snapshot, options.comparisonSorts ?? {})
     : tab === "lineage" ? lineageMarkup(snapshot)
     : tab === "runs" ? runsMarkup(snapshot, options.comparisonSorts)
     : tab === "health" ? healthMarkup(snapshot, formatDate)

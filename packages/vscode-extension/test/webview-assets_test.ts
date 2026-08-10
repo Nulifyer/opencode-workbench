@@ -400,8 +400,8 @@ Deno.test("Task Workbench tabs explain their purpose and Health uses the availab
   for (const marker of [
     'class="inspector-tab-info"',
     'aria-description="${tab.description}"',
-    "A plan does not keep OpenCode running automatically.",
-    "can keep OpenCode working across turns.",
+    "Plans appear after Plan Task creates a reviewable document",
+    "Goals start with a /goal command or plan handoff",
   ]) if (!chatView.includes(marker)) throw new Error(`Task Workbench guidance omits: ${marker}`)
 
   for (const marker of [
@@ -414,6 +414,24 @@ Deno.test("Task Workbench tabs explain their purpose and Health uses the availab
   if (/\.health-event-list\s*\{[^}]*max-height:/.test(css)) {
     throw new Error("Recent sanitized events still has an arbitrary maximum height")
   }
+})
+
+Deno.test("Task Workbench navigation consolidates artifact and execution destinations", () => {
+  for (const marker of [
+    '{ id: "activity", label: "Activity"',
+    '{ id: "plan", label: "Plan"',
+    '{ id: "goal", label: "Goal"',
+    '{ id: "context", label: "Context"',
+    '{ id: "changes", label: "Changes"',
+    '{ id: "jobs", label: "Jobs"',
+    '{ id: "health", label: "Health"',
+  ]) if (!chatView.includes(marker)) throw new Error(`Consolidated navigation omits ${marker}`)
+  for (const marker of [
+    '["review", "evidence", "walkthrough"].includes(tab)',
+    '["runs", "lineage"].includes(tab)',
+    'data-workbench-action="start-goal"',
+    'data-workbench-action="refresh-session"',
+  ]) if (!(webview + inspectorPresentation).includes(marker)) throw new Error(`Consolidated route or action omits ${marker}`)
 })
 
 Deno.test("startup snapshots omit session-scoped comparisons until OpenCode selects a session", () => {

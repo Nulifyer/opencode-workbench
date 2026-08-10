@@ -106,16 +106,32 @@ Deno.test("health presentation keeps the complete bounded trace and groups its f
   }
   value.trace = Array.from({ length: 20 }, (_, index) => ({
     timestamp: index + 1,
-    type: `event-${index + 1}`,
+    type: index % 2 ? "protocol.event.published" : "controller.session.event",
+    transition: index % 2 ? "visible" : undefined,
   }))
 
   const markup = inspectorPresentation(value, "health", (timestamp) => `T${timestamp}`).markup
   assertStringIncludes(markup, 'role="group" aria-label="Health actions"')
   assertStringIncludes(markup, "<span>20</span>")
-  assertStringIncludes(markup, "event-20")
-  assertStringIncludes(markup, "event-1")
-  assert(markup.indexOf("event-20") < markup.indexOf("event-1"))
+  assertStringIncludes(markup, "2 event kinds across the 20 most recent sanitized events")
+  assertStringIncludes(markup, "protocol.event.published <span class=\"event-count\">×10</span>")
+  assertStringIncludes(markup, "controller.session.event <span class=\"event-count\">×10</span>")
   assertEquals((markup.match(/data-health-action=/g) ?? []).length, 4)
+})
+
+Deno.test("consolidated Changes and Jobs pages expose every content lifecycle", () => {
+  const value = snapshot()
+  const changes = inspectorPresentation(value, "changes").markup
+  for (const marker of ["Changes &amp; quality", "Session changes", "Review findings", "Verification evidence", "Walkthrough"]) {
+    assertStringIncludes(changes, marker)
+  }
+  assertStringIncludes(changes, 'data-workbench-action="review"')
+  assertStringIncludes(changes, 'data-evidence-action="capture"')
+  assertStringIncludes(changes, 'data-workbench-action="walkthrough"')
+
+  const jobs = inspectorPresentation(value, "jobs").markup
+  for (const marker of ["Jobs &amp; runs", "Current jobs", "Isolated runs", "Session map"]) assertStringIncludes(jobs, marker)
+  assertStringIncludes(jobs, 'data-workbench-action="compare-models"')
 })
 
 Deno.test("inspector run presentation exposes only actions valid for pending, retained, and discarded runs", () => {

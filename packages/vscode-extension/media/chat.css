@@ -407,6 +407,12 @@ body[data-mode="editor"] .inspector:not([hidden]), body[data-mode="sidebar"] .in
 .inspector-panel h2 { margin: 20px 0 10px; color: var(--vscode-foreground); font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .inspector-panel h3 { margin: 16px 0 7px; color: var(--vscode-foreground); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 .inspector-panel p { line-height: 1.45; }
+.workbench-purpose { margin: 0 0 14px; }
+.inspector-workflow-section { padding: 14px 0 16px; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 72%, transparent); }
+.inspector-workflow-section:first-of-type { border-top: 0; }
+.workflow-heading { margin-bottom: 10px; }
+.workflow-heading h3 { margin: 0 0 3px; }
+.workflow-heading p { margin: 0; color: var(--vscode-descriptionForeground); font-size: 11px; }
 .inspector-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .inspector-list > li { padding: 9px 10px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--vscode-widget-border) 72%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--vscode-editorWidget-background) 38%, transparent); }
 .inspector-list > li:hover { border-color: color-mix(in srgb, var(--vscode-focusBorder) 54%, var(--vscode-widget-border)); }
@@ -500,9 +506,13 @@ body[data-progress-motion="static"] .header-active-indicator::before, body[data-
 .health-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .health-actions button { width: 100%; }
 .trace-section { min-height: 0; display: flex; flex: 1; flex-direction: column; overflow: hidden; }
+.trace-summary { flex: none; margin: 6px 0 2px; }
 .health-event-list { min-height: 0; flex: 1; margin-top: 8px; overflow-y: auto; padding-right: 2px; }
 .health-event-list > li { display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: start; gap: 9px; padding: 7px 8px; border: 0; border-radius: 4px; background: transparent; }
 .health-event-list > li:hover { border: 0; background: var(--vscode-list-hoverBackground); }
+.health-event-list > li > div { min-width: 0; }
+.health-event-list strong { overflow-wrap: anywhere; }
+.event-count { color: var(--vscode-badge-foreground, var(--vscode-foreground)); font-size: 10px; font-weight: 600; }
 .health-event-list .event-indicator { width: 6px; height: 6px; margin-top: 5px; opacity: .65; }
 .health-event-list strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .health-event-list small { margin-top: 1px; }

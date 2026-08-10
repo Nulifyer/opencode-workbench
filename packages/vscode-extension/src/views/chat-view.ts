@@ -60,21 +60,16 @@ const ICONS = {
 
 const INSPECTOR_TAB_GROUPS: ReadonlyArray<{ label: string; tabs: ReadonlyArray<{ id: WorkbenchInspectorTab; label: string; description: string }> }> = [
   { label: "Task", tabs: [
-    { id: "activity", label: "Activity", description: "Current session status, queued prompts, permissions, questions, and todos." },
-    { id: "plan", label: "Plan", description: "Planning documents to review, approve, and hand off before implementation. A plan does not keep OpenCode running automatically." },
-    { id: "goal", label: "Goal", description: "A persistent objective with acceptance criteria, execution limits, and optional verification that can keep OpenCode working across turns." },
-    { id: "context", label: "Context", description: "Actual token usage, context limits, and the exact files, selections, or captures admitted with prompts." },
+    { id: "activity", label: "Activity", description: "Always-current status for the selected session: work state, queue, requests, and todos." },
+    { id: "plan", label: "Plan", description: "Plans appear after Plan Task creates a reviewable document; approve one before handing it to an implementation session." },
+    { id: "goal", label: "Goal", description: "Goals start with a /goal command or plan handoff and keep OpenCode working toward explicit criteria and limits across turns." },
+    { id: "context", label: "Context", description: "Token usage appears after responses; receipts record the exact files, selections, or captures admitted with each prompt." },
   ] },
-  { label: "Artifacts", tabs: [
-    { id: "changes", label: "Changes", description: "Files and line counts currently reported as changed by the selected OpenCode session." },
-    { id: "review", label: "Review", description: "Saved review findings tied to an exact captured diff, with severity and disposition controls." },
-    { id: "evidence", label: "Evidence", description: "Deterministic test, task, diagnostic, and diff observations captured for this session." },
-    { id: "walkthrough", label: "Walkthrough", description: "A guided explanation of a completed change set, anchored to exact files and diff locations." },
+  { label: "Work", tabs: [
+    { id: "changes", label: "Changes", description: "OpenCode session diffs plus the review findings, test evidence, and walkthroughs created from those exact changes." },
+    { id: "jobs", label: "Jobs", description: "Delegations, child sessions, terminals, isolated runs, worktrees, comparisons, and session ancestry in one execution view." },
   ] },
-  { label: "Execution", tabs: [
-    { id: "jobs", label: "Jobs", description: "Delegated OpenCode sessions, isolated runs, worktrees, and native terminal jobs grouped by state." },
-    { id: "runs", label: "Runs", description: "Isolated or multi-model run groups with objective comparison, diff, review, keep, discard, and fusion actions." },
-    { id: "lineage", label: "Lineage", description: "The parent and child ancestry of OpenCode sessions, annotated with related runs and worktrees." },
+  { label: "System", tabs: [
     { id: "health", label: "Health", description: "OpenCode connection, companion status, request queue, and sanitized Workbench protocol events." },
   ] },
 ]
@@ -1089,6 +1084,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         }
         case "evidenceAction":
           await vscode.commands.executeCommand("opencodeWorkbench.captureTaskEvidence")
+          break
+        case "workbenchAction":
+          this.requireSelected(message.sessionID)
+          if (message.action === "refresh-session") await this.controller!.refreshSessionData(message.sessionID)
+          else if (message.action === "review") await vscode.commands.executeCommand("opencodeWorkbench.reviewChanges")
+          else if (message.action === "walkthrough") await vscode.commands.executeCommand("opencodeWorkbench.generateWalkthrough")
+          else await vscode.commands.executeCommand("opencodeWorkbench.compareModels")
           break
         case "browserContextAction":
           this.requireSelected(message.sessionID)
