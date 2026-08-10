@@ -2,7 +2,7 @@
 
 import type { ChatSnapshot, MessageBundle } from "@opencode-workbench/shared"
 import { activityCollapsed, activityWorking, turnContent } from "../presentation.js"
-import { ScrollController, type ScrollAnchor } from "../controllers/scroll-controller.js"
+import { ScrollController, type ScrollAnchor, type ScrollViewport } from "../controllers/scroll-controller.js"
 
 type Session = NonNullable<ChatSnapshot["session"]>
 
@@ -143,6 +143,7 @@ export class ConversationView {
   private readonly messages = new Map<string, { node: HTMLElement; signature: string }>()
   private readonly classifications = new Map<string, CachedClassification>()
   private readonly collapsePreferences = new Map<string, boolean>()
+  private readonly sessionViewports = new Map<string, ScrollViewport>()
   private renderedSessionID?: string
   private unseenMessages = 0
 
@@ -167,6 +168,11 @@ export class ConversationView {
   }
 
   clear(): void {
+    this.rememberViewport()
+    this.clearDom()
+  }
+
+  private clearDom(): void {
     this.options.container.replaceChildren()
     this.turns.clear()
     this.messages.clear()
@@ -178,21 +184,26 @@ export class ConversationView {
 
   jumpToLatest(): void {
     this.scroll.latest()
+    if (this.renderedSessionID) this.sessionViewports.set(this.renderedSessionID, this.scroll.captureViewport())
     this.unseenMessages = 0
     this.updateJumpLatest()
   }
 
   handleScroll(): void {
     if (this.nearBottom()) this.unseenMessages = 0
+    if (this.renderedSessionID) this.sessionViewports.set(this.renderedSessionID, this.scroll.captureViewport())
     this.updateJumpLatest()
   }
 
   render(session: Session, active: boolean, forcedPrependAnchor?: ScrollAnchor): void {
+    let restoredViewport: ScrollViewport | undefined
     if (this.renderedSessionID !== session.id) {
-      this.clear()
+      this.rememberViewport()
+      restoredViewport = this.sessionViewports.get(session.id) ?? { atBottom: true, scrollTop: 0 }
+      this.clearDom()
       this.renderedSessionID = session.id
     }
-    const nearBottom = this.nearBottom()
+    const nearBottom = restoredViewport?.atBottom ?? this.nearBottom()
     const prependAnchor = forcedPrependAnchor ?? (!nearBottom ? this.scroll.capturePrependAnchor() : undefined)
     const projectedTurns = projectConversationTurnsWithCache(session, active, this.classifications)
     const expectedMessages = new Set<string>()
@@ -281,12 +292,20 @@ export class ConversationView {
       this.turns.delete(key)
       this.classifications.delete(key)
     }
-    if (prependAnchor) this.scroll.restorePrependAnchor(prependAnchor)
-    if (nearBottom && !forcedPrependAnchor) {
+    if (restoredViewport) {
+      this.scroll.restoreViewport(restoredViewport)
+      if (restoredViewport.atBottom) this.unseenMessages = 0
+    } else if (prependAnchor) this.scroll.restorePrependAnchor(prependAnchor)
+    if (!restoredViewport && nearBottom && !forcedPrependAnchor) {
       this.scroll.latest()
       this.unseenMessages = 0
     }
+    if (this.renderedSessionID) this.sessionViewports.set(this.renderedSessionID, this.scroll.captureViewport())
     this.updateJumpLatest()
+  }
+
+  private rememberViewport(): void {
+    if (this.renderedSessionID) this.sessionViewports.set(this.renderedSessionID, this.scroll.captureViewport())
   }
 
   private updateJumpLatest(): void {

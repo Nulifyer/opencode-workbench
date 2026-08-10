@@ -1,6 +1,6 @@
 import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
 import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RecoveryPreview, type RuntimeService, type TranscriptHistoryPage, type WebviewToHostMessage, type WorkbenchCapabilities, type WorkbenchCapability } from "@opencode-workbench/shared"
-import { activityVisualState, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionLoadPhase, shouldCollapsePaste, stripTerminalSequences, toolKind, workspaceMentionReference } from "./presentation.js"
+import { activityVisualState, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionLoadPhase, shouldCollapsePaste, stripTerminalSequences, terminalAnsiMarkup, toolKind, workspaceMentionReference } from "./presentation.js"
 import { renderMarkdown } from "./markdown.js"
 import { WorkbenchProtocolClient } from "./transport/protocol-v2-client.js"
 import { parseWithProtocolV1Adapter } from "./transport/protocol-v1-adapter.js"
@@ -352,7 +352,8 @@ function codeBlock(content: string, language = "", extraClass = ""): string {
 function shellBlock(content: string, kind: "command" | "output" | "error"): string {
   const label = kind === "command" ? "Command" : kind === "output" ? "Output" : "Error"
   const clean = stripTerminalSequences(content)
-  return `<div class="code-block shell-block shell-${kind}"><div class="code-block-header"><span>${label}</span><button type="button" class="copy-block" data-copy-block title="Copy ${label.toLowerCase()}" aria-label="Copy ${label.toLowerCase()}">${COPY_ICON}</button></div><pre aria-label="${label}"><code>${escapeHtml(clean)}</code></pre></div>`
+  const markup = kind === "command" ? escapeHtml(clean) : terminalAnsiMarkup(content)
+  return `<div class="code-block shell-block shell-${kind}"><div class="code-block-header"><span>${label}</span><button type="button" class="copy-block" data-copy-block title="Copy ${label.toLowerCase()}" aria-label="Copy ${label.toLowerCase()}">${COPY_ICON}</button></div><pre aria-label="${label}"><code class="terminal-ansi">${markup}</code></pre></div>`
 }
 
 function markdown(source: string): string {
@@ -3179,6 +3180,7 @@ document.addEventListener("click", (event) => {
   const text = button.closest<HTMLElement>(".code-block")?.querySelector("pre")?.textContent
   if (text === undefined) return
   post({ type: "copyText", text })
+  announce("Copied to clipboard")
   button.classList.add("copied")
   button.title = "Copied"
   button.setAttribute("aria-label", "Copied")
@@ -3204,7 +3206,19 @@ messages.addEventListener("click", (event) => {
     const sessionID = snapshot.session?.id
     if (!message || !sessionID) return
     const text = message.parts.filter((part) => !part.synthetic && part.type === "text" && part.text).map((part) => part.text).join("\n")
-    if (messageAction.dataset.messageAction === "copy") post({ type: "copyText", text })
+    if (messageAction.dataset.messageAction === "copy") {
+      post({ type: "copyText", text })
+      announce("Message copied to clipboard")
+      const originalTitle = messageAction.title
+      messageAction.classList.add("copied")
+      messageAction.title = "Copied"
+      messageAction.setAttribute("aria-label", "Copied")
+      window.setTimeout(() => {
+        messageAction.classList.remove("copied")
+        messageAction.title = originalTitle || "Copy message"
+        messageAction.setAttribute("aria-label", "Copy message")
+      }, 1_500)
+    }
     else if (messageAction.dataset.messageAction === "edit") {
       draft.value = text
       postDraftNow(sessionID, text)
@@ -3639,10 +3653,10 @@ if (document.body.dataset.mode === "editor") {
         key: "sessionsWidth",
         separator: sessionsSplitter,
         cssProperty: "--sessions-pane-width",
-        initialWidth: storedState?.layout?.sessionsWidth ?? 300,
-        minimumWidth: 220,
+        initialWidth: storedState?.layout?.sessionsWidth ?? 320,
+        minimumWidth: 280,
         maximumWidth: 520,
-        availableWidth: () => Math.max(220, Math.floor(window.innerWidth * 0.42)),
+        availableWidth: () => Math.max(280, Math.floor(window.innerWidth * 0.42)),
         edge: "right",
       },
     ],

@@ -147,6 +147,55 @@ export function stripTerminalSequences(value: string): string {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
 }
 
+const ANSI_COLORS = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const
+
+function escapeTerminalText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+/** Safely renders common SGR terminal colors while discarding all other control sequences. */
+export function terminalAnsiMarkup(value: string): string {
+  const source = value
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
+    .replace(/\x1B\[(?![0-9;]*m)[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1B(?!\[)[@-_]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1A\x1C-\x1F\x7F]/g, "")
+  let classes = new Set<string>()
+  let result = ""
+  let offset = 0
+  const pattern = /\x1B\[([0-9;]*)m/g
+  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
+    const text = source.slice(offset, match.index)
+    if (text) result += classes.size ? `<span class="${[...classes].join(" ")}">${escapeTerminalText(text)}</span>` : escapeTerminalText(text)
+    const codes = (match[1] || "0").split(";").map((code) => Number(code || 0))
+    for (const code of codes) {
+      if (code === 0) classes = new Set()
+      else if (code === 1) classes.add("ansi-bold")
+      else if (code === 2) classes.add("ansi-dim")
+      else if (code === 3) classes.add("ansi-italic")
+      else if (code === 4) classes.add("ansi-underline")
+      else if (code === 22) { classes.delete("ansi-bold"); classes.delete("ansi-dim") }
+      else if (code === 23) classes.delete("ansi-italic")
+      else if (code === 24) classes.delete("ansi-underline")
+      else if (code === 39) classes = new Set([...classes].filter((name) => !name.startsWith("ansi-fg-")))
+      else if (code === 49) classes = new Set([...classes].filter((name) => !name.startsWith("ansi-bg-")))
+      else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
+        classes = new Set([...classes].filter((name) => !name.startsWith("ansi-fg-")))
+        classes.add(`ansi-fg-${code >= 90 ? "bright-" : ""}${ANSI_COLORS[code % 10]}`)
+      } else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) {
+        classes = new Set([...classes].filter((name) => !name.startsWith("ansi-bg-")))
+        classes.add(`ansi-bg-${code >= 100 ? "bright-" : ""}${ANSI_COLORS[code % 10]}`)
+      }
+    }
+    offset = pattern.lastIndex
+  }
+  const tail = source.slice(offset)
+  if (tail) result += classes.size ? `<span class="${[...classes].join(" ")}">${escapeTerminalText(tail)}</span>` : escapeTerminalText(tail)
+  return result
+}
+
 export function shouldSubmitComposerKey(event: { key: string; shiftKey: boolean; ctrlKey?: boolean; metaKey?: boolean; isComposing: boolean; keyCode?: number }, behavior: "send" | "newline" = "send"): boolean {
   return event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && (behavior === "send" || Boolean(event.ctrlKey || event.metaKey))
 }

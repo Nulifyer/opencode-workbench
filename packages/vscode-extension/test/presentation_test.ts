@@ -1,4 +1,4 @@
-import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, terminalAnsiMarkup, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
@@ -155,6 +155,8 @@ Deno.test("command labels reflect execution state", () => {
 Deno.test("terminal output removes ANSI and unsafe control sequences", () => {
   assertEquals(stripTerminalSequences("\u001b[32mok\u001b[0m\r\nnext\u0007"), "ok\nnext")
   assertEquals(stripTerminalSequences("\u001b]0;title\u0007output"), "output")
+  assertEquals(terminalAnsiMarkup("\u001b[32mok\u001b[0m <next>"), '<span class="ansi-fg-green">ok</span> &lt;next&gt;')
+  assertEquals(terminalAnsiMarkup("\u001b]0;private title\u0007\u001b[1;91mfail\u001b[0m"), '<span class="ansi-bold ansi-fg-bright-red">fail</span>')
 })
 
 Deno.test("patch labels reflect execution state", () => {

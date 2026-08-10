@@ -108,9 +108,13 @@ Deno.test("split pane controller synchronizes CSS, ARIA, keyboard, pointer, and 
 
   available = 330
   resizeCallback?.()
-  assertEquals(controller.layout, { artifacts: 330 })
+  assertEquals(controller.layout, { artifacts: 440 })
   assertEquals(root.style.values.get("--artifact-width"), "330px")
   assertEquals(separator.attributes.get("aria-valuemax"), "330")
+  available = 440
+  resizeCallback?.()
+  assertEquals(root.style.values.get("--artifact-width"), "440px")
+  assertEquals(persisted.at(-1), { artifacts: 440 })
 
   controller.dispose()
   assertEquals(disconnected, true)

@@ -4,7 +4,7 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import * as vscode from "vscode"
 import type { AttentionItem, ContextAttachmentSummary, ContextReceiptItem, EditorContextSummary, HostToWebviewMessage, InlineAttachment, PastedTextBlock, RuntimeDescriptor, WebviewToHostMessage, WorkbenchCapability, WorkbenchHealthSummary, WorkbenchInspectorTab, WorkbenchTraceSummary } from "@opencode-workbench/shared"
-import { parseWebviewMessage, PROMPT_ATTACHMENT_CHARACTER_LIMIT, PROMPT_ATTACHMENT_COUNT_LIMIT, taskArtifactSummary } from "@opencode-workbench/shared"
+import { parseHostMessage, parseWebviewMessage, PROMPT_ATTACHMENT_CHARACTER_LIMIT, PROMPT_ATTACHMENT_COUNT_LIMIT, taskArtifactSummary } from "@opencode-workbench/shared"
 import type { PromptFilePart } from "../opencode-client.js"
 import type { ControllerUpdate, SessionController } from "../session-controller.js"
 import { prepareFzf, rankPreparedFzf, workspaceSearchPaths, type PreparedFzfIndex } from "../fuzzy.js"
@@ -541,7 +541,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       <button class="overlay-backdrop" type="button" data-close-keyboard-help aria-label="Close keyboard help"></button>
       <section class="history-panel keyboard-help-panel" role="dialog" aria-modal="true" aria-labelledby="keyboard-help-title">
         <div class="overlay-heading"><strong id="keyboard-help-title">OpenCode Workbench keyboard help</strong><button type="button" class="text-action" data-close-keyboard-help>Close</button></div>
-        <dl class="inspector-metrics keyboard-help-list"><dt>Ctrl/Cmd+Shift+O</dt><dd>Open Task Workbench</dd><dt>Ctrl/Cmd+L</dt><dd>Focus composer</dd><dt>Escape</dt><dd>Stop active OpenCode work when the Workbench is focused</dd><dt>Arrow keys</dt><dd>Navigate menus, tabs, session lists, and splitters</dd><dt>Shift+F10</dt><dd>Open the selected session context menu</dd><dt>Home / End</dt><dd>Resize a focused pane to its minimum or maximum</dd></dl>
+        <p class="keyboard-help-note">Shortcuts are user-configurable in VS Code. These are the extension defaults.</p>
+        <dl class="inspector-metrics keyboard-help-list"><dt>Default: Ctrl/Cmd+Shift+O</dt><dd>Open Task Workbench</dd><dt>Default: Ctrl/Cmd+L</dt><dd>Focus composer</dd><dt>Escape</dt><dd>Stop active OpenCode work when the Workbench is focused</dd><dt>Arrow keys</dt><dd>Navigate menus, tabs, session lists, and splitters</dd><dt>Shift+F10</dt><dd>Open the selected session context menu</dd><dt>Home / End</dt><dd>Resize a focused pane to its minimum or maximum</dd></dl>
         <div class="inspector-actions"><button type="button" data-open-full-help>Open Getting Started walkthrough</button></div>
       </section>
     </div>
@@ -636,7 +637,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <section id="inspector-panel" class="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-activity" tabindex="0"></section>
       </aside>
 
-      <div id="sessions-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize sessions and jobs" aria-valuemin="220" aria-valuemax="520" aria-valuenow="300" tabindex="0"></div>
+      <div id="sessions-splitter" class="pane-splitter editor-only" role="separator" aria-orientation="vertical" aria-label="Resize sessions and jobs" aria-valuemin="280" aria-valuemax="520" aria-valuenow="320" tabindex="0"></div>
 
       <aside id="right-rail" class="right-rail editor-only" aria-label="OpenCode sessions and jobs">
         <div class="rail-header sidebar-only"><strong>Sessions</strong><button id="rail-close" class="icon-action" type="button" title="Close sessions" aria-label="Close sessions">${ICONS.close}</button></div>
@@ -790,14 +791,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (sessionID) {
       messages.push({ type: "contextAttachmentsChanged", sessionID, attachments: this.contextSummaries(sessionID) })
     }
-    return messages
+    return this.validHostState(messages)
   }
 
   private composerSnapshotFollowups(): HostToWebviewMessage[] {
     const sessionID = this.controller?.snapshot.selectedID
     if (!sessionID) return []
     const payload = this.composerPayloads.get(sessionID) ?? { revision: 0, attachments: [], pastedText: [] }
-    return [{ type: "composerPayloadChanged", sessionID, ...payload }]
+    return this.validHostState([{ type: "composerPayloadChanged", sessionID, ...payload }])
+  }
+
+  private validHostState(messages: HostToWebviewMessage[]): HostToWebviewMessage[] {
+    return messages.flatMap((message) => {
+      if (parseHostMessage(message)) return [message]
+      const type = typeof message.type === "string" ? message.type : "unknown"
+      if (message.type === "snapshot") {
+        const recovered = this.recoverInvalidSnapshot(message)
+        if (recovered) return [recovered]
+      }
+      this.reportError?.(`Generated invalid Workbench host message: ${type}`)
+      // A snapshot is the authoritative state and must never be silently hidden.
+      // Optional editor/composer decorations can be omitted until their next valid update.
+      return type === "snapshot" ? [message] : []
+    })
+  }
+
+  private recoverInvalidSnapshot(message: Extract<HostToWebviewMessage, { type: "snapshot" }>): HostToWebviewMessage | undefined {
+    const optionalSnapshotFields = [
+      "lineage", "mentionAgents", "providers", "resources", "catalog", "commands", "autoApproval", "runtime", "ptys",
+      "attentionItems", "composer", "runGroups", "worktrees", "walkthroughs", "health", "trace", "projection",
+      "artifacts", "reviewFindings", "evidence", "runComparisons",
+    ] as const
+    for (const field of optionalSnapshotFields) {
+      if (message.snapshot[field] === undefined) continue
+      const snapshot = { ...message.snapshot }
+      delete (snapshot as unknown as Record<string, unknown>)[field]
+      const candidate: HostToWebviewMessage = { type: "snapshot", snapshot }
+      if (!parseHostMessage(candidate)) continue
+      this.reportError?.(`Omitted invalid optional Workbench snapshot field: ${field}`)
+      return candidate
+    }
+    if (!message.snapshot.session) return undefined
+    const optionalSessionFields = [
+      "parentID", "directory", "agent", "model", "variant", "queue", "inFlightPromptID", "permissions", "questions", "todos",
+      "changes", "context", "goal", "delegations", "contextReceipts", "history", "archived", "shared", "shareUrl", "revertMessageID",
+    ] as const
+    for (const field of optionalSessionFields) {
+      if (message.snapshot.session[field] === undefined) continue
+      const session = { ...message.snapshot.session }
+      delete (session as unknown as Record<string, unknown>)[field]
+      if (field === "queue") delete (session as unknown as Record<string, unknown>).inFlightPromptID
+      const candidate: HostToWebviewMessage = { type: "snapshot", snapshot: { ...message.snapshot, session } }
+      if (!parseHostMessage(candidate)) continue
+      this.reportError?.(`Omitted invalid optional Workbench session field: ${field}`)
+      return candidate
+    }
+    return undefined
   }
 
   private async handleIncoming(raw: unknown, source: vscode.Webview, surfaceID: string): Promise<void> {
@@ -1402,6 +1451,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         }
         case "copyText":
           await vscode.env.clipboard.writeText(message.text)
+          vscode.window.setStatusBarMessage("OpenCode Workbench: Copied to clipboard", 2_000)
           break
       }
     } catch (error) {

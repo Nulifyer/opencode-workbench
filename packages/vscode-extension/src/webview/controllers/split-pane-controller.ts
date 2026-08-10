@@ -93,7 +93,10 @@ function defaultResizeObserver(callback: () => void): SplitPaneResizeObserver | 
  */
 export class SplitPaneController {
   private readonly definitions = new Map<string, SplitPaneDefinition>()
+  /** User-selected widths. These survive temporary layout constraints. */
   private readonly widths: Record<string, number> = Object.create(null) as Record<string, number>
+  /** Widths currently rendered after applying the available-space ceiling. */
+  private readonly renderedWidths: Record<string, number> = Object.create(null) as Record<string, number>
   private readonly disposers: Array<() => void> = []
   private readonly observer?: SplitPaneResizeObserver
   private active?: ActivePointer
@@ -104,7 +107,11 @@ export class SplitPaneController {
       if (!definition.key || this.definitions.has(definition.key)) throw new Error(`Duplicate split pane: ${definition.key || "<empty>"}`)
       if (!definition.cssProperty.startsWith("--")) throw new Error(`Split pane ${definition.key} requires a CSS custom property`)
       this.definitions.set(definition.key, definition)
-      this.widths[definition.key] = this.clamp(definition, definition.initialWidth)
+      this.widths[definition.key] = clampSplitPaneWidth(definition.initialWidth, {
+        minimum: definition.minimumWidth,
+        maximum: definition.maximumWidth,
+      })
+      this.renderedWidths[definition.key] = this.clamp(definition, this.widths[definition.key]!)
       this.bind(definition)
       this.apply(definition)
     }
@@ -122,6 +129,7 @@ export class SplitPaneController {
     const next = this.clamp(definition, width)
     if (next !== this.widths[key]) {
       this.widths[key] = next
+      this.renderedWidths[key] = next
       this.apply(definition)
       if (persist) this.persist()
     }
@@ -130,19 +138,15 @@ export class SplitPaneController {
 
   reconcile(): void {
     if (this.disposed) return
-    let changed = false
     for (const definition of this.definitions.values()) {
-      const current = this.widths[definition.key]!
-      const next = this.clamp(definition, current)
-      if (current === next) {
+      const next = this.clamp(definition, this.widths[definition.key]!)
+      if (this.renderedWidths[definition.key] === next) {
         this.syncAria(definition)
         continue
       }
-      this.widths[definition.key] = next
+      this.renderedWidths[definition.key] = next
       this.apply(definition)
-      changed = true
     }
-    if (changed) this.persist()
   }
 
   dispose(): void {
@@ -157,7 +161,7 @@ export class SplitPaneController {
     const pointerDown = (event: PointerEvent): void => {
       if (event.button !== 0 || this.disposed) return
       event.preventDefault()
-      this.active = { id: event.pointerId, key: definition.key, startX: event.clientX, startWidth: this.widths[definition.key]! }
+      this.active = { id: event.pointerId, key: definition.key, startX: event.clientX, startWidth: this.renderedWidths[definition.key]! }
       definition.separator.setPointerCapture?.(event.pointerId)
     }
     const pointerMove = (event: PointerEvent): void => {
@@ -177,7 +181,7 @@ export class SplitPaneController {
     const keyDown = (event: KeyboardEvent): void => {
       const next = splitPaneWidthForKey(
         event.key,
-        this.widths[definition.key]!,
+        this.renderedWidths[definition.key]!,
         this.bounds(definition),
         definition.edge,
         definition.step,
@@ -221,7 +225,7 @@ export class SplitPaneController {
   }
 
   private apply(definition: SplitPaneDefinition): void {
-    const width = this.widths[definition.key]!
+    const width = this.renderedWidths[definition.key]!
     this.options.root.style.setProperty(definition.cssProperty, `${width}px`)
     this.syncAria(definition)
   }
@@ -230,7 +234,7 @@ export class SplitPaneController {
     const bounds = this.bounds(definition)
     const minimum = clampSplitPaneWidth(bounds.minimum, bounds)
     const maximum = clampSplitPaneWidth(bounds.maximum, bounds)
-    const current = this.widths[definition.key]!
+    const current = this.renderedWidths[definition.key]!
     definition.separator.setAttribute("role", "separator")
     definition.separator.setAttribute("aria-orientation", "vertical")
     definition.separator.setAttribute("aria-valuemin", String(minimum))

@@ -321,8 +321,11 @@ export class WorkbenchProtocolClient<TOutbound, TInbound, TState = unknown> {
     ) return false;
     if (!Array.isArray(snapshot.state)) throw new Error("Workbench snapshot state must be a message array");
     const messages = snapshot.state.map((value) => this.options.parseInbound(value));
-    if (messages.some((value) => value === undefined)) {
-      throw new Error("Workbench snapshot contains an invalid message");
+    const invalidIndex = messages.findIndex((value) => value === undefined);
+    if (invalidIndex >= 0) {
+      const raw = snapshot.state[invalidIndex];
+      const type = record(raw) && typeof raw.type === "string" ? raw.type : "unknown";
+      throw new Error(`Workbench snapshot contains an invalid ${type} message at index ${invalidIndex}`);
     }
     if (currentEpoch && currentEpoch !== snapshot.epoch) {
       this.retiredEpochs.add(currentEpoch);
