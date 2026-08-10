@@ -278,7 +278,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private closeVisibleSidebar(): void {
-    if (this.view?.visible) void vscode.commands.executeCommand("workbench.action.closeSidebar")
+    if (this.view?.visible) void vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar")
   }
 
   captureEditorSelection(): BrowserEditorSelection | undefined {
@@ -2105,7 +2105,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.recoveryPreviews.clear()
     for (const surfaceID of this.surfaceIDs.values()) this.protocol.detach(surfaceID)
     this.surfaceIDs.clear()
-    this.panel?.dispose()
+    // VS Code owns the editor panel. Keeping it alive allows the registered
+    // WebviewPanelSerializer to restore it with the newly activated extension
+    // after a window reload or extension update.
     this.disposeAll(this.panelDisposables)
     this.disposeAll(this.viewDisposables)
     this.disposeAll(this.disposables)

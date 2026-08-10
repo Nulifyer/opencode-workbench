@@ -378,7 +378,8 @@ Deno.test("responsive and forced-color hardening covers the Task Workbench contr
 Deno.test("editor transition closes the originating sidebar and modernizes the Workbench shell", () => {
   for (const marker of [
     "this.closeVisibleSidebar()",
-    'vscode.commands.executeCommand("workbench.action.closeSidebar")',
+    'vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar")',
+    "WebviewPanelSerializer to restore it",
     'class="inspector-tab-group" role="presentation"',
     'aria-valuemin="420" aria-valuemax="900" aria-valuenow="500"',
   ]) if (!chatView.includes(marker)) throw new Error(`Editor surface transition or grouped navigation omits: ${marker}`)

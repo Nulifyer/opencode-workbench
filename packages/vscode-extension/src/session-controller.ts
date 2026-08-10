@@ -194,6 +194,7 @@ export class SessionController {
   private runtimeGeneration = 0
   private runtimeRefreshTimer?: NodeJS.Timeout
   private catalogRefreshTimer?: NodeJS.Timeout
+  private sessionListRefreshTimer?: NodeJS.Timeout
   private reconcileGeneration = 0
   private sessionRevision = 0
   private statusRevision = 0
@@ -358,6 +359,7 @@ export class SessionController {
     this.client.cancelPendingRequests?.()
     if (this.runtimeRefreshTimer) clearTimeout(this.runtimeRefreshTimer)
     if (this.catalogRefreshTimer) clearTimeout(this.catalogRefreshTimer)
+    if (this.sessionListRefreshTimer) clearTimeout(this.sessionListRefreshTimer)
     this.transcripts.dispose()
     this.prompts.dispose()
     this.settlements.dispose()
@@ -369,6 +371,15 @@ export class SessionController {
 
   private dispatch(action: ControllerUpdate): void {
     this.repository.dispatch(action)
+  }
+
+  private scheduleSessionListRefresh(): void {
+    if (this.disposed) return
+    if (this.sessionListRefreshTimer) clearTimeout(this.sessionListRefreshTimer)
+    this.sessionListRefreshTimer = setTimeout(() => {
+      this.sessionListRefreshTimer = undefined
+      void this.reconcile().catch((error) => this.callbacks.error(`Could not refresh OpenCode session metadata: ${message(error)}`))
+    }, 120)
   }
 
   private async readRuntime(): Promise<RuntimeStatus> {
@@ -1863,6 +1874,7 @@ export class SessionController {
       }
       if (status) this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status } } })
       if (status?.type === "idle" || status?.type === "error") {
+        this.scheduleSessionListRefresh()
         void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
       }
     }
@@ -1894,6 +1906,10 @@ export class SessionController {
     }
     if (sessionID && (event.type === "session.idle" ||
       (event.type === "session.status" && record(event.properties.status) && event.properties.status.type === "idle"))) {
+      // OpenCode can generate a session title without publishing a matching
+      // session.updated event. Refresh its authoritative session list once the
+      // turn settles so title, summary, cost, share, and archive state converge.
+      this.scheduleSessionListRefresh()
       void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
     }
     const permission = parsePermission(event)

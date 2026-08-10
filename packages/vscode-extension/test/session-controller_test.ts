@@ -43,6 +43,28 @@ Deno.test("chat snapshot exposes switchable sessions", async () => {
   controller.dispose()
 })
 
+Deno.test("settled turns refresh generated OpenCode session titles", async () => {
+  let title = "New session"
+  const fake = {
+    listSessions: async () => [{ ...session("one", 2), title }],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  title = "Review Android camera privacy"
+  const refreshed = deferred<void>()
+  controller.subscribe(() => {
+    if (controller.chatSnapshot().session?.title === title) refreshed.resolve(undefined)
+  })
+  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  internal.handleEvent({ type: "session.idle", properties: { sessionID: "one" } })
+  await refreshed.promise
+  if (controller.chatSnapshot().sessions[0]?.title !== title) throw new Error("Generated OpenCode title was not refreshed after settlement")
+  controller.dispose()
+})
+
 Deno.test("LSP events refresh runtime status", async () => {
   let lspCalls = 0
   const fake = {
