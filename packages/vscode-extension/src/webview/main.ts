@@ -1,6 +1,6 @@
-import { createOpenCodeMessageID, parseHostMessage } from "@opencode-workbench/shared"
+import { createOpenCodeMessageID, MULTI_RUN_DEFAULT_CONCURRENCY, MULTI_RUN_MAX_CANDIDATES, MULTI_RUN_MAX_CONCURRENCY, parseHostMessage } from "@opencode-workbench/shared"
 import { PROMPT_ATTACHMENT_COUNT_LIMIT, PROMPT_TEXT_CHARACTER_LIMIT, reusablePermissionScopes, type ChatSnapshot, type ContextAttachmentSummary, type EditorContextSummary, type InlineAttachment, type MessageBundle, type MessagePart, type PastedTextBlock, type PermissionRequest, type RecoveryPreview, type RuntimeService, type TranscriptHistoryPage, type WebviewToHostMessage, type WorkbenchCapabilities, type WorkbenchCapability } from "@opencode-workbench/shared"
-import { activityVisualState, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, isNativeCompactionContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionLoadPhase, shouldCollapsePaste, stripTerminalSequences, terminalAnsiMarkup, toolKind, workspaceMentionReference } from "./presentation.js"
+import { activityVisualState, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, compactMetric, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, isNativeCompactionContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionLoadPhase, shouldCollapsePaste, stripTerminalSequences, terminalAnsiMarkup, toolKind, workspaceMentionReference } from "./presentation.js"
 import { renderMarkdown } from "./markdown.js"
 import { WorkbenchProtocolClient } from "./transport/protocol-v2-client.js"
 import { parseWithProtocolV1Adapter } from "./transport/protocol-v1-adapter.js"
@@ -18,8 +18,8 @@ import { InspectorShellController } from "./views/inspector/shell.js"
 import { inspectorPresentation, type InspectorTab, type RunComparisonSort, type RunComparisonSortKey } from "./views/inspector/presentation.js"
 import { composerSubmitIntent } from "./views/composer.js"
 import { addGoalCriterion, applyGoalFormPreset, createGoalFormDraft, goalFormMarkup, moveGoalCriterion, removeGoalCriterion, serializeGoalFormDraft, type GoalFormDraft, type GoalFormPreset } from "./views/goal-form.js"
-import { historyPresentation, mergeHistoryPage } from "./views/history.js"
-import { turnNavigationMarkers } from "./views/turn-navigation.js"
+import { historyLoadAllLabel, historyLoadAllProgress, historyPresentation, mergeHistoryPage } from "./views/history.js"
+import { turnNavigationMarkers, turnNavigationScrollTop } from "./views/turn-navigation.js"
 
 interface WebviewState {
   todoExpanded?: boolean
@@ -53,6 +53,8 @@ const jumpLatestCount = element<HTMLElement>("jump-latest-count")
 const historyBoundary = element<HTMLElement>("history-boundary")
 const historyBoundaryText = element<HTMLElement>("history-boundary-text")
 const historyLoadOlder = element<HTMLButtonElement>("history-load-older")
+const historyLoadAll = element<HTMLButtonElement>("history-load-all")
+const historyLoadProgress = element<HTMLElement>("history-load-progress")
 const sessionLoading = element<HTMLElement>("session-loading")
 const notice = element<HTMLElement>("notice")
 const noticeTitle = element<HTMLElement>("notice-title")
@@ -82,6 +84,7 @@ const attentionToggle = element<HTMLButtonElement>("attention-toggle")
 const attentionCount = element<HTMLElement>("attention-count")
 const attentionOverlay = element<HTMLElement>("attention-overlay")
 const attentionList = element<HTMLElement>("attention-list")
+const attentionMarkRead = element<HTMLButtonElement>("attention-mark-read")
 const recoveryOverlay = element<HTMLElement>("recovery-overlay")
 const recoveryContent = element<HTMLElement>("recovery-content")
 const helpToggle = element<HTMLButtonElement>("help-toggle")
@@ -101,6 +104,17 @@ const modelSearch = element<HTMLInputElement>("model-search")
 const modelOptions = element<HTMLElement>("model-options")
 const reasoningOptions = element<HTMLElement>("reasoning-options")
 const modelMeta = element<HTMLElement>("model-meta")
+const multiModelPicker = element<HTMLElement>("multi-model-picker")
+const multiModelClose = element<HTMLButtonElement>("multi-model-close")
+const multiModelSearch = element<HTMLInputElement>("multi-model-search")
+const multiModelOptions = element<HTMLElement>("multi-model-options")
+const multiModelSelectVisible = element<HTMLButtonElement>("multi-model-select-visible")
+const multiModelClear = element<HTMLButtonElement>("multi-model-clear")
+const multiModelCount = element<HTMLElement>("multi-model-count")
+const multiModelDisclosure = element<HTMLElement>("multi-model-disclosure")
+const multiModelConcurrency = element<HTMLInputElement>("multi-model-concurrency")
+const multiModelCancel = element<HTMLButtonElement>("multi-model-cancel")
+const multiModelStart = element<HTMLButtonElement>("multi-model-start")
 const composer = element<HTMLElement>("composer")
 const attachmentDock = element<HTMLElement>("attachment-dock")
 const attachmentPreview = element<HTMLElement>("attachment-preview")
@@ -115,7 +129,6 @@ const commandSuggestions = element<HTMLElement>("command-suggestions")
 const fileSuggestionList = element<HTMLElement>("file-suggestions")
 const permissionDock = element<HTMLElement>("permission-dock")
 const questionDock = element<HTMLElement>("question-dock")
-const goalDock = element<HTMLElement>("goal-dock")
 const todoDock = element<HTMLElement>("todo-dock")
 const workspaceStrip = element<HTMLElement>("workspace-strip")
 const historyOverlay = element<HTMLElement>("history-overlay")
@@ -218,6 +231,8 @@ let creatingSession = false
 let attachmentPreviewReturnFocus: HTMLElement | undefined
 let modelPickerReturnFocus: HTMLElement | undefined
 let modelPickerActiveValue: string | undefined
+let multiModelReturnFocus: HTMLElement | undefined
+const multiModelSelection = new Set<string>()
 let reasoningExpanded = false
 let noticeKind: "error" | "offline" | "projection" | undefined
 let noticeDetail = ""
@@ -239,6 +254,11 @@ const localInspectorFilters: { review: Record<ReviewFilterKey, string>; jobs: Re
 let splitPanes: SplitPaneController | undefined
 let pendingAttentionTarget: { sessionID?: string; itemID?: string; surface: "conversation" | "goal" | "runs" | "health" } | undefined
 let historyLoadingSessionID: string | undefined
+let historyLoadingMode: "page" | "all" | undefined
+let historyLoadAllCancelled = false
+let historyLoadAllLoaded = 0
+let historyLoadAllTarget: number | undefined
+let historyLoadAllPagesSinceRender = 0
 let pendingHistoryAnchor: ScrollAnchor | undefined
 const expandedHistory = new Map<string, TranscriptHistoryPage>()
 const composerState = new ComposerState()
@@ -261,11 +281,13 @@ let announcementTimer: number | undefined
 let pendingAnnouncement = ""
 const conversationView = new ConversationView({
   container: messages,
+  leadingElement: historyBoundary,
   jumpLatest,
   jumpLatestCount,
   renderUser: userHtml,
   renderAssistant: assistantHtml,
   renderTiming: timingHtml,
+  renderDependencySignature: messageRenderDependency,
 })
 const focusController = new FocusController()
 const attentionOverlayController = new OverlayController(attentionOverlay, attentionToggle)
@@ -491,6 +513,15 @@ function matchingChange(file: string): Change | undefined {
     const candidate = change.file.replace(/\\/g, "/")
     return candidate === normalized || normalized.endsWith(`/${candidate}`) || candidate.endsWith(`/${normalized}`)
   })
+}
+
+function messageRenderDependency(message: MessageBundle): string {
+  if (message.info.role !== "assistant") return ""
+  const dependsOnChanges = message.parts.some((part) =>
+    (part.type === "tool" && ["edit", "patch"].includes(toolKind(part))) ||
+    ["patch", "apply_patch", "edit", "write"].includes(part.type)
+  )
+  return dependsOnChanges ? JSON.stringify(snapshot.session?.changes ?? []) : ""
 }
 
 function editPatch(part: MessagePart): string {
@@ -782,10 +813,10 @@ function attachmentPreviewsFor(message: MessageBundle): SentAttachmentPreview[] 
 
 function userHtml(message: MessageBundle): string {
   if (isCompactionMessage(message)) {
-    return `<div class="compaction-divider" data-message-id="${escapeHtml(message.info.id)}" role="separator"><span>Session compacted</span></div>`
+    return `<div class="compaction-divider" data-message-id="${escapeHtml(message.info.id)}" role="note"><span>Session compacted</span></div>`
   }
   if (isGoalContinuationMessage(message)) {
-    return `<div class="compaction-divider goal-continuation-divider" data-message-id="${escapeHtml(message.info.id)}" role="separator"><span>Goal continued automatically</span></div>`
+    return `<div class="compaction-divider goal-continuation-divider" data-message-id="${escapeHtml(message.info.id)}" role="note"><span>Goal continued automatically</span></div>`
   }
   if (isNativeCompactionContinuationMessage(message)) {
     return `<div class="native-compaction-continuation" data-message-id="${escapeHtml(message.info.id)}" aria-hidden="true" hidden></div>`
@@ -831,6 +862,8 @@ function renderTranscript(session: NonNullable<ChatSnapshot["session"]>, active:
 }
 
 let turnNavigationObserver: IntersectionObserver | undefined
+let turnNavigationSyncFrame: number | undefined
+let conversationScrollFrame: number | undefined
 const visibleTurnTargets = new Set<string>()
 
 function markerTargetElement(value: string | undefined): HTMLElement | undefined {
@@ -844,18 +877,47 @@ function syncVisibleTurnMarkers(): void {
   const buttons = [...turnNavigation.querySelectorAll<HTMLButtonElement>("[data-marker-target]")]
   const visibleButtons = buttons.filter((button) => visibleTurnTargets.has(button.dataset.markerTarget ?? ""))
   if (!visibleButtons.length) return
+  const first = visibleButtons[0]!
+  const last = visibleButtons.at(-1)!
+  const nextScrollTop = turnNavigationScrollTop({
+    scrollTop: turnNavigation.scrollTop,
+    scrollHeight: turnNavigation.scrollHeight,
+    clientHeight: turnNavigation.clientHeight,
+    edgeInset: buttons[0]?.offsetTop ?? 0,
+    activeTop: first.offsetTop,
+    activeBottom: last.offsetTop + last.offsetHeight,
+  })
   for (const button of buttons) {
     if (visibleTurnTargets.has(button.dataset.markerTarget ?? "")) button.setAttribute("aria-current", "true")
     else button.removeAttribute("aria-current")
   }
-  const first = visibleButtons[0]!
-  const top = first.offsetTop
-  const bottom = top + first.offsetHeight
-  if (top < turnNavigation.scrollTop) turnNavigation.scrollTop = top
-  else if (bottom > turnNavigation.scrollTop + turnNavigation.clientHeight) turnNavigation.scrollTop = bottom - turnNavigation.clientHeight
+  if (turnNavigation.scrollTop !== nextScrollTop) turnNavigation.scrollTop = nextScrollTop
+}
+
+function cancelVisibleTurnMarkerSync(): void {
+  if (turnNavigationSyncFrame === undefined) return
+  cancelAnimationFrame(turnNavigationSyncFrame)
+  turnNavigationSyncFrame = undefined
+}
+
+function scheduleVisibleTurnMarkerSync(): void {
+  if (turnNavigationSyncFrame !== undefined) return
+  turnNavigationSyncFrame = requestAnimationFrame(() => {
+    turnNavigationSyncFrame = undefined
+    syncVisibleTurnMarkers()
+  })
+}
+
+function scheduleConversationScrollSync(): void {
+  if (conversationScrollFrame !== undefined) return
+  conversationScrollFrame = requestAnimationFrame(() => {
+    conversationScrollFrame = undefined
+    conversationView.handleScroll()
+  })
 }
 
 function observeTurnMarkers(): void {
+  cancelVisibleTurnMarkerSync()
   turnNavigationObserver?.disconnect()
   turnNavigationObserver = undefined
   visibleTurnTargets.clear()
@@ -873,12 +935,13 @@ function observeTurnMarkers(): void {
       if (entry.isIntersecting) visibleTurnTargets.add(value)
       else visibleTurnTargets.delete(value)
     }
-    syncVisibleTurnMarkers()
+    scheduleVisibleTurnMarkerSync()
   }, { root: messages, rootMargin: "-16px 0px -16px 0px" })
   for (const target of targets.keys()) turnNavigationObserver.observe(target)
 }
 
 function renderTurnNavigation(session?: NonNullable<ChatSnapshot["session"]>): void {
+  cancelVisibleTurnMarkerSync()
   turnNavigationObserver?.disconnect()
   turnNavigationObserver = undefined
   visibleTurnTargets.clear()
@@ -898,6 +961,28 @@ function renderTurnNavigation(session?: NonNullable<ChatSnapshot["session"]>): v
   observeTurnMarkers()
 }
 
+const revealedTurnNavigationSessions = new Set<string>()
+
+function transcriptOverflows(): boolean {
+  return messages.clientHeight > 0 && messages.scrollHeight > messages.clientHeight + 1
+}
+
+function syncTurnNavigationVisibility(session = snapshot.session): void {
+  const markerCount = turnNavigation.querySelectorAll("[data-marker-target]").length
+  if (!session || markerCount === 0) {
+    cancelVisibleTurnMarkerSync()
+    turnNavigation.hidden = true
+    return
+  }
+  const wasHidden = turnNavigation.hidden
+  if (!revealedTurnNavigationSessions.has(session.id) && transcriptOverflows()) revealedTurnNavigationSessions.add(session.id)
+  turnNavigation.hidden = !revealedTurnNavigationSessions.has(session.id)
+  if (wasHidden && !turnNavigation.hidden) observeTurnMarkers()
+}
+
+const turnNavigationResizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => scheduleViewportLayout(true))
+turnNavigationResizeObserver?.observe(messages)
+
 function renderSessionChangeSummary(session?: NonNullable<ChatSnapshot["session"]>, active = false): void {
   const changes = session?.changes ?? []
   const visible = Boolean(session && session.messages.length && changes.length && !active)
@@ -914,12 +999,55 @@ function renderSessionChangeSummary(session?: NonNullable<ChatSnapshot["session"
 function renderHistoryBoundary(session?: NonNullable<ChatSnapshot["session"]>): void {
   const presentation = historyPresentation(session?.history)
   const loading = Boolean(session && historyLoadingSessionID === session.id)
-  historyBoundary.hidden = !presentation.visible
+  const loadingAll = loading && historyLoadingMode === "all"
+  const actionable = Boolean(presentation.actionLabel && session?.messages.length)
+  const loadAllLabel = historyLoadAllLabel(session?.history)
+  const loadAllProgress = historyLoadAllProgress(historyLoadAllLoaded, historyLoadAllTarget)
+  historyBoundary.hidden = !actionable && !loading
   historyBoundary.setAttribute("aria-busy", String(loading))
-  historyBoundaryText.textContent = loading ? `${presentation.text} Loading the next older page…` : presentation.text
-  historyLoadOlder.hidden = !presentation.actionLabel || !session?.messages.length
+  historyBoundaryText.textContent = loadingAll
+    ? `${loadAllProgress}. ${historyLoadAllCancelled ? "Cancelling after the current page." : "Loading older messages."}`
+    : loading ? `${presentation.text} Loading the next older page…` : presentation.text
+  historyLoadOlder.hidden = !actionable || loadingAll
   historyLoadOlder.disabled = loading
   historyLoadOlder.textContent = loading ? "Loading…" : presentation.actionLabel ?? "Load older messages"
+  historyLoadOlder.title = presentation.text
+  historyLoadOlder.setAttribute("aria-label", loading ? "Loading older messages" : `${presentation.actionLabel ?? "Load older messages"}. ${presentation.text}`)
+  historyLoadAll.hidden = !actionable && !loadingAll
+  historyLoadAll.disabled = (loading && !loadingAll) || historyLoadAllCancelled
+  historyLoadAll.textContent = loadingAll ? historyLoadAllCancelled ? "Cancelling…" : "Cancel" : loadAllLabel
+  historyLoadAll.title = loadingAll ? "Stop after the current history page" : `Load every available older message. ${presentation.text}`
+  historyLoadAll.setAttribute("aria-label", loadingAll ? historyLoadAllCancelled ? "Cancelling load all messages" : "Cancel loading all messages" : `${loadAllLabel}. ${presentation.text}`)
+  historyLoadProgress.hidden = !loadingAll
+  historyLoadProgress.textContent = loadingAll ? loadAllProgress : ""
+}
+
+function resetHistoryLoading(): void {
+  historyLoadingSessionID = undefined
+  historyLoadingMode = undefined
+  historyLoadAllCancelled = false
+  historyLoadAllLoaded = 0
+  historyLoadAllTarget = undefined
+  historyLoadAllPagesSinceRender = 0
+  pendingHistoryAnchor = undefined
+}
+
+function beginHistoryLoad(mode: "page" | "all"): void {
+  const session = snapshot.session
+  const beforeMessageID = session?.messages[0]?.info.id
+  if (!session?.history?.hasOlder || !beforeMessageID || historyLoadingSessionID) return
+  pendingHistoryAnchor = conversationView.capturePrependAnchor()
+  historyLoadingSessionID = session.id
+  historyLoadingMode = mode
+  historyLoadAllCancelled = false
+  historyLoadAllLoaded = 0
+  historyLoadAllTarget = mode === "all" && !session.history.sourceMayBeTruncated
+    ? Math.max(0, session.history.totalMessages - session.history.visibleMessages)
+    : undefined
+  historyLoadAllPagesSinceRender = 0
+  renderHistoryBoundary(session)
+  if (mode === "all") conversationView.restorePrependAnchor(pendingHistoryAnchor)
+  post({ type: "loadOlderHistory", sessionID: session.id, beforeMessageID })
 }
 
 function fillSelect(select: HTMLSelectElement, defaultLabel: string, options: Array<{ value: string; label: string }>, selected?: string): void {
@@ -1035,6 +1163,73 @@ function closeModelPicker(restoreFocus = true): void {
   const target = modelPickerReturnFocus
   modelPickerReturnFocus = undefined
   if (restoreFocus) (target?.isConnected ? target : modelToggle).focus()
+}
+
+function visibleMultiModelOptions() {
+  const query = multiModelSearch.value.trim().toLowerCase()
+  return snapshot.models
+    .filter((item) => !query || `${item.name}\n${item.providerID}\n${item.id}`.toLowerCase().includes(query))
+    .sort((left, right) => left.providerID.localeCompare(right.providerID, undefined, { numeric: true }) || left.name.localeCompare(right.name, undefined, { numeric: true }))
+    .slice(0, 500)
+}
+
+function renderMultiModelPicker(): void {
+  if (multiModelPicker.hidden) return
+  const catalogValues = new Set(snapshot.models.map((item) => `${item.providerID}/${item.id}`))
+  for (const value of multiModelSelection) if (!catalogValues.has(value)) multiModelSelection.delete(value)
+  const visible = visibleMultiModelOptions()
+  const groups = new Map<string, typeof visible>()
+  for (const item of visible) groups.set(item.providerID, [...(groups.get(item.providerID) ?? []), item])
+  multiModelOptions.innerHTML = visible.length ? [...groups].map(([providerID, items]) => {
+    const provider = snapshot.providers?.find((candidate) => candidate.id === providerID)?.name ?? providerID
+    return `<div role="group" aria-label="${escapeHtml(provider)}"><div class="multi-model-provider">${escapeHtml(provider)}</div>${items.map((item) => {
+      const value = `${item.providerID}/${item.id}`
+      const limits = item.contextLimit ? `${Math.round(item.contextLimit / 1_000)}k context` : ""
+      return `<label class="multi-model-option"><input type="checkbox" data-multi-model-value="${escapeHtml(value)}"${multiModelSelection.has(value) ? " checked" : ""}><span>${escapeHtml(item.name)}</span><small>${escapeHtml(limits)}</small></label>`
+    }).join("")}</div>`
+  }).join("") : `<p class="placeholder" role="status">No matching models.</p>`
+  const count = multiModelSelection.size
+  multiModelConcurrency.max = String(MULTI_RUN_MAX_CONCURRENCY)
+  const requestedConcurrency = Math.trunc(Number(multiModelConcurrency.value)) || MULTI_RUN_DEFAULT_CONCURRENCY
+  const concurrency = Math.max(1, Math.min(MULTI_RUN_MAX_CONCURRENCY, requestedConcurrency))
+  const effectiveConcurrency = Math.min(count, concurrency)
+  multiModelConcurrency.value = String(concurrency)
+  multiModelCount.textContent = `${count} selected`
+  multiModelDisclosure.classList.toggle("warning", count > MULTI_RUN_DEFAULT_CONCURRENCY)
+  multiModelDisclosure.textContent = count > MULTI_RUN_DEFAULT_CONCURRENCY
+    ? `${count} peer runs selected. Above the default concurrency of ${MULTI_RUN_DEFAULT_CONCURRENCY}; up to ${effectiveConcurrency} start together${count > effectiveConcurrency ? ` and ${count - effectiveConcurrency} queue` : ""}. This is allowed and increases provider usage.`
+    : count > 1
+    ? `${count} peer sessions and worktrees; all ${effectiveConcurrency} start together. Review provider usage before starting.`
+    : `Select at least two models. Every candidate is a peer and runs in an isolated worktree.`
+  multiModelStart.disabled = count < 2 || count > MULTI_RUN_MAX_CANDIDATES || !snapshot.connected
+  multiModelSelectVisible.disabled = !visible.some((item) => !multiModelSelection.has(`${item.providerID}/${item.id}`)) || count >= MULTI_RUN_MAX_CANDIDATES
+  multiModelClear.disabled = count === 0
+}
+
+function openMultiModelPicker(): void {
+  const sessionID = snapshot.session?.id
+  if (!sessionID || !snapshot.connected || !draft.value.trim()) {
+    showNotice("error", "Task required", "Enter the task every isolated model should perform before selecting models.")
+    return
+  }
+  closeModelPicker(false)
+  multiModelReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : send
+  multiModelSelection.clear()
+  const preferred = model.value || snapshot.session?.model
+  if (preferred && snapshot.models.some((item) => `${item.providerID}/${item.id}` === preferred)) multiModelSelection.add(preferred)
+  multiModelSearch.value = ""
+  multiModelConcurrency.value = String(MULTI_RUN_DEFAULT_CONCURRENCY)
+  multiModelPicker.hidden = false
+  sendOptions.open = false
+  renderMultiModelPicker()
+  requestAnimationFrame(() => multiModelSearch.focus())
+}
+
+function closeMultiModelPicker(restoreFocus = true): void {
+  multiModelPicker.hidden = true
+  const target = multiModelReturnFocus
+  multiModelReturnFocus = undefined
+  if (restoreFocus) (target?.isConnected ? target : send).focus()
 }
 
 function modelOptionButtons(): HTMLButtonElement[] {
@@ -1165,33 +1360,27 @@ function renderSessionTaskDock(session: NonNullable<ChatSnapshot["session"]>): v
   const plan = (snapshot.artifacts ?? [])
     .filter((artifact) => artifact.kind === "plan" && artifact.lifecycle === "active")
     .sort((left, right) => right.updatedAt - left.updatedAt)[0]
-  const activeRuns = (snapshot.runGroups ?? []).flatMap((group) => group.runs)
-    .filter((run) => ["pending", "preparing", "admitting", "working", "needs-input"].includes(run.phase))
-  const activeDelegations = (session.delegations ?? []).filter((delegation) => ["busy", "retry"].includes(delegation.status.type))
   const cards: string[] = []
   if (plan) cards.push(`<button type="button" class="session-task-card" data-session-detail="plan"><span class="dock-label">Plan</span><strong>Implementation plan</strong><small>${escapeHtml(plan.state)} · updated ${escapeHtml(new Date(plan.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</small></button>`)
-  const workCount = activeRuns.length + activeDelegations.length
-  if (workCount) cards.push(`<button type="button" class="session-task-card" data-session-detail="jobs"><span class="dock-label">Current work</span><strong>${workCount} active ${workCount === 1 ? "job" : "jobs"}</strong><small>${activeDelegations.length ? `${activeDelegations.length} delegated` : ""}${activeDelegations.length && activeRuns.length ? " · " : ""}${activeRuns.length ? `${activeRuns.length} isolated` : ""}</small></button>`)
+  const ownedGroups = (snapshot.runGroups ?? []).filter((group) => group.ownerSessionID === session.id).sort((left, right) => right.createdAt - left.createdAt)
+  const latestGroup = ownedGroups[0]
+  if (latestGroup) {
+    const completed = latestGroup.runs.filter((run) => ["completed", "failed", "cancelled"].includes(run.phase)).length
+    const needsInput = latestGroup.runs.filter((run) => run.phase === "needs-input").length
+    const detail = needsInput ? `${needsInput} need input` : completed === latestGroup.runs.length ? "Ready to review, compare, fuse, keep, or discard" : `${latestGroup.runs.length - completed} still working or queued`
+    cards.push(`<button type="button" class="session-task-card session-task-card-compact" data-session-detail="runs"><span class="dock-label">Multi-model</span><strong>${completed}/${latestGroup.runs.length} finished</strong><small>${escapeHtml(detail)}</small><span aria-hidden="true">›</span></button>`)
+  } else {
+    const activeRuns = (snapshot.runGroups ?? []).flatMap((group) => group.runs).filter((run) => ["pending", "preparing", "admitting", "working", "needs-input"].includes(run.phase))
+    if (activeRuns.length) cards.push(`<button type="button" class="session-task-card session-task-card-compact" data-session-detail="jobs"><span class="dock-label">Background runs</span><strong>${activeRuns.length} active ${activeRuns.length === 1 ? "run" : "runs"}</strong><small>Isolated work not already shown in chat</small><span aria-hidden="true">›</span></button>`)
+  }
   sessionTaskDock.hidden = cards.length === 0
   sessionTaskDock.innerHTML = cards.join("")
 }
 
 function renderSummaries(session: NonNullable<ChatSnapshot["session"]>, active: boolean): void {
-  const goal = session.goal
-  const signature = JSON.stringify([session.id, goal, session.todos, session.delegations, snapshot.artifacts, snapshot.runGroups, active])
+  const signature = JSON.stringify([session.id, session.todos, session.delegations, snapshot.artifacts, snapshot.runGroups, active])
   if (signature === summarySignature) return
   summarySignature = signature
-  goalDock.hidden = !goal
-  if (goal) {
-    const state = goal.status ? `${goal.status.charAt(0).toUpperCase()}${goal.status.slice(1)}` : "Active"
-    const elapsed = goal.timeUsedSeconds === undefined ? "" : formatDuration(goal.timeUsedSeconds * 1_000)
-    const turns = goal.autoTurns === undefined ? "" : goal.maxAutoTurns === undefined ? `Auto ${goal.autoTurns}` : `Auto ${goal.autoTurns}/${goal.maxAutoTurns}`
-    const toggle = goal.status === "active" ? "pause" : goal.status === "paused" ? "resume" : undefined
-    const limits = [`Tokens ${goal.tokensUsed ?? 0}${goal.tokenBudget === undefined ? "" : `/${goal.tokenBudget}`}`, `Turns ${goal.autoTurns ?? 0}${goal.maxAutoTurns === undefined ? "" : `/${goal.maxAutoTurns}`}`, `Time ${elapsed || "0s"}${goal.maxDurationSeconds === undefined ? "" : `/${formatDuration(goal.maxDurationSeconds * 1_000)}`}`]
-    const criteria = goal.acceptanceCriteria?.length ? `<ol>${goal.acceptanceCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ol>` : `<p>No explicit acceptance criteria.</p>`
-    const verdict = goal.latestVerdict ? `<p><strong>Latest verdict: ${escapeHtml(goal.latestVerdict.verdict)}</strong> · ${escapeHtml(goal.latestVerdict.confidence)} confidence</p><p>${escapeHtml(goal.latestVerdict.reason)}</p>${goal.latestVerdict.missingCriteria.length ? `<p>Missing: ${goal.latestVerdict.missingCriteria.map(escapeHtml).join("; ")}</p>` : ""}` : `<p>No independent verdict recorded.</p>`
-    goalDock.innerHTML = `<button type="button" class="goal-open" data-goal-action="edit" title="Open goal details"><span class="goal-icon" aria-hidden="true">◎</span><span class="goal-state">${escapeHtml(state)}</span><strong>${escapeHtml(goal.objective || "Keep working until done")}</strong>${turns ? `<small>${escapeHtml(turns)}</small>` : ""}</button><details class="goal-details"><summary>Completion conditions and limits</summary><p>${limits.map(escapeHtml).join(" · ")}</p>${criteria}${verdict}${goal.status === "unmet" && goal.blocker ? `<p><strong>Needs input:</strong> ${escapeHtml(goal.blocker)}</p>` : ""}</details><div class="goal-actions">${toggle ? `<button type="button" class="goal-action" data-goal-action="${toggle}">${toggle === "pause" ? "Pause" : "Resume"}</button>` : ""}<button type="button" class="goal-action" data-goal-action="verify"${goal.verifier?.enabled === false ? ` title="Verification is disabled in goal settings"` : ""}>Verify</button><button type="button" class="goal-action" data-goal-action="configure">Edit</button><button type="button" class="goal-action" data-goal-action="cancel">Stop</button></div>`
-  } else goalDock.innerHTML = ""
   const todos = session.todos ?? []
   const completed = todos.filter((todo) => todo.status === "completed").length
   const currentTodo = currentTodoContent(todos)
@@ -1247,14 +1436,16 @@ function healthWorkspaceDetail(): string {
 }
 
 function contextDetails(context: NonNullable<NonNullable<ChatSnapshot["session"]>["context"]>): string {
+  const reported = context.usageReported !== false
+  const count = (value: number): string => reported ? value.toLocaleString() : "Not reported"
   const rows = [
     ["Model", context.model ?? "Unknown"],
-    ["Total tokens", context.totalTokens.toLocaleString()],
-    ["Input", context.inputTokens.toLocaleString()],
-    ["Output", context.outputTokens.toLocaleString()],
-    ["Reasoning", context.reasoningTokens.toLocaleString()],
-    ["Cache read", context.cacheReadTokens.toLocaleString()],
-    ["Cache write", context.cacheWriteTokens.toLocaleString()],
+    ["Total tokens", count(context.totalTokens)],
+    ["Input", count(context.inputTokens)],
+    ["Output", count(context.outputTokens)],
+    ["Reasoning", count(context.reasoningTokens)],
+    ["Cache read", count(context.cacheReadTokens)],
+    ["Cache write", count(context.cacheWriteTokens)],
     ["Context limit", context.contextLimit?.toLocaleString() ?? "Unknown"],
     ["Input limit", context.inputLimit?.toLocaleString() ?? "Unknown"],
     ["Output limit", context.outputLimit?.toLocaleString() ?? "Unknown"],
@@ -1263,29 +1454,222 @@ function contextDetails(context: NonNullable<NonNullable<ChatSnapshot["session"]
   return `<dl class="workspace-context-list">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label!)}</dt><dd>${escapeHtml(value!)}</dd></div>`).join("")}</dl>`
 }
 
+function metricDuration(seconds: number, detailed = false): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const days = Math.floor(total / 86_400)
+  const hours = Math.floor(total % 86_400 / 3_600)
+  const minutes = Math.floor(total % 3_600 / 60)
+  if (days) return `${days}d${hours || detailed ? ` ${hours}h` : ""}${detailed && minutes ? ` ${minutes}m` : ""}`
+  if (hours) return `${hours}h${minutes || detailed ? ` ${minutes}m` : ""}`
+  if (minutes) return `${minutes}m${detailed ? ` ${total % 60}s` : ""}`
+  return `${total}s`
+}
+
+function sessionTurnMetric(metrics: NonNullable<NonNullable<ChatSnapshot["session"]>["metrics"]>, suffix = " turns"): string {
+  return `${metrics.turnsTruncated ? "≥" : ""}${metrics.turnsUsed.toLocaleString()}${suffix}`
+}
+
+function liveMetricDuration(seconds: number | undefined, sampledAt: number | undefined, running: boolean): number {
+  if (seconds === undefined) return 0
+  return running && sampledAt !== undefined ? seconds + Math.max(0, Math.floor(Date.now() / 1_000) - sampledAt) : seconds
+}
+
+function goalStateLabel(status: string | undefined): string {
+  return ({ active: "Active", paused: "Paused", budgetLimited: "Token limit", usageLimited: "Time limit", complete: "Complete", unmet: "Needs input" } as Record<string, string>)[status ?? ""] ?? "Goal"
+}
+
+function verdictLabel(verdict: string): string {
+  return ({ continue: "Continue", complete: "Complete", blocked: "Blocked", "needs-user": "Needs input" } as Record<string, string>)[verdict] ?? verdict
+}
+
+function goalMetricRow(label: string, objective: string, status: string, tokens: number, seconds: number, turns: number, current = false): string {
+  return `<li class="goal-metric-row${current ? " current" : ""}"><span class="goal-tree-branch" aria-hidden="true">${current ? "└" : "├"}</span><span class="goal-metric-copy"><strong>${escapeHtml(label)}</strong><small title="${escapeHtml(objective)}">${escapeHtml(objective)}</small></span><span>${tokens.toLocaleString()} tokens</span><span${current ? ` data-workspace-duration="goal" data-duration-detailed="true"` : ""}>${escapeHtml(metricDuration(seconds, true))}</span><span>${turns.toLocaleString()} turns</span><small class="goal-metric-status">${escapeHtml(goalStateLabel(status))}</small></li>`
+}
+
+function workspaceDurationValues(session: NonNullable<ChatSnapshot["session"]>): { session: number; goal: number; outside: number } {
+  const history = session.goalHistory ?? session.goal?.archivedGoals ?? []
+  const sessionSeconds = liveMetricDuration(session.metrics?.timeUsedSeconds, session.metrics?.sampledAt, session.archived !== true)
+  const goalSeconds = liveMetricDuration(session.goal?.timeUsedSeconds, session.goal?.sampledAt, session.goal?.status === "active")
+  const accountedSeconds = history.reduce((total, entry) => total + entry.timeUsedSeconds, 0) + goalSeconds
+  return { session: sessionSeconds, goal: goalSeconds, outside: Math.max(0, sessionSeconds - accountedSeconds) }
+}
+
+function syncWorkspaceDurations(session: NonNullable<ChatSnapshot["session"]>): void {
+  const durations = workspaceDurationValues(session)
+  for (const target of workspaceStrip.querySelectorAll<HTMLElement>("[data-workspace-duration]")) {
+    const key = target.dataset.workspaceDuration as keyof typeof durations
+    if (!(key in durations)) continue
+    target.textContent = metricDuration(durations[key], target.dataset.durationDetailed === "true")
+  }
+  const goal = session.goal
+  const history = session.goalHistory ?? goal?.archivedGoals ?? []
+  const sequence = goal?.sequence ?? (history.at(-1)?.sequence ?? 0) + 1
+  const label = goal
+    ? `Goal ${sequence}, ${goalStateLabel(goal.status)}: ${(goal.tokensUsed ?? 0).toLocaleString()} tokens, ${metricDuration(durations.goal, true)}, ${(goal.turnsUsed ?? 0).toLocaleString()} turns. Session: ${session.metrics?.tokensUsed?.toLocaleString() ?? "unknown"} tokens, ${metricDuration(durations.session, true)}, ${session.metrics ? sessionTurnMetric(session.metrics) : "unknown turns"}.`
+    : `Session metrics: ${session.metrics?.tokensUsed?.toLocaleString() ?? "unknown"} tokens, ${metricDuration(durations.session, true)}, ${session.metrics ? sessionTurnMetric(session.metrics) : "unknown turns"}.`
+  const summary = workspaceStrip.querySelector<HTMLElement>(".workspace-goal > summary")
+  summary?.setAttribute("title", label)
+  summary?.setAttribute("aria-label", label)
+}
+
+function goalWorkspaceDetail(session: NonNullable<ChatSnapshot["session"]>): string {
+  const goal = session.goal
+  const history = session.goalHistory ?? goal?.archivedGoals ?? []
+  const metrics = session.metrics
+  const durations = workspaceDurationValues(session)
+  const sessionSeconds = durations.session
+  const goalSeconds = durations.goal
+  const goalSequence = goal?.sequence ?? (history.at(-1)?.sequence ?? 0) + 1
+  const goalStatus = goalStateLabel(goal?.status)
+  const goalTokens = goal?.tokensUsed ?? 0
+  const goalTurns = goal?.turnsUsed ?? 0
+  const statusAttention = goal && ["paused", "budgetLimited", "usageLimited", "unmet"].includes(goal.status ?? "")
+  const triggerLabel = goal
+    ? `Goal ${goalSequence}, ${goalStatus}: ${goalTokens.toLocaleString()} tokens, ${metricDuration(goalSeconds, true)}, ${goalTurns.toLocaleString()} turns. Session: ${metrics?.tokensUsed?.toLocaleString() ?? "unknown"} tokens, ${metricDuration(sessionSeconds, true)}, ${metrics ? sessionTurnMetric(metrics) : "unknown turns"}.`
+    : `Session metrics: ${metrics?.tokensUsed?.toLocaleString() ?? "unknown"} tokens, ${metricDuration(sessionSeconds, true)}, ${metrics ? sessionTurnMetric(metrics) : "unknown turns"}.`
+  const trigger = goal
+    ? `<span class="goal-strip-state${statusAttention ? " attention" : ""}"><span aria-hidden="true">${statusAttention ? "!" : "◎"}</span>${goalStatus === "Active" ? "" : `<span class="goal-strip-state-label">${escapeHtml(goalStatus)}</span>`}</span><span class="goal-strip-session">${compactMetric(metrics?.tokensUsed)} · <span data-workspace-duration="session">${escapeHtml(metricDuration(sessionSeconds))}</span> · ${metrics ? sessionTurnMetric(metrics, "t") : "--t"}</span><span class="goal-strip-separator" aria-hidden="true">›</span><b class="goal-strip-id">G${goalSequence}</b><span class="goal-strip-objective">${escapeHtml(goal.objective || "Current goal")}</span><span class="goal-strip-tokens">${compactMetric(goalTokens)}</span><span class="goal-strip-time" data-workspace-duration="goal">${escapeHtml(metricDuration(goalSeconds))}</span><span class="goal-strip-turns">${goalTurns}t</span>`
+    : `<span class="goal-strip-state"><span aria-hidden="true">◷</span><span class="goal-strip-state-label">Session</span></span><span class="goal-strip-session standalone">${compactMetric(metrics?.tokensUsed)} · <span data-workspace-duration="session">${escapeHtml(metricDuration(sessionSeconds))}</span> · ${metrics ? sessionTurnMetric(metrics, "t") : "--t"}</span>`
+  const archivedRows = history.map((entry) => goalMetricRow(`Goal ${entry.sequence}`, entry.objective, entry.status, entry.tokensUsed, entry.timeUsedSeconds, entry.turnsUsed)).join("")
+  const currentRow = goal ? goalMetricRow(`Goal ${goalSequence}`, goal.objective || "Current goal", goal.status ?? "active", goalTokens, goalSeconds, goalTurns, true) : ""
+  const accountedTokens = history.reduce((total, entry) => total + entry.tokensUsed, 0) + goalTokens
+  const accountedTurns = history.reduce((total, entry) => total + entry.turnsUsed, 0) + goalTurns
+  const outsideTokens = Math.max(0, (metrics?.tokensUsed ?? accountedTokens) - accountedTokens)
+  const outsideSeconds = durations.outside
+  const outsideTurns = Math.max(0, (metrics?.turnsUsed ?? accountedTurns) - accountedTurns)
+  const outsideTurnLabel = `${metrics?.turnsTruncated ? "≥" : ""}${outsideTurns.toLocaleString()} turns`
+  const outside = outsideTokens || outsideSeconds || outsideTurns
+    ? `<li class="goal-metric-row outside"><span class="goal-tree-branch" aria-hidden="true">└</span><span class="goal-metric-copy"><strong>Outside goals</strong><small>Session work not attributed to a goal</small></span><span>${outsideTokens.toLocaleString()} tokens</span><span data-workspace-duration="outside" data-duration-detailed="true">${escapeHtml(metricDuration(outsideSeconds, true))}</span><span>${outsideTurnLabel}</span></li>`
+    : ""
+  const criteria = goal?.acceptanceCriteria?.length ? `<section class="goal-popover-section"><h3>Done when</h3><ol>${goal.acceptanceCriteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ol></section>` : ""
+  const checkpoint = goal?.checkpoint ? `<section class="goal-popover-section"><h3>Last checkpoint</h3><p>${escapeHtml(goal.checkpoint)}</p></section>` : ""
+  const verdict = goal?.latestVerdict ? `<section class="goal-popover-section"><h3>Latest verification</h3><p><strong>${escapeHtml(verdictLabel(goal.latestVerdict.verdict))}</strong> · ${escapeHtml(goal.latestVerdict.confidence)} confidence</p><p>${escapeHtml(goal.latestVerdict.reason)}</p></section>` : ""
+  const toggle = goal?.status === "active" ? "pause" : goal?.status === "paused" ? "resume" : undefined
+  const actions = goal ? `<div class="goal-popover-actions">${toggle ? `<button type="button" data-goal-action="${toggle}">${toggle === "pause" ? "Pause" : "Resume"}</button>` : ""}<button type="button" data-goal-action="verify"${goal.verifier?.enabled === false ? ` title="Verification is disabled in goal settings"` : ""}>Verify now</button><button type="button" data-goal-action="edit">Edit</button><button type="button" class="danger-action" data-goal-action="cancel">Stop</button></div>` : ""
+  return `<details class="workspace-detail workspace-goal${statusAttention ? " attention" : ""}"><summary title="${escapeHtml(triggerLabel)}" aria-label="${escapeHtml(triggerLabel)}">${trigger}</summary><div class="workspace-detail-popover goal-workspace-popover" popover="auto"><header><div><strong>${goal ? `Goal ${goalSequence}` : "Session metrics"}</strong>${goal ? `<small>${escapeHtml(goalStatus)}</small>` : ""}</div>${goal ? `<p>${escapeHtml(goal.objective || "Current goal")}</p>` : ""}</header><section class="goal-popover-section goal-metrics"><h3>Session metrics</h3><div class="session-metric-row"><strong>Session</strong><span>${metrics?.tokensUsed?.toLocaleString() ?? "--"} tokens</span><span data-workspace-duration="session" data-duration-detailed="true">${escapeHtml(metricDuration(sessionSeconds, true))}</span><span>${metrics ? sessionTurnMetric(metrics) : "-- turns"}</span></div>${archivedRows || currentRow || outside ? `<ol>${archivedRows}${currentRow}${outside}</ol>` : `<p>No goals have been recorded in this session.</p>`}</section>${criteria}${checkpoint}${verdict}${actions}</div></details>`
+}
+
+function workspaceElementKey(element: Element): string | undefined {
+  if (element.id) return `id:${element.id}`
+  if (element instanceof HTMLDetailsElement && element.classList.contains("workspace-detail")) {
+    const kind = [...element.classList].find((value) => value.startsWith("workspace-") && value !== "workspace-detail")
+    if (kind) return `detail:${kind}`
+  }
+  if (element instanceof HTMLElement && element.dataset.goalAction) return `goal-action:${element.dataset.goalAction}`
+  return undefined
+}
+
+function compatibleWorkspaceNode(current: Node, incoming: Node): boolean {
+  if (current.nodeType !== incoming.nodeType) return false
+  if (!(current instanceof Element) || !(incoming instanceof Element)) return true
+  if (current.tagName !== incoming.tagName) return false
+  const currentKey = workspaceElementKey(current)
+  const incomingKey = workspaceElementKey(incoming)
+  return currentKey === undefined && incomingKey === undefined || currentKey === incomingKey
+}
+
+function reconcileWorkspaceAttributes(current: Element, incoming: Element): void {
+  const preserveOpen = current instanceof HTMLDetailsElement && current.open
+  const preservePopoverPosition = current instanceof HTMLElement && current.hasAttribute("popover")
+  for (const attribute of [...current.attributes]) {
+    if ((preserveOpen && attribute.name === "open") || (preservePopoverPosition && attribute.name === "style")) continue
+    if (!incoming.hasAttribute(attribute.name)) current.removeAttribute(attribute.name)
+  }
+  for (const attribute of [...incoming.attributes]) {
+    if (preservePopoverPosition && attribute.name === "style") continue
+    if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value)
+  }
+  if (preserveOpen && current instanceof HTMLDetailsElement) current.open = true
+}
+
+function reconcileWorkspaceNode(current: Node, incoming: Node): void {
+  if (current instanceof Element && incoming instanceof Element) {
+    reconcileWorkspaceAttributes(current, incoming)
+    reconcileWorkspaceChildren(current, incoming)
+  } else if (current.nodeValue !== incoming.nodeValue) current.nodeValue = incoming.nodeValue
+}
+
+function reconcileWorkspaceChildren(current: Node & ParentNode, incoming: Node & ParentNode): void {
+  let cursor = current.firstChild
+  for (const incomingChild of [...incoming.childNodes]) {
+    let match = cursor
+    if (!match || !compatibleWorkspaceNode(match, incomingChild)) {
+      match = cursor?.nextSibling ?? null
+      while (match && !compatibleWorkspaceNode(match, incomingChild)) match = match.nextSibling
+    }
+    if (!match) {
+      current.insertBefore(incomingChild.cloneNode(true), cursor)
+      continue
+    }
+    while (cursor && cursor !== match) {
+      const obsolete = cursor
+      cursor = cursor.nextSibling
+      current.removeChild(obsolete)
+    }
+    reconcileWorkspaceNode(match, incomingChild)
+    cursor = match.nextSibling
+  }
+  while (cursor) {
+    const next = cursor.nextSibling
+    current.removeChild(cursor)
+    cursor = next
+  }
+}
+
+function reconcileWorkspaceStrip(markup: string): void {
+  const template = document.createElement("template")
+  template.innerHTML = markup
+  const focused = workspaceStrip.contains(document.activeElement) ? document.activeElement as HTMLElement : undefined
+  const focusedOwner = focused?.closest<HTMLDetailsElement>(".workspace-detail")
+  const ownerKey = focusedOwner ? workspaceElementKey(focusedOwner) : undefined
+  reconcileWorkspaceChildren(workspaceStrip, template.content)
+  if (focused && !focused.isConnected && ownerKey) {
+    const restored = [...workspaceStrip.querySelectorAll<HTMLDetailsElement>(".workspace-detail")].find((detail) => workspaceElementKey(detail) === ownerKey)
+    restored?.querySelector<HTMLElement>("summary")?.focus()
+  }
+  scheduleViewportLayout()
+}
+
 function renderWorkspaceStrip(session?: NonNullable<ChatSnapshot["session"]>): void {
   const runtime = snapshot.runtime
-  const signature = JSON.stringify([snapshot.connected, snapshot.connectionState, snapshot.health, runtime?.lsp, runtime?.formatters, runtime?.mcp, session?.context])
-  if (signature === workspaceSignature) return
+  const metrics = session?.metrics ? { ...session.metrics, timeUsedSeconds: undefined, sampledAt: undefined } : undefined
+  const goal = session?.goal ? { ...session.goal, timeUsedSeconds: undefined, sampledAt: undefined } : undefined
+  const hasOutsideDuration = session ? workspaceDurationValues(session).outside > 0 : false
+  const signature = JSON.stringify([snapshot.connected, snapshot.connectionState, snapshot.health, runtime?.lsp, runtime?.formatters, runtime?.mcp, session?.context, metrics, goal, session?.goalHistory, hasOutsideDuration])
+  if (signature === workspaceSignature) {
+    if (session) syncWorkspaceDurations(session)
+    return
+  }
   workspaceSignature = signature
   const lspHealthy = runtime?.lsp.filter((service) => runtimeServicePresentation(service, "lsp").healthy).length ?? 0
   const formatterHealthy = runtime?.formatters.filter((service) => runtimeServicePresentation(service, "formatter").healthy).length ?? 0
   const mcpHealthy = runtime?.mcp.filter((service) => runtimeServicePresentation(service, "mcp").healthy).length ?? 0
   const context = session?.context
   const left = healthWorkspaceDetail()
+  const center = session ? goalWorkspaceDetail(session) : ""
   const lsp = runtime?.lsp ?? []
   const formatters = runtime?.formatters ?? []
   const mcp = runtime?.mcp ?? []
   const lspTooltip = lsp.map(serviceLabel).join("\n")
   const formatterTooltip = formatters.map((formatter) => `${formatter.name || formatter.id}: ${formatter.enabled ? "available" : "executable not found"}`).join("\n")
   const mcpTooltip = mcp.map(serviceLabel).join("\n")
+  const healthRows = [
+    ...(lsp.length ? [["LSP", `${lspHealthy}/${lsp.length}`]] : []),
+    ...(formatters.length ? [["Formatters", `${formatterHealthy}/${formatters.length}`]] : []),
+    ...(mcp.length ? [["MCP", `${mcpHealthy}/${mcp.length}`]] : []),
+    ...(context ? [["Context", context.usagePercent === undefined ? "--" : `${Math.round(context.usagePercent)}%`]] : []),
+  ]
+  const hasRuntimeServices = Boolean(lsp.length || formatters.length || mcp.length)
+  const aggregateLabel = hasRuntimeServices ? "Health" : context ? `Context ${context.usagePercent === undefined ? "--" : `${Math.round(context.usagePercent)}%`}` : ""
+  const aggregateHealth = healthRows.length ? workspaceDetail("services", aggregateLabel, "Workspace health", `<dl class="workspace-context-list">${healthRows.map(([label, value]) => `<div><dt>${escapeHtml(label!)}</dt><dd>${escapeHtml(value!)}</dd></div>`).join("")}</dl>`, [lspTooltip, formatterTooltip, mcpTooltip].filter(Boolean).join("\n")) : ""
   const right = [
-    lsp.length ? workspaceDetail("lsp", `LSP ${lspHealthy}/${lsp.length}`, "Language servers", serviceList(lsp, "lsp"), lspTooltip) : `<span>LSP 0/0</span>`,
-    formatters.length ? workspaceDetail("formatter", `Fmt ${formatterHealthy}/${formatters.length}`, "Formatters", serviceList(formatters, "formatter"), formatterTooltip) : `<span>Fmt 0/0</span>`,
-    mcp.length ? workspaceDetail("mcp", `MCP ${mcpHealthy}/${mcp.length}`, "MCP servers", serviceList(mcp, "mcp"), mcpTooltip) : `<span>MCP 0/0</span>`,
+    aggregateHealth,
+    lsp.length ? workspaceDetail("lsp", `LSP ${lspHealthy}/${lsp.length}`, "Language servers", serviceList(lsp, "lsp"), lspTooltip) : "",
+    formatters.length ? workspaceDetail("formatter", `Fmt ${formatterHealthy}/${formatters.length}`, "Formatters", serviceList(formatters, "formatter"), formatterTooltip) : "",
+    mcp.length ? workspaceDetail("mcp", `MCP ${mcpHealthy}/${mcp.length}`, "MCP servers", serviceList(mcp, "mcp"), mcpTooltip) : "",
     context ? workspaceDetail("context", `Context ${context.usagePercent === undefined ? "--" : `${Math.round(context.usagePercent)}%`}`, "Context usage", contextDetails(context), context.model ?? "Context usage") : `<span>Context --</span>`,
   ].filter(Boolean).join("")
-  workspaceStrip.innerHTML = `<span class="workspace-left">${left}</span><div class="workspace-right">${right}</div>`
+  reconcileWorkspaceStrip(`<span class="workspace-left">${left}</span><div class="workspace-center">${center}</div><div class="workspace-right">${right}</div>`)
 }
 
 function resizeDraft(): void {
@@ -1613,8 +1997,11 @@ function updatePrimaryAction(): void {
   send.disabled = !session || !snapshot.connected || action === "idle" || action === "stopping" || (requiredCapability !== undefined && !capabilityAvailable(requiredCapability))
   send.classList.toggle("stop-action", action === "stop" || action === "stopping")
   send.classList.toggle("queue-action", action === "queue")
-  sendOptions.hidden = action !== "queue"
-  sendGroup.classList.toggle("split", action === "queue")
+  sendOptions.hidden = !snapshot.connected
+  sendGroup.classList.toggle("split", snapshot.connected)
+  for (const button of sendOptions.querySelectorAll<HTMLButtonElement>("[data-send-delivery]")) button.hidden = action !== "queue"
+  const multiButton = sendOptions.querySelector<HTMLButtonElement>("[data-send-multi-model]")
+  if (multiButton) multiButton.disabled = !hasDraft
   send.innerHTML = PRIMARY_ICONS[action === "idle" ? "send" : action as keyof typeof PRIMARY_ICONS]
   const label = action === "stopping" ? "Stopping response…" : action === "stop" ? "Stop response (Esc)" : action === "queue" ? "Add to Queue (Enter)" : "Send message"
   send.title = label
@@ -1651,7 +2038,7 @@ function applyCapabilityControls(): void {
   for (const control of questionDock.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input")) {
     control.disabled = !capabilityAvailable("input.questions")
   }
-  for (const button of goalDock.querySelectorAll<HTMLButtonElement>("[data-goal-action]")) {
+  for (const button of workspaceStrip.querySelectorAll<HTMLButtonElement>("[data-goal-action]")) {
     button.disabled = !capabilityAvailable("goal.lifecycle")
   }
   updatePrimaryAction()
@@ -1897,7 +2284,7 @@ function selectInspectorTab(tab: string, focusTab = true): void {
 
 function focusSessionWorkTrigger(): void {
   const target = sessionChangeSummary.querySelector<HTMLButtonElement>("button")
-    ?? goalDock.querySelector<HTMLButtonElement>("button")
+    ?? workspaceStrip.querySelector<HTMLElement>(".workspace-goal > summary")
     ?? sessionTaskDock.querySelector<HTMLButtonElement>("button")
     ?? draft
   target.focus()
@@ -1951,6 +2338,8 @@ function renderAttention(): void {
   attentionCount.hidden = count === 0
   attentionCount.textContent = count > 99 ? "99+" : String(count)
   attentionToggle.classList.toggle("has-attention", count > 0)
+  attentionMarkRead.hidden = count === 0
+  attentionMarkRead.disabled = count === 0
   attentionToggle.title = count ? `Needs Attention (${count})` : "No items need attention"
   attentionToggle.setAttribute("aria-label", count ? `Needs Attention, ${count} item${count === 1 ? "" : "s"}` : "Needs Attention, no items")
   const nextSignature = JSON.stringify(items.map((item) => [item.id, item.kind, item.sessionID, item.title, item.detail, item.target]))
@@ -2031,6 +2420,7 @@ function readGoalFormDraft(): GoalFormDraft | undefined {
 }
 
 function renderInspector(): void {
+  inspector.classList.toggle("current-work-inspector", inspectorTab === "jobs")
   inspector.hidden = !inspectorOpen || !snapshot.session
   splitPanes?.reconcile()
   inspector.setAttribute("aria-label", INSPECTOR_LABELS[inspectorTab])
@@ -2136,6 +2526,7 @@ function render(): void {
   model.disabled = !session
   modelToggle.disabled = !session
   renderModelPicker()
+  renderMultiModelPicker()
   const auto = snapshot.autoApproval === true
   approvalToggle.setAttribute("aria-checked", String(auto))
   approvalToggle.classList.toggle("auto", auto)
@@ -2152,11 +2543,15 @@ function render(): void {
     permissionDock.replaceChildren()
     questionDock.replaceChildren()
     attachmentDock.replaceChildren()
-    queueDock.hidden = permissionDock.hidden = questionDock.hidden = goalDock.hidden = sessionTaskDock.hidden = todoDock.hidden = true
+    queueDock.hidden = permissionDock.hidden = questionDock.hidden = sessionTaskDock.hidden = todoDock.hidden = true
   } else {
-    renderTranscript(session, Boolean(active))
+    const deferHistoryTranscript = historyLoadingSessionID === session.id && historyLoadingMode === "all"
+    if (!deferHistoryTranscript) renderTranscript(session, Boolean(active))
     renderSessionChangeSummary(session, Boolean(active))
-    renderTurnNavigation(session)
+    if (!deferHistoryTranscript) {
+      renderTurnNavigation(session)
+      syncTurnNavigationVisibility(session)
+    }
     renderHistoryBoundary(session)
     syncDraft(session)
     renderAttachments()
@@ -2271,7 +2666,7 @@ function requestSessionSelection(sessionID: string): void {
   approvalToggle.setAttribute("aria-checked", "false")
   approvalToggle.classList.remove("auto")
   approvalMode.textContent = "Ask"
-  for (const dock of [queueDock, permissionDock, questionDock, todoDock, goalDock]) {
+  for (const dock of [queueDock, permissionDock, questionDock, todoDock]) {
     dock.hidden = true
     dock.replaceChildren()
   }
@@ -2456,8 +2851,52 @@ function submitMessage(delivery?: "queue" | "steer" | "replace"): void {
   sendOptions.open = false
   setTimeout(updatePrimaryAction, 350)
 }
+
+function submitMultiModel(): void {
+  const sessionID = snapshot.session?.id
+  if (!sessionID || !snapshot.connected) return
+  const text = draft.value
+  const files = sessionAttachments(sessionID)
+  const pasted = sessionPastedText(sessionID)
+  const contexts = sessionContextAttachments(sessionID)
+  const models = [...multiModelSelection]
+  if (!text.trim() || models.length < 2 || models.length > MULTI_RUN_MAX_CANDIDATES) return
+  const selectedModels = models.flatMap((value) => {
+    const selected = snapshot.models.find((item) => `${item.providerID}/${item.id}` === value)
+    return selected ? [selected] : []
+  })
+  if (selectedModels.length !== models.length) {
+    showNotice("error", "Model catalog changed", "Review the available models and select the candidates again.")
+    renderMultiModelPicker()
+    return
+  }
+  const needsImages = files.some((file) => file.mime.startsWith("image/"))
+  const needsPdf = files.some((file) => file.mime === "application/pdf")
+  const incompatible = selectedModels.filter((item) => (needsImages && item.capabilities?.input?.image === false) || (needsPdf && item.capabilities?.input?.pdf === false))
+  if (incompatible.length) {
+    const names = incompatible.slice(0, 4).map((item) => item.name).join(", ")
+    showNotice("error", "Unsupported attachment", `${names}${incompatible.length > 4 ? ` and ${incompatible.length - 4} more` : ""} cannot receive the attached ${needsImages ? "image" : "PDF"}.`)
+    return
+  }
+  const concurrency = Math.max(1, Math.min(MULTI_RUN_MAX_CONCURRENCY, models.length, Math.trunc(Number(multiModelConcurrency.value)) || MULTI_RUN_DEFAULT_CONCURRENCY))
+  const sharedVariant = variant.value && selectedModels.every((item) => item.variants?.includes(variant.value)) ? variant.value : undefined
+  cancelPendingDraft()
+  submittedDrafts.set(sessionID, text)
+  clearNotice("error")
+  post({ type: "sendMultiModel", sessionID, composerRevision: composerPayloadRevisions.get(sessionID) ?? 0, text, models, concurrency, agent: agent.value || undefined, variant: sharedVariant, attachments: files.length ? files : undefined, pastedText: pasted.length ? pasted : undefined, contextIDs: contexts.length ? contexts.map((attachment) => attachment.id) : undefined })
+  status.textContent = `Starting ${models.length} isolated runs…`
+  closeMultiModelPicker(false)
+  sendOptions.open = false
+  draft.focus()
+}
+
 send.addEventListener("click", () => submitMessage())
 sendOptions.addEventListener("click", (event) => {
+  const multi = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-send-multi-model]") : undefined
+  if (multi) {
+    openMultiModelPicker()
+    return
+  }
   const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-send-delivery]") : undefined
   const delivery = button?.dataset.sendDelivery
   if (delivery === "queue" || delivery === "steer" || delivery === "replace") submitMessage(delivery)
@@ -2471,7 +2910,39 @@ sendOptions.addEventListener("keydown", (event) => {
     return
   }
   if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && !sendOptions.open) sendOptions.open = true
-  navigateMenu(sendOptions, event, "[data-send-delivery]:not([disabled])")
+  navigateMenu(sendOptions, event, "button:not([disabled]):not([hidden])")
+})
+multiModelSearch.addEventListener("input", renderMultiModelPicker)
+multiModelConcurrency.addEventListener("input", renderMultiModelPicker)
+multiModelOptions.addEventListener("change", (event) => {
+  const input = event.target instanceof HTMLInputElement ? event.target.closest<HTMLInputElement>("[data-multi-model-value]") : undefined
+  const value = input?.dataset.multiModelValue
+  if (!input || !value) return
+  if (input.checked) {
+    if (multiModelSelection.size >= MULTI_RUN_MAX_CANDIDATES) input.checked = false
+    else multiModelSelection.add(value)
+  } else multiModelSelection.delete(value)
+  renderMultiModelPicker()
+})
+multiModelSelectVisible.addEventListener("click", () => {
+  for (const item of visibleMultiModelOptions()) {
+    if (multiModelSelection.size >= MULTI_RUN_MAX_CANDIDATES) break
+    multiModelSelection.add(`${item.providerID}/${item.id}`)
+  }
+  renderMultiModelPicker()
+})
+multiModelClear.addEventListener("click", () => {
+  multiModelSelection.clear()
+  renderMultiModelPicker()
+})
+multiModelClose.addEventListener("click", () => closeMultiModelPicker())
+multiModelCancel.addEventListener("click", () => closeMultiModelPicker())
+multiModelStart.addEventListener("click", submitMultiModel)
+multiModelPicker.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return
+  event.preventDefault()
+  event.stopPropagation()
+  closeMultiModelPicker()
 })
 attachFiles.addEventListener("click", () => {
   const sessionID = snapshot.session?.id
@@ -2611,6 +3082,11 @@ keyboardHelpOverlay.addEventListener("click", (event) => {
   if (target?.closest("[data-close-keyboard-help]")) keyboardHelpController.close()
 })
 attentionOverlay.addEventListener("click", (event) => {
+  const markRead = event.target instanceof Element && event.target.closest("#attention-mark-read")
+  if (markRead) {
+    post({ type: "markAttentionRead" })
+    return
+  }
   const close = event.target instanceof Element && event.target.closest("[data-close-attention]")
   if (close) {
     attentionOverlayController.close()
@@ -2957,14 +3433,16 @@ turnNavigation.addEventListener("keydown", (event) => {
   buttons.forEach((button, index) => button.tabIndex = index === next ? 0 : -1)
   buttons[next]?.focus()
 })
-historyLoadOlder.addEventListener("click", () => {
-  const session = snapshot.session
-  const beforeMessageID = session?.messages[0]?.info.id
-  if (!session?.history?.hasOlder || !beforeMessageID || historyLoadingSessionID) return
-  pendingHistoryAnchor = conversationView.capturePrependAnchor()
-  historyLoadingSessionID = session.id
-  renderHistoryBoundary(session)
-  post({ type: "loadOlderHistory", sessionID: session.id, beforeMessageID })
+messages.addEventListener("load", () => scheduleViewportLayout(true), true)
+historyLoadOlder.addEventListener("click", () => beginHistoryLoad("page"))
+historyLoadAll.addEventListener("click", () => {
+  if (historyLoadingSessionID && historyLoadingMode === "all") {
+    historyLoadAllCancelled = true
+    renderHistoryBoundary(snapshot.session)
+    conversationView.restorePrependAnchor(pendingHistoryAnchor)
+    return
+  }
+  beginHistoryLoad("all")
 })
 createEmpty.addEventListener("click", () => post({ type: "createSession" }))
 planTask.addEventListener("click", () => post({ type: "planTask" }))
@@ -3270,16 +3748,18 @@ sessionContextMenu.addEventListener("keydown", (event) => {
   const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (Math.max(index, 0) + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length
   buttons[next]?.focus()
 })
-goalDock.addEventListener("click", (event) => {
+workspaceStrip.addEventListener("click", (event) => {
   const sessionID = snapshot.session?.id
   if (!sessionID) return
-  const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : undefined
+  const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-goal-action]") : undefined
   const action = target?.dataset.goalAction
   if (action === "edit" || action === "configure") {
+    const details = target?.closest<HTMLDetailsElement>(".workspace-goal")
+    if (details) details.open = false
     selectInspectorTab("goal")
     return
   }
-  if (["edit", "configure", "verify", "pause", "resume", "cancel"].includes(action ?? "")) post({ type: "goalAction", sessionID, action: action as "edit" | "configure" | "verify" | "pause" | "resume" | "cancel" })
+  if (["verify", "pause", "resume", "cancel"].includes(action ?? "")) post({ type: "goalAction", sessionID, action: action as "verify" | "pause" | "resume" | "cancel" })
 })
 sessionTaskDock.addEventListener("click", (event) => {
   const route = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-session-detail]")?.dataset.sessionDetail : undefined
@@ -3325,8 +3805,27 @@ function syncDetailsPopover(owner: HTMLDetailsElement): void {
   if (owner.open) positionDetailsPopover(owner, popover)
 }
 
+let viewportLayoutFrame: number | undefined
+let viewportLayoutNeedsTurnNavigation = false
+
+function scheduleViewportLayout(syncTurnNavigation = false): void {
+  viewportLayoutNeedsTurnNavigation ||= syncTurnNavigation
+  if (viewportLayoutFrame !== undefined) return
+  viewportLayoutFrame = requestAnimationFrame(() => {
+    viewportLayoutFrame = undefined
+    const syncNavigation = viewportLayoutNeedsTurnNavigation
+    viewportLayoutNeedsTurnNavigation = false
+    if (syncNavigation) syncTurnNavigationVisibility()
+    for (const owner of document.querySelectorAll<HTMLDetailsElement>("details[open]")) {
+      const popover = detailsPopover(owner)
+      if (popover?.matches(":popover-open")) positionDetailsPopover(owner, popover)
+    }
+  })
+}
+
 document.addEventListener("toggle", (event) => {
   const target = event.target
+  if (target instanceof HTMLDetailsElement && target.closest("#messages")) scheduleViewportLayout(true)
   if (target instanceof HTMLDetailsElement && detailsPopover(target)) {
     syncDetailsPopover(target)
     return
@@ -3335,18 +3834,11 @@ document.addEventListener("toggle", (event) => {
   const owner = target.closest<HTMLDetailsElement>("details")
   if (owner?.open && !target.matches(":popover-open")) owner.open = false
 }, true)
-interactionRegion.addEventListener("scroll", () => {
-  for (const owner of document.querySelectorAll<HTMLDetailsElement>("details[open]")) {
-    const popover = detailsPopover(owner)
-    if (popover?.matches(":popover-open")) positionDetailsPopover(owner, popover)
-  }
-}, { passive: true })
-window.addEventListener("resize", () => {
-  for (const owner of document.querySelectorAll<HTMLDetailsElement>("details[open]")) {
-    const popover = detailsPopover(owner)
-    if (popover?.matches(":popover-open")) positionDetailsPopover(owner, popover)
-  }
-})
+interactionRegion.addEventListener("scroll", () => scheduleViewportLayout(), { passive: true })
+window.addEventListener("resize", () => scheduleViewportLayout(true))
+window.setInterval(() => {
+  if (snapshot.session) renderWorkspaceStrip(snapshot.session)
+}, 60_000)
 railToggle.addEventListener("click", () => {
   if (document.body.classList.contains("rail-open")) closeRail()
   else showRail()
@@ -3493,11 +3985,9 @@ sessionChangeSummary.addEventListener("click", (event) => {
   const file = target?.closest<HTMLButtonElement>("[data-file]")?.dataset.file
   if (file && snapshot.session) post({ type: "openFile", sessionID: snapshot.session.id, file })
 })
-messages.addEventListener("scroll", () => {
-  conversationView.handleScroll()
-}, { passive: true })
+messages.addEventListener("scroll", scheduleConversationScrollSync, { passive: true })
 document.addEventListener("keydown", (event) => {
-  if (focusController.trapTab(event, recoveryOverlay) || focusController.trapTab(event, keyboardHelpOverlay) || focusController.trapTab(event, attentionOverlay) || focusController.trapTab(event, attachmentPreview, "button:not([disabled]), [tabindex]:not([tabindex='-1'])") || focusController.trapTab(event, historyOverlay) || focusController.trapTab(event, modelPicker, "input:not([disabled]), button:not([disabled]):not([tabindex='-1']), [tabindex]:not([tabindex='-1'])") ||
+  if (focusController.trapTab(event, recoveryOverlay) || focusController.trapTab(event, keyboardHelpOverlay) || focusController.trapTab(event, attentionOverlay) || focusController.trapTab(event, attachmentPreview, "button:not([disabled]), [tabindex]:not([tabindex='-1'])") || focusController.trapTab(event, historyOverlay) || focusController.trapTab(event, multiModelPicker, "input:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex='-1'])") || focusController.trapTab(event, modelPicker, "input:not([disabled]), button:not([disabled]):not([tabindex='-1']), [tabindex]:not([tabindex='-1'])") ||
     (narrowWorkbench() && document.body.classList.contains("rail-open") && focusController.trapTab(event, rightRail))) return
   if (event.key === "Escape") {
     if (!recoveryOverlay.hidden) {
@@ -3514,6 +4004,9 @@ document.addEventListener("keydown", (event) => {
     }
     else if (!sessionContextMenu.hidden) closeSessionContextMenu(true)
     else if (!historyOverlay.hidden) closeHistory()
+    else if (!multiModelPicker.hidden) {
+      closeMultiModelPicker()
+    }
     else if (!modelPicker.hidden) {
       closeModelPicker()
     }
@@ -3579,9 +4072,16 @@ transport.listen((message) => {
       render()
     }
     if (historyLoadingSessionID) {
-      historyLoadingSessionID = undefined
-      pendingHistoryAnchor = undefined
+      const anchor = pendingHistoryAnchor
+      const flushDeferred = historyLoadingMode === "all" && snapshot.session?.id === historyLoadingSessionID
+      resetHistoryLoading()
       renderHistoryBoundary(snapshot.session)
+      if (flushDeferred && snapshot.session) {
+        const active = snapshot.session.status.type === "busy" || snapshot.session.status.type === "retry"
+        renderTranscript(snapshot.session, active, anchor)
+        renderTurnNavigation(snapshot.session)
+        syncTurnNavigationVisibility(snapshot.session)
+      }
     }
     status.textContent = message.message
     status.title = message.message
@@ -3725,21 +4225,20 @@ transport.listen((message) => {
     stashedDrafts.delete(message.sessionID)
     expandedHistory.delete(message.sessionID)
     if (historyLoadingSessionID === message.sessionID) {
-      historyLoadingSessionID = undefined
-      pendingHistoryAnchor = undefined
+      resetHistoryLoading()
     }
     if (pendingDraft?.sessionID === message.sessionID) cancelPendingDraft()
     return
   }
   if (message.type === "historyPage") {
     const session = snapshot.session
-    if (historyLoadingSessionID === message.page.sessionID) historyLoadingSessionID = undefined
+    const loadingThisSession = historyLoadingSessionID === message.page.sessionID
+    const loadingAll = loadingThisSession && historyLoadingMode === "all"
     if (!session || session.id !== message.page.sessionID) {
-      pendingHistoryAnchor = undefined
+      if (loadingThisSession) resetHistoryLoading()
       return
     }
     const anchor = pendingHistoryAnchor
-    pendingHistoryAnchor = undefined
     const merged = mergeHistoryPage(session, message.page)
     snapshot = store.replace({ ...snapshot, session: merged })
     const previousPage = expandedHistory.get(merged.id)
@@ -3752,11 +4251,31 @@ transport.listen((message) => {
       totalMessages: merged.history?.totalMessages ?? message.page.totalMessages,
       sourceMayBeTruncated: merged.history?.sourceMayBeTruncated,
     })
+    if (loadingAll) {
+      historyLoadAllLoaded += message.page.messages.length
+      historyLoadAllPagesSinceRender += 1
+    }
+    const continueLoadingAll = loadingAll && !historyLoadAllCancelled && Boolean(merged.history?.hasOlder) && message.page.messages.length > 0
+    const renderThisPage = !loadingAll || !continueLoadingAll || historyLoadAllPagesSinceRender >= 3
+    const cancelled = historyLoadAllCancelled
+    const loadedAllCount = historyLoadAllLoaded
+    if (!continueLoadingAll) resetHistoryLoading()
     const active = merged.status.type === "busy" || merged.status.type === "retry"
-    renderTranscript(merged, active, anchor)
-    renderTurnNavigation(merged)
     renderHistoryBoundary(merged)
-    announce(message.page.messages.length ? `${message.page.messages.length} older messages loaded` : "No additional older messages are available")
+    if (renderThisPage) {
+      renderTranscript(merged, active, anchor)
+      renderTurnNavigation(merged)
+      syncTurnNavigationVisibility(merged)
+      historyLoadAllPagesSinceRender = 0
+    } else conversationView.restorePrependAnchor(anchor)
+    if (continueLoadingAll) {
+      const beforeMessageID = merged.messages[0]?.info.id
+      if (beforeMessageID) post({ type: "loadOlderHistory", sessionID: merged.id, beforeMessageID })
+      return
+    }
+    announce(loadingAll
+      ? cancelled ? `Stopped after loading ${loadedAllCount.toLocaleString()} older messages` : `Loaded all available older messages, ${loadedAllCount.toLocaleString()} messages added`
+      : message.page.messages.length ? `${message.page.messages.length} older messages loaded` : "No additional older messages are available")
     return
   }
   if (message.type === "messagePatches") {
@@ -3817,7 +4336,11 @@ transport.listen((message) => {
       }
       if (!wasNearBottom) conversationView.addUnseen(addedMessages)
       renderTranscript(session, active)
-      if (JSON.stringify(turnNavigationMarkers(session)) !== previousTurnNavigation) renderTurnNavigation(session)
+      if (JSON.stringify(turnNavigationMarkers(session)) !== previousTurnNavigation) {
+        renderTurnNavigation(session)
+        syncTurnNavigationVisibility(session)
+      }
+      else syncTurnNavigationVisibility(session)
       renderHistoryBoundary(session)
       updatePrimaryAction()
       syncAnimationTimers(active)
@@ -3908,6 +4431,10 @@ document.addEventListener("visibilitychange", () => {
 })
 window.addEventListener("beforeunload", () => {
   flushPendingDraft()
+  cancelVisibleTurnMarkerSync()
+  if (conversationScrollFrame !== undefined) cancelAnimationFrame(conversationScrollFrame)
+  if (viewportLayoutFrame !== undefined) cancelAnimationFrame(viewportLayoutFrame)
+  turnNavigationResizeObserver?.disconnect()
   splitPanes?.dispose()
   transport.dispose()
 })

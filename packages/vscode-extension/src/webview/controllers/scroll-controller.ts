@@ -1,11 +1,35 @@
-export interface ScrollAnchor { node: HTMLElement; offsetTop: number }
+export interface ScrollAnchor {
+  node: HTMLElement
+  viewportTop: number
+  scrollTop: number
+  scrollHeight: number
+  messageID?: string
+}
 export interface ScrollViewport { atBottom: boolean; scrollTop: number }
 
 export class ScrollController {
   constructor(private readonly container: HTMLElement, private readonly threshold = 80) {}
   nearBottom(): boolean { return this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < this.threshold }
-  capturePrependAnchor(): ScrollAnchor | undefined { const node = this.container.firstElementChild; return node instanceof HTMLElement ? { node, offsetTop: node.offsetTop } : undefined }
-  restorePrependAnchor(anchor?: ScrollAnchor): void { if (anchor?.node.isConnected) this.container.scrollTop += anchor.node.offsetTop - anchor.offsetTop }
+  capturePrependAnchor(preferred?: HTMLElement): ScrollAnchor | undefined {
+    const node = preferred ?? this.container.firstElementChild
+    return node instanceof HTMLElement ? {
+      node,
+      viewportTop: node.getBoundingClientRect().top,
+      scrollTop: this.container.scrollTop,
+      scrollHeight: this.container.scrollHeight,
+      messageID: node.dataset.messageId,
+    } : undefined
+  }
+  restorePrependAnchor(anchor?: ScrollAnchor): void {
+    if (!anchor) return
+    const node = anchor.node.isConnected
+      ? anchor.node
+      : anchor.messageID
+      ? Array.from(this.container.querySelectorAll<HTMLElement>("[data-message-id]")).find((candidate) => candidate.dataset.messageId === anchor.messageID)
+      : undefined
+    if (node) this.container.scrollTop += node.getBoundingClientRect().top - anchor.viewportTop
+    else this.container.scrollTop = Math.max(0, anchor.scrollTop + this.container.scrollHeight - anchor.scrollHeight)
+  }
   captureViewport(): ScrollViewport { return { atBottom: this.nearBottom(), scrollTop: this.container.scrollTop } }
   restoreViewport(viewport: ScrollViewport): void { this.container.scrollTop = viewport.atBottom ? this.container.scrollHeight : Math.max(0, viewport.scrollTop) }
   latest(): void { this.container.scrollTop = this.container.scrollHeight }

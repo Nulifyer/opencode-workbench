@@ -1,8 +1,12 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert"
-import { normalizeTaskArtifact, runGroupStatus, sanitizeContextReceipt, taskArtifactSummary, validateWalkthrough, type DiffSnapshot, type RunGroup, type TaskArtifact } from "../src/index.ts"
+import { MULTI_RUN_DEFAULT_CONCURRENCY, normalizeTaskArtifact, runGroupStatus, sanitizeContextReceipt, taskArtifactSummary, validateWalkthrough, type DiffSnapshot, type RunGroup, type TaskArtifact } from "../src/index.ts"
 
 const HASH_A = `sha256:${"a".repeat(64)}`
 const HASH_B = `sha256:${"b".repeat(64)}`
+
+Deno.test("multi-run defaults to five peer candidates at once", () => {
+  assertEquals(MULTI_RUN_DEFAULT_CONCURRENCY, 5)
+})
 
 function planArtifact(): TaskArtifact {
   return {

@@ -64,55 +64,64 @@ export class RunComparisonService {
   constructor(private readonly git: GitRunner) {}
 
   async compare(group: RunGroup, observations: Readonly<Record<string, { evidence?: EvidenceReference[]; tokens?: number; cost?: number; verifierState?: string }>> = {}): Promise<RunComparisonRow[]> {
-    return await Promise.all(group.runs.map(async (run) => {
-      const observation = observations[run.id]
-      const taskEvidence = observation?.evidence?.filter((entry) => entry.kind === "task" || entry.kind === "test") ?? []
-      const diagnosticEvidence = observation?.evidence?.filter((entry) => entry.kind === "diagnostics") ?? []
-      const taskOutcomes: RunComparisonRow["taskOutcomes"] = !taskEvidence.length ? "not-recorded"
-        : taskEvidence.every((entry) => entry.status === "passed") ? "passed"
-        : taskEvidence.every((entry) => entry.status === "failed") ? "failed"
-        : "mixed"
-      const latestDiagnostics = diagnosticEvidence.reduce<EvidenceReference | undefined>((latest, entry) =>
-        !latest || entry.observedAt >= latest.observedAt ? entry : latest, undefined)
-      const diagnostics: RunComparisonRow["diagnostics"] = !latestDiagnostics || latestDiagnostics.status === "unknown" || latestDiagnostics.status === "warning" ? "not-recorded"
-        : latestDiagnostics.status === "failed" ? "has-errors"
-        : "clean"
-      let stats = { files: 0, additions: 0, deletions: 0, binary: false }
-      let limitation: string | undefined
-      try {
-        if (run.session.sessionID !== "pending") {
-          const capture = await new DiffService(this.git).capture({ repository: run.session.directory, scope: "branch", baseRef: group.baseRef })
-          stats = {
-            files: capture.snapshot.files.length,
-            additions: capture.snapshot.files.reduce((total, file) => total + file.additions, 0),
-            deletions: capture.snapshot.files.reduce((total, file) => total + file.deletions, 0),
-            binary: capture.snapshot.files.some((file) => file.binary),
-          }
-          if (!capture.snapshot.complete) limitation = capture.snapshot.truncationReason ?? "Diff capture is incomplete"
-        } else limitation = "Run directory was not created"
-      } catch (error) {
-        limitation = `Git comparison unavailable: ${userFacingError(error)}`.slice(0, 2_000)
+    const rows = new Array<RunComparisonRow>(group.runs.length)
+    let next = 0
+    const worker = async (): Promise<void> => {
+      while (next < group.runs.length) {
+        const index = next
+        next += 1
+        const run = group.runs[index]!
+        const observation = observations[run.id]
+        const taskEvidence = observation?.evidence?.filter((entry) => entry.kind === "task" || entry.kind === "test") ?? []
+        const diagnosticEvidence = observation?.evidence?.filter((entry) => entry.kind === "diagnostics") ?? []
+        const taskOutcomes: RunComparisonRow["taskOutcomes"] = !taskEvidence.length ? "not-recorded"
+          : taskEvidence.every((entry) => entry.status === "passed") ? "passed"
+          : taskEvidence.every((entry) => entry.status === "failed") ? "failed"
+          : "mixed"
+        const latestDiagnostics = diagnosticEvidence.reduce<EvidenceReference | undefined>((latest, entry) =>
+          !latest || entry.observedAt >= latest.observedAt ? entry : latest, undefined)
+        const diagnostics: RunComparisonRow["diagnostics"] = !latestDiagnostics || latestDiagnostics.status === "unknown" || latestDiagnostics.status === "warning" ? "not-recorded"
+          : latestDiagnostics.status === "failed" ? "has-errors"
+          : "clean"
+        let stats = { files: 0, additions: 0, deletions: 0, binary: false }
+        let limitation: string | undefined
+        try {
+          if (run.session.sessionID !== "pending") {
+            const capture = await new DiffService(this.git).capture({ repository: run.session.directory, scope: "branch", baseRef: group.baseRef })
+            stats = {
+              files: capture.snapshot.files.length,
+              additions: capture.snapshot.files.reduce((total, file) => total + file.additions, 0),
+              deletions: capture.snapshot.files.reduce((total, file) => total + file.deletions, 0),
+              binary: capture.snapshot.files.some((file) => file.binary),
+            }
+            if (!capture.snapshot.complete) limitation = capture.snapshot.truncationReason ?? "Diff capture is incomplete"
+          } else limitation = "Run directory was not created"
+        } catch (error) {
+          limitation = `Git comparison unavailable: ${userFacingError(error)}`.slice(0, 2_000)
+        }
+        rows[index] = {
+          runID: run.id,
+          status: run.phase,
+          model: run.model,
+          agent: run.agent,
+          variant: run.variant,
+          elapsedMilliseconds: run.startedAt === undefined ? undefined : Math.max(0, (run.completedAt ?? Date.now()) - run.startedAt),
+          changedFiles: stats.files,
+          additions: stats.additions,
+          deletions: stats.deletions,
+          taskOutcomes,
+          diagnostics,
+          verifierState: observation?.verifierState,
+          tokens: observation?.tokens,
+          cost: observation?.cost,
+          blocker: run.error ? userFacingError(run.error.message) : undefined,
+          complete: !limitation && !stats.binary,
+          limitation: limitation ?? (stats.binary ? "Binary file line totals are not representable" : undefined),
+        } satisfies RunComparisonRow
       }
-      return {
-        runID: run.id,
-        status: run.phase,
-        model: run.model,
-        agent: run.agent,
-        variant: run.variant,
-        elapsedMilliseconds: run.startedAt === undefined ? undefined : Math.max(0, (run.completedAt ?? Date.now()) - run.startedAt),
-        changedFiles: stats.files,
-        additions: stats.additions,
-        deletions: stats.deletions,
-        taskOutcomes,
-        diagnostics,
-        verifierState: observation?.verifierState,
-        tokens: observation?.tokens,
-        cost: observation?.cost,
-        blocker: run.error ? userFacingError(run.error.message) : undefined,
-        complete: !limitation && !stats.binary,
-        limitation: limitation ?? (stats.binary ? "Binary file line totals are not representable" : undefined),
-      } satisfies RunComparisonRow
-    }))
+    }
+    await Promise.all(Array.from({ length: Math.min(8, group.runs.length) }, worker))
+    return rows
   }
 
   markdown(group: RunGroup, rows: RunComparisonRow[]): string {

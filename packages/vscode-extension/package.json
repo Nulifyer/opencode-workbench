@@ -211,7 +211,7 @@
         "opencodeWorkbench.progressMotion": {
           "type": "string",
           "enum": ["system", "animated", "static"],
-          "enumDescriptions": ["Follow VS Code and operating-system motion preferences.", "Use Workbench progress animation unless reduced motion is required by the system.", "Use fully static progress indicators."],
+          "enumDescriptions": ["Keep operational progress indicators animated while following VS Code and operating-system preferences for optional motion.", "Keep operational progress indicators animated and use standard interface motion where allowed.", "Use fully static progress indicators and disable optional motion."],
           "default": "system",
           "description": "Controls progress animation in OpenCode Workbench."
         }

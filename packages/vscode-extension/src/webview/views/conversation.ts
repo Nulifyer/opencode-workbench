@@ -33,16 +33,18 @@ interface CachedClassification {
   finalTextPartKeys: string[]
 }
 
+export interface ConversationTurnGroup {
+  key: string
+  assistantOnly: boolean
+  entries: ConversationEntry[]
+}
+
 function visibleReasoningOnly(message: MessageBundle): boolean {
   const visible = message.parts.filter((part) => !part.synthetic && part.type !== "step-start" && part.type !== "step-finish")
   return message.info.role === "assistant" && visible.length > 0 && visible.every((part) => part.type === "reasoning")
 }
 
-function projectConversationTurnsWithCache(
-  session: Session,
-  active: boolean,
-  classifications?: Map<string, CachedClassification>,
-): ProjectedConversationTurn[] {
+function groupedConversationTurns(session: Session, active: boolean): { turns: ConversationTurnGroup[]; lastAssistantID?: string } {
   let lastAssistantID: string | undefined
   for (let index = session.messages.length - 1; index >= 0; index -= 1) {
     if (session.messages[index]?.info.role !== "assistant") continue
@@ -67,9 +69,24 @@ function projectConversationTurnsWithCache(
     const live = message.info.role === "assistant" && active && !message.info.time?.completed && message.info.id === lastAssistantID
     grouped.get(turnKey!)!.push({ message, live })
   }
+  return {
+    lastAssistantID,
+    turns: order.map((key) => ({ key, assistantOnly: key.startsWith("assistant:"), entries: grouped.get(key)! })),
+  }
+}
 
-  return order.map((key) => {
-    const entries = grouped.get(key)!
+/** Uses the same lightweight turn boundaries as the rendered conversation. */
+export function conversationTurnGroups(session: Session): ConversationTurnGroup[] {
+  return groupedConversationTurns(session, false).turns
+}
+
+function projectConversationTurnsWithCache(
+  session: Session,
+  active: boolean,
+  classifications?: Map<string, CachedClassification>,
+): ProjectedConversationTurn[] {
+  const grouped = groupedConversationTurns(session, active)
+  return grouped.turns.map(({ key, assistantOnly, entries }) => {
     const displayEntries: ProjectedConversationEntry[] = []
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index]!
@@ -111,14 +128,14 @@ function projectConversationTurnsWithCache(
     if (cached !== content) classifications?.set(key, content)
     return {
       key,
-      assistantOnly: key.startsWith("assistant:"),
+      assistantOnly,
       entries,
       displayEntries,
       firstAssistant: displayEntries.findIndex((entry) => entry.message.info.role === "assistant"),
       contentSignature,
       finalTextPartKeys: content.finalTextPartKeys,
       hasActivity: content.hasActivity,
-      working: activityWorking(active, lastAssistantID, entries.filter((entry) => entry.message.info.role === "assistant").map((entry) => entry.message.info.id)),
+      working: activityWorking(active, grouped.lastAssistantID, entries.filter((entry) => entry.message.info.role === "assistant").map((entry) => entry.message.info.id)),
     }
   })
 }
@@ -130,11 +147,13 @@ export function projectConversationTurns(session: Session, active: boolean): Pro
 
 export interface ConversationViewOptions {
   container: HTMLElement
+  leadingElement?: HTMLElement
   jumpLatest: HTMLButtonElement
   jumpLatestCount: HTMLElement
   renderUser(message: MessageBundle): string
   renderAssistant(message: MessageBundle, live: boolean, finalTextParts: ReadonlySet<string>): string
   renderTiming(entries: ConversationEntry[], working: boolean): string
+  renderDependencySignature?(message: MessageBundle): string
 }
 
 /** Owns incremental conversation DOM reconciliation, scroll anchoring, focus retention, and unread state. */
@@ -157,7 +176,13 @@ export class ConversationView {
   }
 
   capturePrependAnchor(): ScrollAnchor | undefined {
-    return this.scroll.capturePrependAnchor()
+    const firstTurn = this.options.container.querySelector<HTMLElement>(":scope > .turn") ?? undefined
+    const firstMessage = firstTurn?.querySelector<HTMLElement>("[data-message-id]") ?? undefined
+    return this.scroll.capturePrependAnchor(firstMessage ?? firstTurn)
+  }
+
+  restorePrependAnchor(anchor?: ScrollAnchor): void {
+    this.scroll.restorePrependAnchor(anchor)
   }
 
   addUnseen(count: number): void {
@@ -174,7 +199,7 @@ export class ConversationView {
   }
 
   private clearDom(): void {
-    this.options.container.replaceChildren()
+    this.options.container.replaceChildren(...(this.options.leadingElement ? [this.options.leadingElement] : []))
     this.turns.clear()
     this.messages.clear()
     this.classifications.clear()
@@ -209,8 +234,6 @@ export class ConversationView {
     const projectedTurns = projectConversationTurnsWithCache(session, active, this.classifications)
     const expectedMessages = new Set<string>()
     const expectedTurns = new Set<string>()
-    const changeRevision = JSON.stringify(session.changes ?? [])
-
     projectedTurns.forEach((projected, turnIndex) => {
       expectedTurns.add(projected.key)
       let turn = this.turns.get(projected.key)
@@ -219,7 +242,8 @@ export class ConversationView {
         turn.className = `turn${projected.assistantOnly ? " assistant-only" : ""}`
         this.turns.set(projected.key, turn)
       }
-      const expectedPosition = this.options.container.children.item(turnIndex)
+      const leadingOffset = this.options.leadingElement?.parentElement === this.options.container ? 1 : 0
+      const expectedPosition = this.options.container.children.item(turnIndex + leadingOffset)
       if (expectedPosition !== turn) this.options.container.insertBefore(turn, expectedPosition)
 
       const finalTextParts = new Set(projected.finalTextPartKeys)
@@ -247,7 +271,11 @@ export class ConversationView {
         activityToggle.dataset.working = String(projected.working)
         activityToggle.setAttribute("aria-disabled", String(projected.working))
         activityToggle.classList.toggle("working", projected.working)
-        activityToggle.innerHTML = turnTiming || `<span>Activity</span><span class="activity-chevron" aria-hidden="true">›</span>`
+        const timingMarkup = turnTiming || `<span>Activity</span><span class="activity-chevron" aria-hidden="true">›</span>`
+        if (activityToggle.dataset.renderSignature !== timingMarkup) {
+          activityToggle.innerHTML = timingMarkup
+          activityToggle.dataset.renderSignature = timingMarkup
+        }
         activityToggle.setAttribute("aria-expanded", String(!turn.classList.contains("activity-collapsed")))
         activityToggle.title = projected.working ? "Work activity stays expanded while OpenCode is working" : turn.classList.contains("activity-collapsed") ? "Show work activity" : "Hide work activity"
         const expectedHeader = turn.children.item(projected.firstAssistant)
@@ -265,7 +293,8 @@ export class ConversationView {
           return delegation ? [`${part.id}:${delegation.revision}:${delegation.status.type}`] : []
         }).join(",")
         const receiptSignature = message.info.role === "user" ? JSON.stringify(session.contextReceipts?.find((receipt) => receipt.promptID === message.info.id) ?? null) : ""
-        const signature = `${revisionKey}:${message.info.time?.completed ?? ""}:${live}:${classificationSignature}:${delegationSignature}:${changeRevision}:${receiptSignature}`
+        const dependencySignature = this.options.renderDependencySignature?.(message) ?? ""
+        const signature = `${revisionKey}:${message.info.time?.completed ?? ""}:${live}:${classificationSignature}:${delegationSignature}:${dependencySignature}:${receiptSignature}`
         let rendered = this.messages.get(message.info.id)
         if (!rendered) {
           const html = message.info.role === "user" ? this.options.renderUser(message) : this.options.renderAssistant(message, live, finalTextParts)

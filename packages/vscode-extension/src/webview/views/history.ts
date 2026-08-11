@@ -8,6 +8,20 @@ export interface HistoryPresentation {
   actionLabel?: string
 }
 
+export function historyLoadAllLabel(history?: TranscriptHistoryState): string {
+  const remaining = history ? Math.max(0, history.totalMessages - history.visibleMessages) : 0
+  return remaining > 0 && !history?.sourceMayBeTruncated
+    ? `Load all ${remaining.toLocaleString()} remaining`
+    : "Load all older messages"
+}
+
+export function historyLoadAllProgress(loaded: number, target?: number): string {
+  const safeLoaded = Math.max(0, Math.floor(loaded))
+  return target === undefined
+    ? `Loading all… ${safeLoaded.toLocaleString()} loaded`
+    : `Loading all… ${Math.min(safeLoaded, Math.max(0, Math.floor(target))).toLocaleString()} / ${Math.max(0, Math.floor(target)).toLocaleString()}`
+}
+
 export function mergeHistoryPage(session: SessionSnapshot, page: TranscriptHistoryPage): SessionSnapshot {
   if (page.sessionID !== session.id) return session
   const current = new Map(session.messages.map((message) => [message.info.id, message]))
@@ -38,9 +52,11 @@ export function historyPresentation(history?: TranscriptHistoryState): HistoryPr
     : history.limitedBy === "parts"
     ? "the transcript part limit"
     : "the transcript message limit"
-  const count = `Showing ${history.visibleMessages.toLocaleString()} of ${history.totalMessages.toLocaleString()} messages currently loaded from OpenCode.`
+  const count = history.sourceMayBeTruncated
+    ? `Showing ${history.visibleMessages.toLocaleString()} messages currently loaded from OpenCode.`
+    : `Showing ${history.visibleMessages.toLocaleString()} of ${history.totalMessages.toLocaleString()} messages currently loaded from OpenCode.`
   const ceiling = history.sourceMayBeTruncated
-    ? " This reload is safety-bounded; older server history may exist."
+    ? history.hasOlder ? " Older server history is available on demand." : " This reload is safety-bounded; older server history may exist."
     : ""
   if (!history.hasOlder) return { visible: true, text: `${count}${ceiling}` }
   return {

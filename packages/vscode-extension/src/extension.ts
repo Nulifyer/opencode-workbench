@@ -1,5 +1,5 @@
 import * as vscode from "vscode"
-import { createOpenCodeMessageID, type ContextReceipt, type DiffAnchor } from "@opencode-workbench/shared"
+import { createOpenCodeMessageID, MULTI_RUN_MAX_CANDIDATES, MULTI_RUN_MAX_CONCURRENCY, type ContextReceipt, type DiffAnchor } from "@opencode-workbench/shared"
 import type { PlanReference } from "@opencode-workbench/shared"
 import type { WorktreeJournalEntry } from "@opencode-workbench/shared"
 import type { RunGroup } from "@opencode-workbench/shared"
@@ -45,6 +45,7 @@ import { createIsolatedWorktreeIdentity } from "./application/isolated-worktree-
 import { TaskArtifactService } from "./application/task-artifact-service.js"
 import { SessionPresentationService } from "./application/session-presentation-service.js"
 import { RecoveryPreviewService } from "./application/recovery-preview-service.js"
+import { AttentionReadService, type AttentionReadRecord } from "./application/attention-read-service.js"
 
 const PASSWORD_SECRET = "opencodeWorkbench.serverPassword"
 const SELECTED_SESSION_STATE = "opencodeWorkbench.selectedSessionID"
@@ -57,6 +58,7 @@ const WALKTHROUGHS_STATE = "opencodeWorkbench.walkthroughs.v1"
 const EVIDENCE_STATE = "opencodeWorkbench.evidence.v1"
 const TASK_ARTIFACTS_STATE = "opencodeWorkbench.taskArtifacts.v1"
 const SESSION_PRESENTATION_STATE = "opencodeWorkbench.sessionPresentation.v1"
+const ATTENTION_READ_STATE = "opencodeWorkbench.attentionRead.v1"
 let activeBridge: VsCodeBridge | undefined
 let activeManagedServer: ManagedOpenCodeServer | undefined
 let activeHandoffContinuity: HandoffContinuityService | undefined
@@ -413,6 +415,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const sessionPresentation = new SessionPresentationService(
     context.workspaceState.get<unknown[]>(SESSION_PRESENTATION_STATE) ?? [],
     (pins) => stateWriter.write(SESSION_PRESENTATION_STATE, pins),
+  )
+  const attentionRead = new AttentionReadService(
+    context.workspaceState.get<AttentionReadRecord[]>(ATTENTION_READ_STATE) ?? [],
+    (records) => stateWriter.write(ATTENTION_READ_STATE, records),
   )
   const recovery = new RecoveryPreviewService()
   const contextReceipts = new ContextReceiptService(
@@ -773,6 +779,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     worktrees,
     (observation) => trace.record(observation),
     {
+      attentionRead,
       artifacts: taskArtifacts,
       evidence,
       recovery,
@@ -786,6 +793,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         durationMilliseconds: entry.durationMilliseconds,
       })),
       captureBrowserContext: async (request) => { await vscode.commands.executeCommand("opencodeWorkbench.captureBrowserContext", request) },
+      startMultiModel: async (request) => {
+        if (!multiRun) throw new Error("OpenCode Multi-run is unavailable")
+        if (request.models.length < 2 || request.models.length > MULTI_RUN_MAX_CANDIDATES) throw new Error(`Select between 2 and ${MULTI_RUN_MAX_CANDIDATES} models`)
+        if (request.concurrency < 1 || request.concurrency > MULTI_RUN_MAX_CONCURRENCY || request.concurrency > request.models.length) throw new Error(`Concurrent runs must be between 1 and ${Math.min(MULTI_RUN_MAX_CONCURRENCY, request.models.length)}`)
+        const available = new Set(controller!.chatSnapshot().models.map((candidate) => `${candidate.providerID}/${candidate.id}`))
+        if (request.models.some((candidate) => !available.has(candidate))) throw new Error("The model catalog changed; review the selected candidates and try again")
+        const repository = await worktrees.repository(workspacePath)
+        const baseRef = (await gitRunner.run(["rev-parse", "HEAD"], repository.root)).stdout.trim()
+        const mutationID = randomUUID()
+        contextReceipts.stage(request.ownerSessionID, mutationID, request.receiptItems, request.receiptItems.some((item) => item.truncated) ? "explicit" : "none")
+        const receipt = contextReceipts.admit(request.ownerSessionID, mutationID)
+        if (!receipt) throw new Error("Could not admit the multi-model context receipt")
+        try {
+          const group = await multiRun.start({
+            mutationID,
+            ownerSessionID: request.ownerSessionID,
+            title: request.prompt.trim().replace(/\s+/g, " ").slice(0, 160),
+            repository: repository.root,
+            baseRef,
+            promptReceiptID: receipt.id,
+            prompt: request.prompt,
+            files: request.files,
+            runs: request.models.map((model, index) => ({ id: `run-${index + 1}`, model, agent: request.agent, variant: request.variant })),
+            concurrency: request.concurrency,
+            worktreeParent: path.join(path.dirname(repository.root), `.${path.basename(repository.root)}-worktrees`, `run-${mutationID.slice(0, 8)}`),
+            runtimeEpoch: `http-sse:${Date.now()}`,
+          })
+          await publishRunContinuity(group)
+          return group
+        } catch (error) {
+          contextReceipts.reject(mutationID)
+          throw error
+        }
+      },
       openHealth: openRawHealth,
       openTrace: openRawTrace,
     },
@@ -1094,7 +1135,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const choice = await vscode.window.showQuickPick([
         { label: "Implementation session", description: "Implement in the current checkout", value: "implementation" },
         { label: "Isolated worktree session", description: "Implement in a new Workbench-owned worktree", value: "isolated" },
-        { label: "Multi-run", description: "Run the approved plan with two to five models", value: "multi-run" },
+        { label: "Multi-run", description: `Run the approved plan with 2-${MULTI_RUN_MAX_CANDIDATES} models`, value: "multi-run" },
         { label: "Active goal", description: "Create a goal and implement the approved plan", value: "goal" },
       ], { title: "Handoff Approved Plan", placeHolder: "Choose the next OpenCode workflow" })
       if (!choice) return
@@ -1142,8 +1183,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (!multiRun) throw new Error("OpenCode Multi-run is unavailable")
         requireContinuity()
         const models = controller.chatSnapshot().models.map((model) => ({ label: model.name, description: model.providerID, value: `${model.providerID}/${model.id}` }))
-        const selected = await vscode.window.showQuickPick(models, { canPickMany: true, title: "Plan Multi-run", placeHolder: "Select two to five models" })
-        if (!selected || selected.length < 2 || selected.length > 5) throw new Error("Select two to five models")
+        const selected = await vscode.window.showQuickPick(models, { canPickMany: true, title: "Plan Multi-run", placeHolder: `Select 2-${MULTI_RUN_MAX_CANDIDATES} models` })
+        if (!selected || selected.length < 2 || selected.length > MULTI_RUN_MAX_CANDIDATES) throw new Error(`Select 2-${MULTI_RUN_MAX_CANDIDATES} models`)
         const repository = await worktrees.repository(workspacePath)
         const baseRef = (await gitRunner.run(["rev-parse", "HEAD"], repository.root)).stdout.trim()
         const mutationID = randomUUID()
@@ -1372,8 +1413,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!controller || !multiRun) throw new Error("Open a Git workspace before comparing models")
       requireContinuity()
       const choices = controller.chatSnapshot().models.map((model) => ({ label: model.name, description: model.providerID, value: `${model.providerID}/${model.id}` }))
-      const selected = await vscode.window.showQuickPick(choices, { canPickMany: true, title: "Compare Models", placeHolder: "Select two to five models" })
-      if (!selected || selected.length < 2 || selected.length > 5) throw new Error("Select two to five models")
+      const selected = await vscode.window.showQuickPick(choices, { canPickMany: true, title: "Compare Models", placeHolder: `Select 2-${MULTI_RUN_MAX_CANDIDATES} models` })
+      if (!selected || selected.length < 2 || selected.length > MULTI_RUN_MAX_CANDIDATES) throw new Error(`Select 2-${MULTI_RUN_MAX_CANDIDATES} models`)
       const prompt = await vscode.window.showInputBox({ title: "Compare Models", prompt: "Task for every run", ignoreFocusOut: true, validateInput: (value) => value.trim() ? undefined : "Enter a task" })
       if (!prompt) return
       const repository = await worktrees.repository(workspacePath)
@@ -1442,7 +1483,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!selected) return
       const observations = await collectRunObservations(selected.group)
       const rows = await runComparison.compare(selected.group, observations)
-      const ownerSessionID = selected.group.runs.find((run) => run.session.sessionID !== "pending")?.session.sessionID
+      const ownerSessionID = selected.group.ownerSessionID ?? selected.group.runs.find((run) => run.session.sessionID !== "pending")?.session.sessionID
       if (!ownerSessionID) throw new Error("Run comparison has no OpenCode session owner")
       const existing = taskArtifacts.list(ownerSessionID).find((artifact) => artifact.kind === "run-comparison" && artifact.payload.groupID === selected.group.id)
       if (existing?.kind === "run-comparison") taskArtifacts.update(ownerSessionID, existing.id, existing.revision, (draft) => {
@@ -1456,7 +1497,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!client) throw new Error("OpenCode Fusion is unavailable")
       chatProvider.openInEditor("runs")
       requireContinuity()
-      const candidates = runGroups.list().filter((group) => group.runs.filter((run) => run.session.sessionID !== "pending" && !run.discarded).length >= 2)
+      const candidates = runGroups.list().filter((group) => group.runs.filter((run) => run.phase === "completed" && run.session.sessionID !== "pending" && !run.discarded).length >= 2)
       const direct = typeof groupID === "string" ? candidates.find((group) => group.id === groupID) : undefined
       const selected = direct ? { group: direct } : await vscode.window.showQuickPick(candidates.map((group) => ({ label: group.title, description: `${group.runs.length} source runs · ${group.id}`, group })), { title: "Fusion Source Group" })
       if (!selected) return
@@ -1466,7 +1507,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         { label: "Review and choose approach", description: "Assess sources without implementing", value: "review" as FusionMode, agent: "plan" },
       ], { title: "Fusion Mode" })
       if (!selectedMode) return
-      const sourceRuns = selected.group.runs.filter((run) => run.session.sessionID !== "pending" && !run.discarded)
+      const availableSources = selected.group.runs.filter((run) => run.phase === "completed" && run.session.sessionID !== "pending" && !run.discarded)
+      const sourceRuns = availableSources.length <= 5 ? availableSources : await vscode.window.showQuickPick(
+        availableSources.map((run) => ({ label: run.model, description: [run.agent, run.variant, run.id].filter(Boolean).join(" · "), run })),
+        { title: "Fusion Sources", placeHolder: "Select two to five completed runs", canPickMany: true },
+      ).then((items) => {
+        if (!items) return undefined
+        if (items.length < 2 || items.length > 5) throw new Error("Select two to five completed fusion sources")
+        return items.map((item) => item.run)
+      })
+      if (!sourceRuns) return
       const observations = await collectRunObservations(selected.group)
       const comparisonRows = new Map((await runComparison.compare(selected.group, observations)).map((row) => [row.runID, row]))
       const artifacts = await Promise.all(sourceRuns.map(async (run) => {

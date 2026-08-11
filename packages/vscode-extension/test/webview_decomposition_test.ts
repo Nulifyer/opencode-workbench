@@ -4,8 +4,8 @@ import { InspectorShellController } from "../src/webview/views/inspector/shell.t
 import { composerSubmitIntent } from "../src/webview/views/composer.ts"
 import { deliveryLabel, queueProjection } from "../src/webview/views/queue.ts"
 import { sessionListMarkup } from "../src/webview/views/session-list.ts"
-import { historyPresentation, mergeHistoryPage } from "../src/webview/views/history.ts"
-import { MAX_TURN_NAVIGATION_MARKERS, turnNavigationMarkers } from "../src/webview/views/turn-navigation.ts"
+import { historyLoadAllLabel, historyLoadAllProgress, historyPresentation, mergeHistoryPage } from "../src/webview/views/history.ts"
+import { MAX_TURN_NAVIGATION_MARKERS, turnNavigationMarkers, turnNavigationScrollTop } from "../src/webview/views/turn-navigation.ts"
 import { parseWithProtocolV1Adapter } from "../src/webview/transport/protocol-v1-adapter.ts"
 import { FocusController } from "../src/webview/controllers/focus-controller.ts"
 import { projectConversationTurns } from "../src/webview/views/conversation.ts"
@@ -58,7 +58,14 @@ Deno.test("older history merges ahead of the visible transcript without duplicat
   assertEquals(bounded.actionLabel, undefined)
 })
 
-Deno.test("turn navigation derives truthful fork and completed goal-checkpoint markers", () => {
+Deno.test("load-all history labels exact known work without overstating truncated upstream history", () => {
+  assertEquals(historyLoadAllLabel({ totalMessages: 4_800, visibleMessages: 300, hasOlder: true }), "Load all 4,500 remaining")
+  assertEquals(historyLoadAllLabel({ totalMessages: 300, visibleMessages: 300, hasOlder: true, sourceMayBeTruncated: true }), "Load all older messages")
+  assertEquals(historyLoadAllProgress(2_000, 4_500), "Loading all… 2,000 / 4,500")
+  assertEquals(historyLoadAllProgress(2_000), "Loading all… 2,000 loaded")
+})
+
+Deno.test("turn navigation keeps fork boundaries but omits completed goal checkpoints", () => {
   const session = {
     id: "fork", parentID: "parent", title: "Fork", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const,
     messages: [
@@ -68,13 +75,12 @@ Deno.test("turn navigation derives truthful fork and completed goal-checkpoint m
     messageRevisions: { prompt: 1, answer: 1 },
   }
   const markers = turnNavigationMarkers(session)
-  assertEquals(markers.map((marker) => marker.id), ["fork:fork", "message:prompt", "checkpoint:checkpoint"])
+  assertEquals(markers.map((marker) => marker.id), ["fork:fork", "message:prompt"])
   assertEquals(markers[0]?.target, "message:prompt")
   assertEquals(markers[1]?.current, true)
-  assertEquals(markers[2]?.label, "Goal checkpoint recorded")
 })
 
-Deno.test("turn navigation omits OpenCode's internal post-compaction prompt", () => {
+Deno.test("turn navigation omits compaction and automatic goal continuation markers", () => {
   const session = {
     id: "compact", title: "Compacted", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const,
     messages: [
@@ -88,13 +94,82 @@ Deno.test("turn navigation omits OpenCode's internal post-compaction prompt", ()
         synthetic: true,
         metadata: { compaction_continue: true },
       }] },
+      { info: { id: "compaction", sessionID: "compact", role: "user" as const }, parts: [{
+        id: "compaction-part",
+        sessionID: "compact",
+        messageID: "compaction",
+        type: "compaction",
+      }] },
+      { info: { id: "compaction-work", sessionID: "compact", role: "assistant" as const }, parts: [{
+        id: "compaction-work-text",
+        sessionID: "compact",
+        messageID: "compaction-work",
+        type: "text",
+        text: "Work immediately following compaction",
+      }] },
+      { info: { id: "goal-update", sessionID: "compact", role: "user" as const }, parts: [{
+        id: "goal-update-text",
+        sessionID: "compact",
+        messageID: "goal-update",
+        type: "text",
+        text: "Continue working autonomously toward the active goal.",
+        synthetic: true,
+        metadata: { "opencode-workbench": { kind: "goal-continuation" } },
+      }] },
+      { info: { id: "goal-update-work", sessionID: "compact", role: "assistant" as const }, parts: [
+        { id: "goal-update-text-part", sessionID: "compact", messageID: "goal-update-work", type: "text", text: "Objective and current work state" },
+        { id: "goal-update-tool", sessionID: "compact", messageID: "goal-update-work", type: "tool", tool: "bash", state: { status: "completed" } },
+      ] },
+      { info: { id: "goal-continuation", sessionID: "compact", role: "user" as const }, parts: [{
+        id: "goal-continuation-text",
+        sessionID: "compact",
+        messageID: "goal-continuation",
+        type: "text",
+        text: "Continue working autonomously toward the active goal.",
+        synthetic: true,
+        metadata: { "opencode-workbench": { kind: "goal-continuation" } },
+      }] },
+      { info: { id: "goal-work", sessionID: "compact", role: "assistant" as const }, parts: [
+        { id: "goal-checkpoint", sessionID: "compact", messageID: "goal-work", type: "tool", tool: "update_goal_checkpoint", state: { status: "completed" } },
+        { id: "goal-work-text", sessionID: "compact", messageID: "goal-work", type: "text", text: "Completed another substantive work turn" },
+      ] },
     ],
-    messageRevisions: { prompt: 1, continuation: 1 },
+    messageRevisions: { prompt: 1, continuation: 1, compaction: 1, "compaction-work": 1, "goal-update": 1, "goal-update-work": 1, "goal-continuation": 1, "goal-work": 1 },
   }
   const markers = turnNavigationMarkers(session)
-  assertEquals(markers.map((marker) => marker.id), ["message:prompt"])
-  assertEquals(markers[0]?.current, true)
-  assertEquals(projectConversationTurns(session, false).map((turn) => turn.key), ["user:prompt"])
+  assertEquals(markers.map((marker) => marker.id), ["message:prompt", "message:goal-work"])
+  assertEquals(markers[0]?.current, undefined)
+  assertEquals(markers[1]?.current, true)
+  assertEquals(markers[1]?.label, "Assistant work turn: Completed another substantive work turn")
+  assertEquals(projectConversationTurns(session, false).map((turn) => turn.key), ["user:prompt", "user:compaction", "user:goal-update", "user:goal-continuation"])
+})
+
+Deno.test("long automatic goals get bounded assistant-work navigation without synthetic marker ticks", () => {
+  const messages = Array.from({ length: 200 }, (_, index) => [
+    {
+      info: { id: `continuation-${index}`, sessionID: "goal", role: "user" as const },
+      parts: [{ id: `continuation-text-${index}`, sessionID: "goal", messageID: `continuation-${index}`, type: "text", text: "Continue working autonomously toward the active goal.", synthetic: true }],
+    },
+    {
+      info: { id: `answer-${index}`, sessionID: "goal", role: "assistant" as const },
+      parts: [{ id: `answer-text-${index}`, sessionID: "goal", messageID: `answer-${index}`, type: "text", text: `Substantive result ${index}` }],
+    },
+  ]).flat()
+  const session = { id: "goal", title: "Goal", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const, messages, messageRevisions: {} }
+  const markers = turnNavigationMarkers(session)
+  assertEquals(markers.length, MAX_TURN_NAVIGATION_MARKERS)
+  assertEquals(markers.every((marker) => marker.id.startsWith("message:answer-")), true)
+  assertEquals(markers.at(-1)?.id, "message:answer-199")
+  assertEquals(markers.at(-1)?.current, true)
+})
+
+Deno.test("turn navigation keeps the complete active range clear of its faded edges", () => {
+  const base = { scrollTop: 200, scrollHeight: 800, clientHeight: 300, edgeInset: 22 }
+  assertEquals(turnNavigationScrollTop({ ...base, activeTop: 240, activeBottom: 470 }), 200)
+  assertEquals(turnNavigationScrollTop({ ...base, activeTop: 240, activeBottom: 495 }), 217)
+  assertEquals(turnNavigationScrollTop({ ...base, activeTop: 205, activeBottom: 460 }), 183)
+  assertEquals(turnNavigationScrollTop({ ...base, scrollTop: 0, activeTop: 22, activeBottom: 42 }), 0)
+  assertEquals(turnNavigationScrollTop({ ...base, scrollTop: 500, activeTop: 760, activeBottom: 780 }), 500)
 })
 
 Deno.test("turn navigation bounds long histories while retaining the current turn", () => {

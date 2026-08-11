@@ -85,6 +85,61 @@ Deno.test("multi-run isolates partial launch failures and persists no prompt byt
   assertEquals(JSON.stringify(groups.list()).includes("Implement it"), false)
 })
 
+Deno.test("multi-run queues candidate launches independently from group size", async () => {
+  let active = 0
+  let peak = 0
+  let started = 0
+  const releases: Array<() => void> = []
+  const runtimes: RunRuntimeFactory = {
+    forDirectory: (directory) => ({
+      createSession: async () => ({ id: `session-${directory.split("/").at(-1)}` }),
+      sendPrompt: async () => {
+        started += 1
+        active += 1
+        peak = Math.max(peak, active)
+        await new Promise<void>((resolve) => releases.push(() => {
+          active -= 1
+          resolve()
+        }))
+      },
+      abort: async () => true,
+      statuses: async () => ({}),
+      inspectSession: async () => ({ exists: true, messages: [] }),
+    }),
+  }
+  const waitFor = async (predicate: () => boolean): Promise<void> => {
+    for (let attempt = 0; attempt < 1_000 && !predicate(); attempt += 1) await Promise.resolve()
+    if (!predicate()) throw new Error("Timed out waiting for queued multi-run launch")
+  }
+  const groups = new RunGroupService()
+  const orchestrator = new MultiRunOrchestrator(groups, new FakeWorktrees(999) as never, runtimes)
+  const launching = orchestrator.start({
+    mutationID: "queued",
+    ownerSessionID: "origin",
+    title: "Queued comparison",
+    repository: Deno.cwd(),
+    baseRef: "HEAD",
+    promptReceiptID: "receipt",
+    prompt: "Implement it",
+    runs: Array.from({ length: 6 }, (_, index) => ({ model: `provider/model-${index}` })),
+    concurrency: 2,
+    worktreeParent: "/tmp/runs",
+    runtimeEpoch: "epoch",
+  })
+  await waitFor(() => started === 2)
+  assertEquals(peak, 2)
+  for (let target = 3; target <= 6; target += 1) {
+    releases.shift()!()
+    await waitFor(() => started === target)
+    assertEquals(active <= 2, true)
+  }
+  while (releases.length) releases.shift()!()
+  const group = await launching
+  assertEquals(group.ownerSessionID, "origin")
+  assertEquals(group.runs.length, 6)
+  assertEquals(peak, 2)
+})
+
 Deno.test("run-group mutation IDs are idempotent", () => {
   const groups = new RunGroupService()
   const input = { mutationID: "same", title: "Compare", repository: "/repo", baseRef: "HEAD", promptReceiptID: "receipt", isolation: "worktree" as const, runs: [{ id: "one", model: "a" }, { id: "two", model: "b" }] }

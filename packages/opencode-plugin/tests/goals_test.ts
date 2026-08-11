@@ -8,6 +8,7 @@ import {
   createGoal,
   emptyGoalState,
   failGoalAutoContinue,
+  goalArchives,
   importLegacyGoalState,
   pauseGoalContinuationRecovery,
   parseGoalState,
@@ -119,9 +120,28 @@ Deno.test("legacy goal state imports into the bounded native schema", () => {
   equal(imported?.goals.session?.objective, "Continue existing work")
   equal(imported?.goals.session?.history[0]?.type, "autoContinue")
   equal(imported?.goals.session?.lastCheckpoint?.summary, "Tests are passing.")
-  equal(imported?.version, 2)
+  equal(imported?.version, 3)
   assert(parseGoalState(imported).goals.session !== undefined)
   assert(clearGoal(imported!, "session"))
+})
+
+Deno.test("completed and cancelled goals retain bounded session metrics", () => {
+  const state = emptyGoalState()
+  const first = createGoal(state, "session", { objective: "First objective" }, 10)
+  equal(first.sequence, 1)
+  accountGoalTokens(state, "session", 500, 11, 4)
+  const accounted = accountGoalTokens(state, "session", 800, 12, 7)
+  equal(accounted?.tokensUsed, 300)
+  equal(accounted?.turnsUsed, 3)
+  closeGoal(state, "session", "complete", "Verified", 13)
+  const second = createGoal(state, "session", { objective: "Second objective" }, 14)
+  equal(second.sequence, 2)
+  equal(second.archivedGoals.length, 1)
+  equal(second.archivedGoals[0]?.tokensUsed, 300)
+  equal(second.archivedGoals[0]?.turnsUsed, 3)
+  assert(clearGoal(state, "session", 20))
+  equal(goalArchives(state, "session").length, 2)
+  equal(goalArchives(state, "session")[1]?.status, "cancelled")
 })
 
 Deno.test("goal schema v2 tracks criteria, evidence, repeated blocks, and settlement continuation", () => {

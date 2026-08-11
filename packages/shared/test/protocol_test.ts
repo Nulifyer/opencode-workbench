@@ -12,12 +12,20 @@ Deno.test("validates webview messages", () => {
   assert(parseWebviewMessage({ type: "send", sessionID: "session-1", delivery: "restart", text: "hello" }) === undefined, "unknown send delivery accepted")
   assert(parseWebviewMessage({ type: "send", sessionID: "session-1", promptID: "invalid", text: "hello" }) === undefined, "invalid prompt ID accepted")
   assert(parseWebviewMessage({ type: "send", text: "hello" }) === undefined, "sessionless send accepted")
+  const multi = parseWebviewMessage({ type: "sendMultiModel", sessionID: "session-1", text: "implement it", models: ["provider/a", "provider/b", "provider/c"], concurrency: 2 })
+  assert(multi?.type === "sendMultiModel" && multi.models.length === 3 && multi.concurrency === 2, "valid multi-model send rejected")
+  assert(parseWebviewMessage({ type: "sendMultiModel", sessionID: "session-1", text: "implement it", models: ["provider/a"], concurrency: 1 }) === undefined, "single-model multi-run accepted")
+  assert(parseWebviewMessage({ type: "sendMultiModel", sessionID: "session-1", text: "implement it", models: ["provider/a", "provider/a"], concurrency: 1 }) === undefined, "duplicate multi-run model accepted")
+  assert(parseWebviewMessage({ type: "sendMultiModel", sessionID: "session-1", text: "implement it", models: ["provider/a", "provider/b"], concurrency: 3 }) === undefined, "multi-run concurrency above candidate count accepted")
+  assert(parseWebviewMessage({ type: "sendMultiModel", sessionID: "session-1", text: "", models: ["provider/a", "provider/b"], concurrency: 2 }) === undefined, "taskless multi-run accepted")
   assert(parseWebviewMessage({ type: "selectSession", sessionID: "session-1" })?.type === "selectSession", "valid selection rejected")
   assert(parseWebviewMessage({ type: "selectSession", sessionID: "" }) === undefined, "empty selection accepted")
   assert(parseWebviewMessage({ type: "createSession", draft: "Review this workspace" })?.type === "createSession", "valid starter rejected")
   assert(parseWebviewMessage({ type: "createSession", draft: "Review this workspace", submit: true })?.type === "createSession", "session-creating submit rejected")
   assert(parseWebviewMessage({ type: "createSession", draft: "", submit: true }) === undefined, "empty session-creating submit accepted")
   assert(parseWebviewMessage({ type: "planTask" })?.type === "planTask", "plan-first command rejected")
+  assert(parseWebviewMessage({ type: "markAttentionRead" })?.type === "markAttentionRead", "attention acknowledgement rejected")
+  assert(parseWebviewMessage({ type: "markAttentionRead", sessionID: "injected" }) === undefined, "attention acknowledgement accepted extra authority")
   assert(parseWebviewMessage({ type: "planTask", command: "workbench.action.closeWindow" }) === undefined, "plan-first command injection accepted")
   assert(parseWebviewMessage({ type: "workbenchAction", sessionID: "session-1", action: "review" })?.type === "workbenchAction", "bounded Workbench action rejected")
   assert(parseWebviewMessage({ type: "workbenchAction", sessionID: "session-1", action: "unknown" }) === undefined, "unknown Workbench action accepted")
@@ -288,13 +296,20 @@ Deno.test("validates host snapshots", () => {
         questions: [{ id: "q1", sessionID: "s", protocol: "v2", questions: [{ header: "Choice", question: "Choose", options: [{ label: "Yes", description: "Proceed" }] }] }],
         todos: [{ content: "Task", status: "pending", priority: "high" }],
         changes: [{ file: "src/main.ts", patch: "@@ -1 +1 @@", additions: 1, deletions: 1, status: "modified" }],
-        context: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 2, cost: 0 },
-        goal: { objective: "Goal", status: "active", sourceTool: "get_goal", tokensUsed: 42, tokenBudget: 100 },
+        context: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 2, usageReported: true, cost: 0 },
+        metrics: { tokensUsed: 200, timeUsedSeconds: 90_000, turnsUsed: 9, sampledAt: 100 },
+        goal: { id: "goal-2", sequence: 2, objective: "Goal", status: "active", sourceTool: "get_goal", tokensUsed: 42, tokenBudget: 100, timeUsedSeconds: 86_500, turnsUsed: 4, createdAt: 10, sampledAt: 100, archivedGoals: [{ id: "goal-1", sequence: 1, objective: "First goal", status: "complete", tokensUsed: 100, timeUsedSeconds: 3_600, turnsUsed: 5, autoTurns: 2, createdAt: 1, closedAt: 9 }] },
+        goalHistory: [{ id: "goal-1", sequence: 1, objective: "First goal", status: "complete", tokensUsed: 100, timeUsedSeconds: 3_600, turnsUsed: 5, autoTurns: 2, createdAt: 1, closedAt: 9 }],
         delegations: [{ partID: "task-part", sessionID: "child", title: "Inspect child", status: { type: "busy" }, messages: [], revision: 1 }],
       },
     },
   }
   assert(parseHostMessage(valid)?.type === "snapshot", "valid snapshot rejected")
+  const unreportedUsage = structuredClone(valid)
+  unreportedUsage.snapshot.session.context = { ...unreportedUsage.snapshot.session.context, inputTokens: 0, outputTokens: 0, totalTokens: 0, usageReported: false }
+  assert(parseHostMessage(unreportedUsage)?.type === "snapshot", "unreported context usage rejected")
+  ;(unreportedUsage.snapshot.session.context as Record<string, unknown>).usagePercent = 0
+  assert(parseHostMessage(unreportedUsage) === undefined, "unreported context accepted a measured percentage")
   const legacy = structuredClone(valid)
   delete (legacy.snapshot as { artifacts?: unknown }).artifacts
   delete (legacy.snapshot as { reviewFindings?: unknown }).reviewFindings
@@ -325,7 +340,7 @@ Deno.test("validates host snapshots", () => {
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, artifacts: Array.from({ length: 501 }, (_, index) => ({ ...valid.snapshot.artifacts[0], id: `artifact-${index}` })) } }) === undefined, "oversized artifact summary collection accepted")
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, evidence: Array.from({ length: 2_001 }, (_, index) => ({ ...valid.snapshot.evidence[0], id: `evidence-${index}` })) } }) === undefined, "oversized evidence collection accepted")
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, runComparisons: Array.from({ length: 21 }, (_, index) => ({ ...valid.snapshot.runComparisons[0], artifactID: `comparison-${index}` })) } }) === undefined, "oversized run-comparison collection accepted")
-  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, runComparisons: [{ ...valid.snapshot.runComparisons[0], rows: Array.from({ length: 6 }, (_, index) => ({ ...valid.snapshot.runComparisons[0].rows[0], runID: `run-${index}` })) }] } }) === undefined, "run comparison with more than five rows accepted")
+  assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, runComparisons: [{ ...valid.snapshot.runComparisons[0], rows: Array.from({ length: 101 }, (_, index) => ({ ...valid.snapshot.runComparisons[0].rows[0], runID: `run-${index}` })) }] } }) === undefined, "run comparison above the multi-run safety limit accepted")
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, evidence: [{ ...valid.snapshot.evidence[0], summary: "authorization: Bearer private-token" }] } }) === undefined, "credential-shaped evidence summary accepted")
   assert(parseHostMessage({ ...valid, snapshot: { ...valid.snapshot, session: undefined, artifacts: [] } }) === undefined, "unscoped selected-session artifacts accepted")
   const projected = {
@@ -391,6 +406,20 @@ Deno.test("validates host snapshots", () => {
   }
   assert(parseHostMessage(historyPage)?.type === "historyPage", "valid older-history page rejected")
   assert(parseHostMessage({ ...historyPage, page: { ...historyPage.page, sessionID: "other" } }) === undefined, "cross-session older-history page accepted")
+  const largeHistoryMessages = Array.from({ length: 1_000 }, (_, index) => ({
+    info: { id: `older-${index}`, sessionID: "s", role: "user" },
+    parts: [{ id: `older-part-${index}`, sessionID: "s", messageID: `older-${index}`, type: "text", text: `Earlier ${index}` }],
+  }))
+  const largeHistoryPage = {
+    type: "historyPage",
+    page: {
+      ...historyPage.page,
+      messages: largeHistoryMessages,
+      messageRevisions: Object.fromEntries(largeHistoryMessages.map((message) => [message.info.id, 1])),
+    },
+  }
+  assert(parseHostMessage(largeHistoryPage)?.type === "historyPage", "1,000-message older-history page rejected")
+  assert(parseHostMessage({ ...largeHistoryPage, page: { ...largeHistoryPage.page, messages: [...largeHistoryMessages, largeHistoryMessages[0]] } }) === undefined, "oversized older-history page accepted")
   assert(parseHostMessage({ type: "insertText", sessionID: "s", text: "@<src/main.ts#1-3>" })?.type === "insertText", "composer insertion rejected")
   assert(parseHostMessage({ type: "fileSuggestions", sessionID: "s", requestID: 1, files: ["src/main.ts"] })?.type === "fileSuggestions", "file suggestions rejected")
   assert(parseHostMessage({ type: "editorContextChanged", context: { name: "Untitled-1", detail: "Unsaved changes", dirty: true, attached: false } })?.type === "editorContextChanged", "editor context update rejected")

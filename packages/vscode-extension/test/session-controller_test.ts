@@ -1,6 +1,7 @@
 import { isOpenCodeMessageID, parseHostMessage, reusablePermissionScopes, type MessageBundle, type OpenCodePty, type SessionInfo } from "@opencode-workbench/shared"
 import type { OpenCodeClient } from "../src/opencode-client.ts"
 import { type ComposerPreferences, permissionPatternMatches, SessionController } from "../src/session-controller.ts"
+import { deriveContext } from "../src/application/snapshot-projector.ts"
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -309,7 +310,7 @@ Deno.test("chat snapshot caps session summaries while retaining selection", asyn
 })
 
 Deno.test("chat history exposes and pages messages older than the bounded snapshot", async () => {
-  const messages: MessageBundle[] = Array.from({ length: 5_201 }, (_, index) => ({
+  const messages: MessageBundle[] = Array.from({ length: 6_201 }, (_, index) => ({
     info: { id: `message-${String(index).padStart(4, "0")}`, sessionID: "one", role: index % 2 ? "assistant" : "user" },
     parts: [],
   }))
@@ -322,16 +323,52 @@ Deno.test("chat history exposes and pages messages older than the bounded snapsh
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   const visible = controller.chatSnapshot().session
-  if (visible?.messages.length !== 5_000 || visible.history?.totalMessages !== 5_201 || !visible.history.hasOlder || visible.history.limitedBy !== "messages") {
+  if (visible?.messages.length !== 5_000 || visible.history?.totalMessages !== 6_201 || !visible.history.hasOlder || visible.history.limitedBy !== "messages") {
     throw new Error(`Bounded transcript did not disclose older history: ${JSON.stringify(visible?.history)}`)
   }
   const page = controller.historyPage("one", visible.messages[0]!.info.id)
-  if (page.messages.length !== 200 || page.messages[0]?.info.id !== "message-0001" || !page.hasOlder || page.totalMessages !== 5_201) {
+  if (page.messages.length !== 1_000 || page.messages[0]?.info.id !== "message-0201" || !page.hasOlder || page.totalMessages !== 6_201 ||
+    parseHostMessage({ type: "historyPage", page })?.type !== "historyPage") {
     throw new Error(`Older transcript page was not projected from the exact boundary: ${JSON.stringify({ first: page.messages[0]?.info.id, count: page.messages.length, hasOlder: page.hasOlder })}`)
   }
   const oldest = controller.historyPage("one", page.messages[0]!.info.id)
-  if (oldest.messages.length !== 1 || oldest.messages[0]?.info.id !== "message-0000" || oldest.hasOlder) {
+  if (oldest.messages.length !== 201 || oldest.messages[0]?.info.id !== "message-0000" || oldest.hasOlder) {
     throw new Error("Final older-history page did not terminate at the retained transcript boundary")
+  }
+  controller.dispose()
+})
+
+Deno.test("cold sessions hydrate a bounded tail and fetch older server history only on demand", async () => {
+  const bundle = (id: string, created: number): MessageBundle => ({
+    info: { id, sessionID: "one", role: created % 2 ? "user" : "assistant", time: { created } },
+    parts: [{ id: `${id}-text`, sessionID: "one", messageID: id, type: "text", text: id }],
+  })
+  const calls: Array<{ cursor: string | undefined; limit: number }> = []
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messageHistoryPage: async (_sessionID: string, cursor: { legacyComplete: boolean; v2Complete: boolean } | undefined, limit: number) => {
+      calls.push({ cursor: cursor ? "older" : undefined, limit })
+      return cursor
+        ? { messages: [bundle("message-1", 1), bundle("message-2", 2)], legacyMessageIDs: ["message-1", "message-2"], v2MessageIDs: [], cursor: { legacyComplete: true, v2Complete: true } }
+        : { messages: [bundle("message-3", 3), bundle("message-4", 4)], legacyMessageIDs: ["message-3", "message-4"], v2MessageIDs: [], cursor: { legacy: "older", legacyComplete: false, v2Complete: true } }
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const recent = controller.chatSnapshot().session
+  if (calls.length !== 1 || calls[0]?.limit !== 400 || recent?.messages.map((message) => message.info.id).join(",") !== "message-3,message-4" ||
+    !recent.history?.hasOlder || !recent.history.sourceMayBeTruncated || recent.metrics?.turnsTruncated !== true) throw new Error(`Cold history was not bounded: ${JSON.stringify({ calls, history: recent?.history, metrics: recent?.metrics })}`)
+  const recentRevisions = { ...recent.messageRevisions }
+  const page = await controller.loadHistoryPage("one", "message-3")
+  const expanded = controller.chatSnapshot().session
+  const completedCalls = calls.slice()
+  if (completedCalls.length !== 2 || completedCalls[1]?.cursor !== "older" || completedCalls[1]?.limit !== 1_000 || page.messages.map((message) => message.info.id).join(",") !== "message-1,message-2" || page.hasOlder ||
+    expanded?.messages.map((message) => message.info.id).join(",") !== "message-1,message-2,message-3,message-4" || expanded.history?.hasOlder ||
+    expanded.metrics?.turnsTruncated !== undefined ||
+    expanded.messageRevisions["message-3"] !== recentRevisions["message-3"] || expanded.messageRevisions["message-4"] !== recentRevisions["message-4"]) {
+    throw new Error(`On-demand server history did not merge incrementally: ${JSON.stringify({ calls, page, expanded: expanded?.history })}`)
   }
   controller.dispose()
 })
@@ -674,14 +711,14 @@ Deno.test("removed messages also remove their webview revisions", async () => {
 })
 
 Deno.test("chat snapshots bound large transcripts and tool metadata", async () => {
-  const transcript = Array.from({ length: 10 }, (_, index) => ({
+  const transcript = Array.from({ length: 20 }, (_, index) => ({
     info: { id: `message-${index}`, sessionID: "one", role: "assistant" as const },
     parts: [{ id: `part-${index}`, sessionID: "one", messageID: `message-${index}`, type: "text", text: "x".repeat(500_000) }],
   }))
-  transcript[9]!.parts.push({
+  transcript[19]!.parts.push({
     id: "tool",
     sessionID: "one",
-    messageID: "message-9",
+    messageID: "message-19",
     type: "tool",
     state: { status: "completed", metadata: { output: "x".repeat(150_000) } },
   } as unknown as typeof transcript[number]["parts"][number])
@@ -695,7 +732,7 @@ Deno.test("chat snapshots bound large transcripts and tool metadata", async () =
   await controller.reconcile()
   const snapshot = controller.chatSnapshot()
 
-  if (!parseHostMessage({ type: "snapshot", snapshot }) || snapshot.session?.messages.at(-1)?.info.id !== "message-9" ||
+  if (!parseHostMessage({ type: "snapshot", snapshot }) || snapshot.session?.messages.at(-1)?.info.id !== "message-19" ||
     snapshot.session.messages.length >= transcript.length) {
     throw new Error("Large transcript was not bounded into a valid recent snapshot")
   }
@@ -2498,6 +2535,16 @@ Deno.test("context uses latest step tokens and cumulative assistant costs", asyn
   if (snapshot.variant !== "high") throw new Error("Reasoning variant was not inferred from real user message shape")
   if (snapshot.goal?.objective !== "Ship safely" || snapshot.todos?.length !== 0) throw new Error("Goal summary was not kept distinct from todos")
   controller.dispose()
+})
+
+Deno.test("zero-valued provider usage remains distinguishable from a known zero-percent context", () => {
+  const context = deriveContext([{
+    info: { id: "assistant", sessionID: "session", role: "assistant", providerID: "openai", modelID: "model", time: { completed: 1 }, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+    parts: [],
+  }], [{ id: "model", providerID: "openai", name: "Model", contextLimit: 500_000 }])
+  if (context?.usageReported !== false || context.usagePercent !== undefined || context.contextLimit !== 500_000) {
+    throw new Error("Missing provider usage was presented as a measured zero-percent context")
+  }
 })
 
 Deno.test("question and diff events expose actionable session state", async () => {

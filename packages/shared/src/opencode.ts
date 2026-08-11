@@ -357,11 +357,35 @@ export interface ContextSummary {
   inputLimit?: number
   outputLimit?: number
   model?: string
+  usageReported?: boolean
   usagePercent?: number
   cost: number
 }
 
+export interface SessionMetrics {
+  tokensUsed?: number
+  timeUsedSeconds: number
+  turnsUsed: number
+  turnsTruncated?: boolean
+  sampledAt: number
+}
+
+export interface GoalMetricSummary {
+  id: string
+  sequence: number
+  objective: string
+  status: string
+  tokensUsed: number
+  timeUsedSeconds: number
+  turnsUsed: number
+  autoTurns: number
+  createdAt: number
+  closedAt?: number
+}
+
 export interface GoalSummary {
+  id?: string
+  sequence?: number
   objective?: string
   status?: string
   sourceTool: string
@@ -370,6 +394,7 @@ export interface GoalSummary {
   remainingTokens?: number
   timeUsedSeconds?: number
   maxDurationSeconds?: number
+  turnsUsed?: number
   autoTurns?: number
   maxAutoTurns?: number
   lastStatus?: string
@@ -386,6 +411,10 @@ export interface GoalSummary {
   settlementGeneration?: number
   planReference?: string
   runGroupReference?: string
+  createdAt?: number
+  closedAt?: number
+  archivedGoals?: GoalMetricSummary[]
+  sampledAt?: number
 }
 
 export interface OpenCodeEvent {

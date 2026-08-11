@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import path from "node:path"
-import { createOpenCodeMessageID, type MessageBundle, type RunGroup, type RunReference, type SessionLocator, type SessionStatus, type StructuredError } from "@opencode-workbench/shared"
+import { createOpenCodeMessageID, MULTI_RUN_DEFAULT_CONCURRENCY, MULTI_RUN_MAX_CANDIDATES, MULTI_RUN_MAX_CONCURRENCY, type MessageBundle, type RunGroup, type RunReference, type SessionLocator, type SessionStatus, type StructuredError } from "@opencode-workbench/shared"
 import type { PromptFilePart } from "../opencode-client.js"
 import type { WorktreeService } from "./worktree-service.js"
 import { sessionTurnOutcome } from "./session-turn-outcome.js"
@@ -71,6 +71,18 @@ function isTerminalGroup(group: RunGroup): boolean {
   return group.runs.every((run) => TERMINAL_RUN_PHASES.has(run.phase))
 }
 
+async function forEachConcurrent<T>(values: readonly T[], concurrency: number, work: (value: T, index: number) => Promise<void>): Promise<void> {
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < values.length) {
+      const index = next
+      next += 1
+      await work(values[index]!, index)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker))
+}
+
 export class RunGroupService {
   private readonly groups = new Map<string, RunGroup>()
   private readonly mutations = new Map<string, string>()
@@ -115,7 +127,7 @@ export class RunGroupService {
 
   create(input: Omit<RunGroup, "id" | "createdAt" | "runs"> & { mutationID: string; runs: Array<Pick<RunReference, "id" | "model" | "agent" | "variant">> }): RunGroup {
     if (!input.mutationID || input.mutationID.length > 1_024) throw new Error("Invalid run-group mutation ID")
-    if (input.runs.length < 2 || input.runs.length > 5 || new Set(input.runs.map((run) => run.id)).size !== input.runs.length) throw new Error("Multi-run requires two to five unique runs")
+    if (input.runs.length < 2 || input.runs.length > MULTI_RUN_MAX_CANDIDATES || new Set(input.runs.map((run) => run.id)).size !== input.runs.length) throw new Error(`Multi-run requires two to ${MULTI_RUN_MAX_CANDIDATES} unique runs`)
     const existingID = this.mutations.get(input.mutationID)
     if (existingID) {
       const existing = this.get(existingID)!
@@ -123,7 +135,7 @@ export class RunGroupService {
         const requested = input.runs[index]
         return requested !== undefined && run.id === requested.id && run.model === requested.model && run.agent === requested.agent && run.variant === requested.variant
       })
-      if (existing.title !== input.title.slice(0, 500) || existing.repository !== input.repository || existing.baseRef !== input.baseRef ||
+      if (existing.ownerSessionID !== input.ownerSessionID || existing.title !== input.title.slice(0, 500) || existing.repository !== input.repository || existing.baseRef !== input.baseRef ||
         existing.promptReceiptID !== input.promptReceiptID || existing.isolation !== input.isolation || !sameRuns) {
         throw new Error(`Run-group mutation ${input.mutationID} was reused with a different request`)
       }
@@ -135,7 +147,7 @@ export class RunGroupService {
       throw new Error("Run-group journal limit reached by active or needs-input groups; finish or cancel an existing group before creating another")
     }
     const group: RunGroup = {
-      id: randomUUID(), mutationID: input.mutationID, title: input.title.slice(0, 500), repository: input.repository, baseRef: input.baseRef,
+      id: randomUUID(), mutationID: input.mutationID, ownerSessionID: input.ownerSessionID, title: input.title.slice(0, 500), repository: input.repository, baseRef: input.baseRef,
       promptReceiptID: input.promptReceiptID, isolation: input.isolation, createdAt: Date.now(),
       runs: input.runs.map((run) => ({ ...run, phase: "pending", session: { sessionID: "pending", directory: input.repository, experience: "workbench", transport: "http-sse", runtimeEpoch: "pending" } })),
     }
@@ -213,6 +225,7 @@ export class RunGroupService {
 
 export interface MultiRunInput {
   mutationID: string
+  ownerSessionID?: string
   title: string
   repository: string
   baseRef: string
@@ -220,6 +233,7 @@ export interface MultiRunInput {
   prompt: string
   files?: PromptFilePart[]
   runs: Array<{ id?: string; model: string; agent?: string; variant?: string }>
+  concurrency?: number
   worktreeParent: string
   runtimeEpoch: string
 }
@@ -254,13 +268,15 @@ export class MultiRunOrchestrator {
   async start(input: MultiRunInput): Promise<RunGroup> {
     if (this.disposed) throw new Error("Multi-run orchestrator is disposed")
     if (!input.prompt.trim() || input.prompt.length > 200_000) throw new Error("Multi-run prompt is empty or too large")
+    const concurrency = input.concurrency ?? MULTI_RUN_DEFAULT_CONCURRENCY
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > MULTI_RUN_MAX_CONCURRENCY) throw new Error(`Multi-run concurrency must be between 1 and ${MULTI_RUN_MAX_CONCURRENCY}`)
     const selections = input.runs.map((run, index) => ({ ...run, id: run.id ?? `run-${index + 1}` }))
     const group = this.groups.create({
-      mutationID: input.mutationID, title: input.title, repository: input.repository, baseRef: input.baseRef,
+      mutationID: input.mutationID, ownerSessionID: input.ownerSessionID, title: input.title, repository: input.repository, baseRef: input.baseRef,
       promptReceiptID: input.promptReceiptID, isolation: "worktree", runs: selections,
     })
     await this.groups.flush()
-    await Promise.all(group.runs.map((run, index) => this.ensureLaunch(input, group.id, run.id, index)))
+    await forEachConcurrent(group.runs, concurrency, async (run, index) => await this.ensureLaunch(input, group.id, run.id, index))
     const launched = this.groups.get(group.id)!
     for (const run of launched.runs) this.scheduleMonitor(group.id, run.id)
     return launched
@@ -271,7 +287,7 @@ export class MultiRunOrchestrator {
     const group = this.groups.get(groupID)
     if (!group) throw new Error("Unknown run group")
     await this.worktrees.recover()
-    await Promise.all(group.runs.map((run) => this.recoverRun(group.id, run.id)))
+    await forEachConcurrent(group.runs, MULTI_RUN_MAX_CONCURRENCY, async (run) => await this.recoverRun(group.id, run.id))
     await this.groups.flush()
     const refreshed = this.groups.get(groupID)!
     for (const run of refreshed.runs) this.scheduleMonitor(groupID, run.id)

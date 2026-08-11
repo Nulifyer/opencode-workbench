@@ -37,6 +37,9 @@ export interface SplitPaneControllerOptions {
   persist?: (widths: Readonly<Record<string, number>>) => void
   /** Injectable for tests and runtimes that do not expose ResizeObserver. */
   createResizeObserver?: (callback: () => void) => SplitPaneResizeObserver | undefined
+  /** Injectable frame hooks keep pointer-driven layout writes deterministic in tests. */
+  requestFrame?: (callback: FrameRequestCallback) => number
+  cancelFrame?: (handle: number) => void
 }
 
 interface ActivePointer {
@@ -100,6 +103,9 @@ export class SplitPaneController {
   private readonly disposers: Array<() => void> = []
   private readonly observer?: SplitPaneResizeObserver
   private active?: ActivePointer
+  private pendingPointerWidth?: number
+  private pointerFrame?: number
+  private pointerFramePending = false
   private disposed = false
 
   constructor(private readonly options: SplitPaneControllerOptions) {
@@ -151,6 +157,7 @@ export class SplitPaneController {
 
   dispose(): void {
     if (this.disposed) return
+    this.cancelPointerFrame()
     this.disposed = true
     this.active = undefined
     this.observer?.disconnect()
@@ -170,10 +177,11 @@ export class SplitPaneController {
       event.preventDefault()
       const delta = event.clientX - active.startX
       const direction = (definition.edge ?? "right") === "right" ? -1 : 1
-      this.setWidth(definition.key, active.startWidth + delta * direction, false)
+      this.schedulePointerWidth(active.startWidth + delta * direction)
     }
     const finishPointer = (event: PointerEvent): void => {
       if (!this.active || this.active.id !== event.pointerId || this.active.key !== definition.key) return
+      this.flushPointerWidth(true)
       this.active = undefined
       if (definition.separator.hasPointerCapture?.(event.pointerId)) definition.separator.releasePointerCapture?.(event.pointerId)
       this.persist()
@@ -210,6 +218,41 @@ export class SplitPaneController {
       definition.separator.removeEventListener("keydown", keyDown)
       definition.separator.removeEventListener("dblclick", doubleClick)
     })
+  }
+
+  private schedulePointerWidth(width: number): void {
+    this.pendingPointerWidth = width
+    if (this.pointerFramePending) return
+    const request = this.options.requestFrame ?? globalThis.requestAnimationFrame?.bind(globalThis)
+    if (!request) {
+      this.flushPointerWidth()
+      return
+    }
+    this.pointerFramePending = true
+    this.pointerFrame = request(() => this.flushPointerWidth())
+  }
+
+  private flushPointerWidth(cancelScheduled = false): void {
+    if (cancelScheduled && this.pointerFrame !== undefined) {
+      const cancel = this.options.cancelFrame ?? globalThis.cancelAnimationFrame?.bind(globalThis)
+      cancel?.(this.pointerFrame)
+    }
+    this.pointerFramePending = false
+    this.pointerFrame = undefined
+    const width = this.pendingPointerWidth
+    this.pendingPointerWidth = undefined
+    const active = this.active
+    if (width !== undefined && active && !this.disposed) this.setWidth(active.key, width, false)
+  }
+
+  private cancelPointerFrame(): void {
+    if (this.pointerFrame !== undefined) {
+      const cancel = this.options.cancelFrame ?? globalThis.cancelAnimationFrame?.bind(globalThis)
+      cancel?.(this.pointerFrame)
+    }
+    this.pointerFrame = undefined
+    this.pointerFramePending = false
+    this.pendingPointerWidth = undefined
   }
 
   private bounds(definition: SplitPaneDefinition): SplitPaneBounds {

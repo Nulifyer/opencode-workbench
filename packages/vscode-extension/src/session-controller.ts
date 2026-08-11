@@ -37,7 +37,7 @@ import {
   permissionRequestCharacters,
   reusablePermissionScopes,
 } from "@opencode-workbench/shared"
-import { OPENCODE_PTY_LIMIT, OpenCodeClient, TRANSCRIPT_MESSAGE_LIMIT, parseChanges, parseOpenCodePty, parsePermission, parseQuestion, parseTodos, type PromptFilePart, type SessionMessageHistory } from "./opencode-client.js"
+import { OPENCODE_PTY_LIMIT, OpenCodeClient, TRANSCRIPT_MESSAGE_LIMIT, parseChanges, parseOpenCodePty, parsePermission, parseQuestion, parseTodos, type PromptFilePart, type SessionMessageHistory, type SessionMessageHistoryCursor } from "./opencode-client.js"
 import { OrderedEventBus } from "./ordered-event-bus.js"
 import { ConnectionCoordinator } from "./session/connection-coordinator.js"
 import { SessionRepository } from "./application/session-repository.js"
@@ -47,7 +47,7 @@ import { PromptDispatcher } from "./application/prompt-dispatcher.js"
 import { QuestionCoordinator } from "./application/question-coordinator.js"
 import { SettlementCoordinator } from "./application/settlement-coordinator.js"
 import { mergeTranscripts, TranscriptReconciler } from "./application/transcript-reconciler.js"
-import { boundedRuntimeString, boundedText, deriveContext, deriveGoal, GOAL_TOOLS, normalizeRuntime, snapshotMessage, snapshotPartCharacters, snapshotTranscript } from "./application/snapshot-projector.js"
+import { boundedRuntimeString, boundedText, deriveContext, deriveGoal, deriveGoalHistory, GOAL_TOOLS, normalizeRuntime, snapshotMessage, snapshotPartCharacters, snapshotTranscript } from "./application/snapshot-projector.js"
 
 export interface ControllerCallbacks {
   error(message: string): void
@@ -70,6 +70,11 @@ export interface ComposerPreferences {
 
 const RECOVERY_DUPLICATE_WINDOW_MS = 30_000
 const DEFAULT_SESSION_TITLE = /^New session(?: - \d{4}-\d{2}-\d{2}T[^\s]+)?$/i
+const SELECTED_TRANSCRIPT_CHARACTER_LIMIT = 8_000_000
+const SELECTED_TRANSCRIPT_PART_LIMIT = 40_000
+const SELECTED_TRANSCRIPT_MESSAGE_LIMIT = 5_000
+const HISTORY_PAGE_MESSAGE_LIMIT = 1_000
+const INITIAL_TRANSCRIPT_MESSAGE_LIMIT = 400
 
 export type ControllerUpdate = import("./application/session-repository.js").SessionRepositoryUpdate
 
@@ -105,6 +110,29 @@ function sessionTokenTotal(tokens: SessionInfo["tokens"]): number | undefined {
   if (!tokens) return undefined
   const total = tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
   return Number.isSafeInteger(total) && total >= 0 ? total : undefined
+}
+
+function sessionAgeSeconds(info: SessionInfo, now = Date.now()): number {
+  const created = info.time.created < 100_000_000_000 ? info.time.created * 1_000 : info.time.created
+  const endValue = info.time.archived ?? now
+  const end = endValue < 100_000_000_000 ? endValue * 1_000 : endValue
+  return Math.max(0, Math.floor((end - created) / 1_000))
+}
+
+function sessionTurnTotal(messages: WorkbenchState["sessions"][string]["messages"]): number {
+  return messages.filter((message) => message.info.role === "assistant" &&
+    (message.info.time?.completed !== undefined || message.parts.some((part) => part.type === "step-finish"))).length
+}
+
+function mergeAuthoritativeRecentTranscript(
+  recent: WorkbenchState["sessions"][string]["messages"],
+  retained: WorkbenchState["sessions"][string]["messages"],
+): WorkbenchState["sessions"][string]["messages"] {
+  const merged = new Map(retained.map((message) => [message.info.id, message]))
+  for (const message of recent) merged.set(message.info.id, message)
+  return [...merged.values()].sort((left, right) =>
+    (left.info.time?.created ?? 0) - (right.info.time?.created ?? 0) || left.info.id.localeCompare(right.info.id)
+  )
 }
 
 function errorDetail(value: unknown): string | undefined {
@@ -232,6 +260,7 @@ export class SessionController {
   private readonly changeGenerations = new Map<string, number>()
   private readonly changeRevisions = new Map<string, number>()
   private readonly automaticTitleAttempts = new Set<string>()
+  private readonly historyCursors = new Map<string, SessionMessageHistoryCursor>()
   private selectionIntent = 0
   private readonly catalogService: CatalogService
   private restoreSelectionID?: string
@@ -649,6 +678,18 @@ export class SessionController {
     return history
   }
 
+  private async readRecentMessageHistory(sessionID: string, rememberCursor: boolean): Promise<SessionMessageHistory> {
+    if (typeof this.client.messageHistoryPage !== "function") return this.readMessageHistory(sessionID)
+    const page = await this.client.messageHistoryPage(sessionID, undefined, INITIAL_TRANSCRIPT_MESSAGE_LIMIT)
+    if (rememberCursor) this.historyCursors.set(sessionID, page.cursor)
+    const previous = this.messageHistories.get(sessionID)
+    this.messageHistories.set(sessionID, {
+      legacyMessageIDs: new Set([...(previous?.legacyMessageIDs ?? []), ...page.legacyMessageIDs]),
+      v2MessageIDs: new Set([...(previous?.v2MessageIDs ?? []), ...page.v2MessageIDs]),
+    })
+    return page
+  }
+
   private hasUnsafeLegacyMessageIDs(sessionID: string): boolean {
     const ids = this.messageHistories.get(sessionID)?.legacyMessageIDs
     return Boolean(ids?.size && [...ids].some((id) => !isOpenCodeMessageID(id)))
@@ -728,12 +769,23 @@ export class SessionController {
     this.messageRevisions.set(sessionID, revisions)
   }
 
-  private refreshMessageRevisions(sessionID: string, messages: WorkbenchState["sessions"][string]["messages"]): void {
+  private refreshMessageRevisions(
+    sessionID: string,
+    messages: WorkbenchState["sessions"][string]["messages"],
+    previousMessages: WorkbenchState["sessions"][string]["messages"] = [],
+  ): WorkbenchState["sessions"][string]["messages"] {
     const revisions = this.messageRevisions.get(sessionID) ?? new Map<string, number>()
+    const previous = new Map(previousMessages.map((entry) => [entry.info.id, entry]))
     const current = new Set(messages.map((entry) => entry.info.id))
-    for (const entry of messages) revisions.set(entry.info.id, (revisions.get(entry.info.id) ?? 0) + 1)
+    const reconciled = messages.map((entry) => {
+      const existing = previous.get(entry.info.id)
+      if (existing && JSON.stringify(existing) === JSON.stringify(entry)) return existing
+      revisions.set(entry.info.id, (revisions.get(entry.info.id) ?? 0) + 1)
+      return entry
+    })
     for (const messageID of revisions.keys()) if (!current.has(messageID)) revisions.delete(messageID)
     this.messageRevisions.set(sessionID, revisions)
+    return reconciled
   }
 
   async reconcile(): Promise<void> {
@@ -1107,8 +1159,9 @@ export class SessionController {
       this.client.changes?.(sessionID) ?? Promise.resolve([] as FileChange[]),
     ])
     if (!Object.hasOwn(this.state.sessions, sessionID)) return
-    const messages = history.messages
-    this.refreshMessageRevisions(sessionID, messages)
+    const previous = this.state.sessions[sessionID]!.messages
+    const messages = this.refreshMessageRevisions(sessionID, history.messages, previous)
+    this.historyCursors.delete(sessionID)
     this.dispatch({ type: "transcript", sessionID, messages })
     this.dispatch({ type: "changes", sessionID, changes })
   }
@@ -1156,9 +1209,10 @@ export class SessionController {
     this.transcriptGenerations.set(sessionID, generation)
     const revision = this.transcriptRevisions.get(sessionID) ?? 0
     if (markLoading) this.dispatch({ type: "transcriptLoading", sessionID })
+    const previouslyLoaded = this.state.sessions[sessionID]?.loaded === true
     let history: SessionMessageHistory
     try {
-      history = await this.readMessageHistory(sessionID)
+      history = await this.readRecentMessageHistory(sessionID, !previouslyLoaded)
     } catch (error) {
       if (markLoading && this.transcriptGenerations.get(sessionID) === generation && Object.hasOwn(this.state.sessions, sessionID)) {
         this.dispatch({ type: "transcriptError", sessionID })
@@ -1191,8 +1245,11 @@ export class SessionController {
       if (serverIndex < 0) projected.push(localMessage)
       else projected[serverIndex] = mergeTranscripts([serverMessage!], [localMessage])[0]!
     }
-    let transcript = (this.transcriptRevisions.get(sessionID) ?? 0) === revision
+    const transcriptUnchanged = (this.transcriptRevisions.get(sessionID) ?? 0) === revision
+    let transcript = !previouslyLoaded && transcriptUnchanged
       ? projected
+      : transcriptUnchanged
+      ? mergeAuthoritativeRecentTranscript(projected, current.messages)
       : mergeTranscripts(projected, current.messages)
     const removedMessages = this.removedMessages.get(sessionID)
     const removedParts = this.removedParts.get(sessionID)
@@ -1202,7 +1259,7 @@ export class SessionController {
         ...message,
         parts: message.parts.filter((part) => (removedParts?.get(`${message.info.id}:${part.id}`) ?? 0) <= revision),
       }))
-    this.refreshMessageRevisions(sessionID, transcript)
+    transcript = this.refreshMessageRevisions(sessionID, transcript, current.messages)
     this.dispatch({ type: "transcript", sessionID, messages: transcript })
     const lastMessage = transcript.at(-1)
     const persistedFailure = persistedAssistantFailure(lastMessage)
@@ -1421,6 +1478,7 @@ export class SessionController {
     this.sendGenerations.delete(sessionID)
     this.sessionFailures.delete(sessionID)
     this.messageHistories.delete(sessionID)
+    this.historyCursors.delete(sessionID)
     this.transcriptRevisions.delete(sessionID)
     this.transcriptGenerations.delete(sessionID)
     this.removedMessages.delete(sessionID)
@@ -1598,6 +1656,32 @@ export class SessionController {
     return output.reverse()
   }
 
+  private serverHistoryHasOlder(sessionID: string): boolean {
+    const cursor = this.historyCursors.get(sessionID)
+    return Boolean(cursor && (!cursor.legacyComplete || !cursor.v2Complete))
+  }
+
+  async loadHistoryPage(sessionID: string, beforeMessageID: string): Promise<TranscriptHistoryPage> {
+    const session = this.requireSession(sessionID)
+    const beforeIndex = session.messages.findIndex((message) => message.info.id === beforeMessageID)
+    if (beforeIndex < 0) throw new Error("Cannot load history before an unknown message")
+    const cursor = this.historyCursors.get(sessionID)
+    if (beforeIndex > 0 || !cursor || (cursor.legacyComplete && cursor.v2Complete) || typeof this.client.messageHistoryPage !== "function") {
+      return this.historyPage(sessionID, beforeMessageID)
+    }
+    const page = await this.client.messageHistoryPage(sessionID, cursor, HISTORY_PAGE_MESSAGE_LIMIT)
+    this.historyCursors.set(sessionID, page.cursor)
+    const previousHistory = this.messageHistories.get(sessionID)
+    this.messageHistories.set(sessionID, {
+      legacyMessageIDs: new Set([...(previousHistory?.legacyMessageIDs ?? []), ...page.legacyMessageIDs]),
+      v2MessageIDs: new Set([...(previousHistory?.v2MessageIDs ?? []), ...page.v2MessageIDs]),
+    })
+    const current = this.requireSession(sessionID)
+    const merged = this.refreshMessageRevisions(sessionID, mergeTranscripts(page.messages, current.messages), current.messages)
+    this.dispatch({ type: "transcript", sessionID, messages: merged })
+    return this.historyPage(sessionID, beforeMessageID)
+  }
+
   historyPage(sessionID: string, beforeMessageID: string): TranscriptHistoryPage {
     const session = this.requireSession(sessionID)
     const beforeIndex = session.messages.findIndex((message) => message.info.id === beforeMessageID)
@@ -1606,25 +1690,25 @@ export class SessionController {
       sessionID,
       messages: [],
       messageRevisions: {},
-      hasOlder: false,
+      hasOlder: this.serverHistoryHasOlder(sessionID),
       totalMessages: session.messages.length,
-      sourceMayBeTruncated: session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+      sourceMayBeTruncated: this.serverHistoryHasOlder(sessionID) || session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
     }
     const transcript = snapshotTranscript(
       session.messages.slice(0, beforeIndex),
       this.messageRevisions.get(sessionID) ?? new Map(),
-      3_800_000,
-      19_000,
-      200,
+      SELECTED_TRANSCRIPT_CHARACTER_LIMIT,
+      SELECTED_TRANSCRIPT_PART_LIMIT,
+      HISTORY_PAGE_MESSAGE_LIMIT,
       (messageID) => this.pendingPromptTextFor(messageID),
     )
     return {
       sessionID,
       messages: transcript.messages,
       messageRevisions: transcript.revisions,
-      hasOlder: transcript.history.hasOlder,
+      hasOlder: transcript.history.hasOlder || this.serverHistoryHasOlder(sessionID),
       totalMessages: session.messages.length,
-      sourceMayBeTruncated: session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+      sourceMayBeTruncated: this.serverHistoryHasOlder(sessionID) || session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
     }
   }
 
@@ -1635,8 +1719,16 @@ export class SessionController {
       session.permissions.filter((request) => !this.automaticallyRespondingPermissions.has(`${request.protocol}\0${request.sessionID}\0${request.id}`)),
     ]))
     const transcript = current
-      ? snapshotTranscript(current.messages, this.messageRevisions.get(current.info.id) ?? new Map(), 3_800_000, 19_000, 5_000, (messageID) => this.pendingPromptTextFor(messageID))
+      ? snapshotTranscript(
+        current.messages,
+        this.messageRevisions.get(current.info.id) ?? new Map(),
+        SELECTED_TRANSCRIPT_CHARACTER_LIMIT,
+        SELECTED_TRANSCRIPT_PART_LIMIT,
+        SELECTED_TRANSCRIPT_MESSAGE_LIMIT,
+        (messageID) => this.pendingPromptTextFor(messageID),
+      )
       : undefined
+    const selectedServerHistoryHasOlder = current ? this.serverHistoryHasOlder(current.info.id) : false
     const delegations = current ? this.delegationProgress(current) : []
     const delegatedSessions = current && !current.info.parentID ? descendantSessions(this.state, current.info.id) : []
     const rootMemo = new Map<string, string>()
@@ -1750,6 +1842,7 @@ export class SessionController {
     const fallbackVariant = agentVariant ?? (selectedModel?.variants?.includes(this.defaultVariant ?? "") ? this.defaultVariant : undefined)
     const effectiveVariant = current?.variant ?? (effectiveModel && this.modelVariants.has(effectiveModel) ? this.modelVariants.get(effectiveModel) : fallbackVariant)
     const goal = current ? deriveGoal(current.messages) : undefined
+    const goalHistory = current ? deriveGoalHistory(current.messages) : []
     const attentionItems: AttentionItem[] = []
     for (const session of Object.values(this.state.sessions)) {
       for (const request of visiblePermissions.get(session.info.id) ?? []) attentionItems.push({
@@ -1771,11 +1864,11 @@ export class SessionController {
       })
       const sessionGoal = deriveGoal(session.messages)
       if (sessionGoal?.blocker || ["unmet", "blocked", "needs-user"].includes(sessionGoal?.status ?? "")) attentionItems.push({
-        id: `goal:${session.info.id}`,
+        id: `goal:${session.info.id}:${sessionGoal?.id ?? sessionGoal?.sequence ?? "active"}`,
         kind: "blocked-goal",
         sessionID: session.info.id,
         title: "Goal needs attention",
-        detail: sessionGoal?.blocker || sessionGoal?.stopReason,
+        detail: sessionGoal?.blocker || sessionGoal?.stopReason || sessionGoal?.status,
         createdAt: session.info.time.updated,
         target: { surface: "goal" },
       })
@@ -1857,7 +1950,8 @@ export class SessionController {
         messageRevisions: transcript!.revisions,
         history: {
           ...transcript!.history,
-          sourceMayBeTruncated: current.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+          hasOlder: transcript!.history.hasOlder || selectedServerHistoryHasOlder,
+          sourceMayBeTruncated: selectedServerHistoryHasOlder || current.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
         },
         agent: effectiveAgent,
         model: effectiveModel,
@@ -1872,7 +1966,15 @@ export class SessionController {
         todos: current.todos,
         changes: current.changes,
         context: deriveContext(current.messages, this.models, selectedModel, current.info.cost),
+        metrics: {
+          tokensUsed: sessionTokenTotal(current.info.tokens),
+          timeUsedSeconds: sessionAgeSeconds(current.info),
+          turnsUsed: sessionTurnTotal(current.messages),
+          turnsTruncated: selectedServerHistoryHasOlder || current.messages.length >= TRANSCRIPT_MESSAGE_LIMIT || undefined,
+          sampledAt: Math.floor(Date.now() / 1_000),
+        },
         goal,
+        goalHistory: goal?.archivedGoals ?? goalHistory,
         delegations,
         archived: current.info.time.archived !== undefined,
         shared: Boolean(current.info.share?.url),

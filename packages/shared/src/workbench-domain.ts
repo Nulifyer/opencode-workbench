@@ -90,6 +90,10 @@ export interface WorktreeJournalEntry {
 
 export type RunPhase = "pending" | "preparing" | "admitting" | "working" | "needs-input" | "completed" | "failed" | "cancelled"
 
+export const MULTI_RUN_MAX_CANDIDATES = 100
+export const MULTI_RUN_MAX_CONCURRENCY = 20
+export const MULTI_RUN_DEFAULT_CONCURRENCY = 5
+
 export interface RunReference {
   id: string
   model: string
@@ -108,6 +112,7 @@ export interface RunReference {
 export interface RunGroup {
   id: string
   mutationID?: string
+  ownerSessionID?: string
   title: string
   repository: string
   baseRef: string
@@ -832,7 +837,7 @@ function normalizeRunComparisonRow(value: unknown, index: number): RunComparison
 function normalizeRunComparisonPayload(value: unknown): RunComparisonArtifactPayload {
   const payload = artifactRecord(value, "Run comparison artifact payload")
   artifactExactKeys(payload, ["groupID", "rows"], "Run comparison artifact payload")
-  if (!Array.isArray(payload.rows) || payload.rows.length > 5) throw new Error("Run comparison must contain at most five rows")
+  if (!Array.isArray(payload.rows) || payload.rows.length > MULTI_RUN_MAX_CANDIDATES) throw new Error(`Run comparison must contain at most ${MULTI_RUN_MAX_CANDIDATES} rows`)
   const rows = payload.rows.map(normalizeRunComparisonRow)
   if (new Set(rows.map((row) => row.runID)).size !== rows.length) throw new Error("Run comparison contains duplicate run IDs")
   return { groupID: artifactOpaque(payload.groupID, 1_024, "Run comparison groupID"), rows }

@@ -29,12 +29,16 @@ export interface GoalVerdictRecord {
 }
 
 export interface Goal {
+  id: string
+  sequence: number
   sessionID: string
   objective: string
   status: GoalStatus
   tokenBudget: number | null
   tokenBaseline: number | null
   tokensUsed: number
+  turnBaseline: number | null
+  turnsUsed: number
   timeUsedSeconds: number
   createdAt: number
   updatedAt: number
@@ -64,14 +68,29 @@ export interface Goal {
   runGroupReference: string | null
 }
 
-export interface GoalState {
-  version: 2
-  goals: Record<string, Goal>
+export interface ArchivedGoal {
+  id: string
+  sequence: number
+  objective: string
+  status: GoalStatus | "cancelled"
+  tokensUsed: number
+  timeUsedSeconds: number
+  turnsUsed: number
+  autoTurns: number
+  createdAt: number
+  closedAt: number
 }
 
-export interface GoalSnapshot extends Omit<Goal, "lastAccountedAt" | "tokenBaseline"> {
+export interface GoalState {
+  version: 3
+  goals: Record<string, Goal>
+  archives: Record<string, ArchivedGoal[]>
+}
+
+export interface GoalSnapshot extends Omit<Goal, "lastAccountedAt" | "tokenBaseline" | "turnBaseline"> {
   remainingTokens: number | null
   sampledAt: number
+  archivedGoals: ArchivedGoal[]
 }
 
 export interface CreateGoalInput {
@@ -89,6 +108,7 @@ export interface CreateGoalInput {
 const MAX_GOALS = 2_000
 const MAX_HISTORY = 50
 const MAX_CHECKPOINTS = 8
+const MAX_ARCHIVED_GOALS = 100
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -156,7 +176,41 @@ function checkpoints(value: unknown): GoalCheckpoint[] {
   }).slice(-MAX_CHECKPOINTS)
 }
 
-function parseGoal(value: unknown, key: string): Goal | undefined {
+function archivedGoal(value: unknown): ArchivedGoal | undefined {
+  if (!record(value)) return undefined
+  const id = boundedText(value.id, 256).trim()
+  const objectiveValue = boundedText(value.objective, 400).trim()
+  const status = String(value.status) as ArchivedGoal["status"]
+  const sequence = integer(value.sequence)
+  const createdAt = integer(value.createdAt)
+  const closedAt = integer(value.closedAt)
+  if (!id || !objectiveValue || sequence < 1 || closedAt < createdAt || !["active", "paused", "budgetLimited", "usageLimited", "complete", "unmet", "cancelled"].includes(status)) return undefined
+  return {
+    id,
+    sequence,
+    objective: objectiveValue,
+    status,
+    tokensUsed: integer(value.tokensUsed),
+    timeUsedSeconds: integer(value.timeUsedSeconds),
+    turnsUsed: integer(value.turnsUsed),
+    autoTurns: integer(value.autoTurns),
+    createdAt,
+    closedAt,
+  }
+}
+
+function archivedGoals(value: unknown): ArchivedGoal[] {
+  if (!Array.isArray(value)) return []
+  const ids = new Set<string>()
+  return value.flatMap((candidate) => {
+    const parsed = archivedGoal(candidate)
+    if (!parsed || ids.has(parsed.id)) return []
+    ids.add(parsed.id)
+    return [parsed]
+  }).sort((left, right) => left.sequence - right.sequence).slice(-MAX_ARCHIVED_GOALS)
+}
+
+function parseGoal(value: unknown, key: string, fallbackSequence = 1): Goal | undefined {
   if (!record(value)) return undefined
   const sessionID = boundedText(value.sessionID, 1_024, key)
   const goalObjective = boundedText(value.objective, 4_000).trim()
@@ -168,6 +222,7 @@ function parseGoal(value: unknown, key: string): Goal | undefined {
     : goalCheckpoints.at(-1) ?? null
   const verifierValue = record(value.verifier) ? value.verifier : {}
   const autoTurns = integer(value.autoTurns)
+  const sequence = Math.max(1, integer(value.sequence, fallbackSequence))
   const pendingContinuation = value.pendingContinuation === true && autoTurns > 0 && status === "active"
   const latestVerdictValue = record(value.latestVerdict) && ["continue", "complete", "blocked", "needs-user"].includes(String(value.latestVerdict.verdict))
     ? {
@@ -179,12 +234,16 @@ function parseGoal(value: unknown, key: string): Goal | undefined {
     }
     : null
   return {
+    id: boundedText(value.id, 256).trim() || `goal-${sequence}`,
+    sequence,
     sessionID,
     objective: goalObjective,
     status,
     tokenBudget: positiveOrNull(value.tokenBudget),
     tokenBaseline: nonNegativeOrNull(value.tokenBaseline),
     tokensUsed: integer(value.tokensUsed),
+    turnBaseline: nonNegativeOrNull(value.turnBaseline),
+    turnsUsed: integer(value.turnsUsed),
     timeUsedSeconds: integer(value.timeUsedSeconds),
     createdAt: integer(value.createdAt),
     updatedAt: integer(value.updatedAt),
@@ -224,18 +283,28 @@ function parseGoal(value: unknown, key: string): Goal | undefined {
 }
 
 export function emptyGoalState(): GoalState {
-  return { version: 2, goals: Object.create(null) as Record<string, Goal> }
+  return {
+    version: 3,
+    goals: Object.create(null) as Record<string, Goal>,
+    archives: Object.create(null) as Record<string, ArchivedGoal[]>,
+  }
 }
 
 export function parseGoalState(value: unknown): GoalState {
-  if (!record(value) || (value.version !== 1 && value.version !== 2) || !record(value.goals)) throw new Error("Invalid or unsupported Workbench goal state")
+  if (!record(value) || ![1, 2, 3].includes(Number(value.version)) || !record(value.goals)) throw new Error("Invalid or unsupported Workbench goal state")
+  const archives = Object.create(null) as Record<string, ArchivedGoal[]>
+  if (value.archives !== undefined && !record(value.archives)) throw new Error("Invalid Workbench goal archive")
+  for (const [key, candidate] of Object.entries(record(value.archives) ? value.archives : {}).slice(0, MAX_GOALS)) {
+    const parsed = archivedGoals(candidate)
+    if (parsed.length) archives[key] = parsed
+  }
   const goals = Object.create(null) as Record<string, Goal>
   for (const [key, candidate] of Object.entries(value.goals).slice(0, MAX_GOALS)) {
-    const goal = parseGoal(candidate, key)
+    const goal = parseGoal(candidate, key, (archives[key]?.at(-1)?.sequence ?? 0) + 1)
     if (!goal) throw new Error("Invalid Workbench goal state")
     goals[key] = goal
   }
-  return { version: 2, goals }
+  return { version: 3, goals, archives }
 }
 
 export function importLegacyGoalState(value: unknown): GoalState | undefined {
@@ -275,6 +344,26 @@ function applyLimits(goal: Goal): void {
   }
 }
 
+function archiveGoal(state: GoalState, goal: Goal, status: ArchivedGoal["status"] = goal.status, at = nowSeconds()): void {
+  const current = state.archives[goal.sessionID] ?? []
+  if (current.some((entry) => entry.id === goal.id)) return
+  const entry: ArchivedGoal = {
+    id: goal.id,
+    sequence: goal.sequence,
+    objective: summarize(goal.objective, 400),
+    status,
+    tokensUsed: goal.tokensUsed,
+    timeUsedSeconds: goal.timeUsedSeconds,
+    turnsUsed: goal.turnsUsed,
+    autoTurns: goal.autoTurns,
+    createdAt: goal.createdAt,
+    closedAt: goal.closedAt ?? at,
+  }
+  state.archives[goal.sessionID] = [...current, entry]
+    .sort((left, right) => left.sequence - right.sequence)
+    .slice(-MAX_ARCHIVED_GOALS)
+}
+
 function advanceSettlementGeneration(goal: Goal): void {
   goal.settlementGeneration += 1
 }
@@ -286,15 +375,16 @@ function clearPendingContinuation(goal: Goal): void {
   goal.pendingContinuationReservedAt = null
 }
 
-export function snapshotGoal(goal: Goal, at = nowSeconds()): GoalSnapshot {
+export function snapshotGoal(goal: Goal, at = nowSeconds(), archive: readonly ArchivedGoal[] = []): GoalSnapshot {
   const extra = goal.status === "active" && goal.lastAccountedAt !== null ? Math.max(0, at - goal.lastAccountedAt) : 0
   const timeUsedSeconds = goal.timeUsedSeconds + extra
-  const { lastAccountedAt: _lastAccountedAt, tokenBaseline: _tokenBaseline, ...visible } = goal
+  const { lastAccountedAt: _lastAccountedAt, tokenBaseline: _tokenBaseline, turnBaseline: _turnBaseline, ...visible } = goal
   return {
     ...visible,
     timeUsedSeconds,
     remainingTokens: goal.tokenBudget === null ? null : Math.max(0, goal.tokenBudget - goal.tokensUsed),
     sampledAt: at,
+    archivedGoals: archive.map((entry) => ({ ...entry })),
   }
 }
 
@@ -306,21 +396,27 @@ export function refreshGoal(state: GoalState, sessionID: string, at = nowSeconds
   applyLimits(goal)
   if (goal.status !== previousStatus) advanceSettlementGeneration(goal)
   goal.updatedAt = at
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function createGoal(state: GoalState, sessionID: string, input: CreateGoalInput, at = nowSeconds()): GoalSnapshot {
   const existing = state.goals[sessionID]
   if (existing && existing.status !== "complete" && existing.status !== "unmet") throw new Error("This session already has a non-closed goal")
   if (!existing && Object.keys(state.goals).length >= MAX_GOALS) throw new Error("Workbench goal state has reached its session limit")
+  if (existing) archiveGoal(state, existing, existing.status, existing.closedAt ?? at)
+  const sequence = Math.max(existing?.sequence ?? 0, state.archives[sessionID]?.at(-1)?.sequence ?? 0) + 1
   const paused = input.agent?.trim().toLowerCase() === "plan"
   const goal: Goal = {
+    id: `goal-${sequence}`,
+    sequence,
     sessionID,
     objective: objective(input.objective),
     status: paused ? "paused" : "active",
     tokenBudget: positiveOrNull(input.tokenBudget),
     tokenBaseline: null,
     tokensUsed: 0,
+    turnBaseline: null,
+    turnsUsed: 0,
     timeUsedSeconds: 0,
     createdAt: at,
     updatedAt: at,
@@ -357,7 +453,7 @@ export function createGoal(state: GoalState, sessionID: string, input: CreateGoa
   }
   pushHistory(goal, "created", paused ? "Goal created and paused in Plan mode." : "Goal created.", at)
   state.goals[sessionID] = goal
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function updateGoalObjective(state: GoalState, sessionID: string, nextObjective: string, status?: MutableGoalStatus, agent?: string, at = nowSeconds()): GoalSnapshot {
@@ -381,7 +477,7 @@ export function updateGoalObjective(state: GoalState, sessionID: string, nextObj
   advanceSettlementGeneration(goal)
   goal.lastStatus = pausedForPlan ? "Goal objective updated and paused in Plan mode." : `Goal objective updated and ${goal.status === "active" ? "resumed" : "paused"}.`
   pushHistory(goal, "updated", goal.lastStatus, at)
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function setGoalStatus(state: GoalState, sessionID: string, status: MutableGoalStatus, agent?: string, at = nowSeconds()): GoalSnapshot {
@@ -398,7 +494,7 @@ export function setGoalStatus(state: GoalState, sessionID: string, status: Mutab
   goal.lastStatus = status === "active" ? "Goal resumed." : "Goal paused."
   advanceSettlementGeneration(goal)
   pushHistory(goal, status === "active" ? "resumed" : "paused", goal.lastStatus, at)
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function closeGoal(state: GoalState, sessionID: string, status: "complete" | "unmet", detail: string | undefined, at = nowSeconds()): GoalSnapshot {
@@ -425,7 +521,7 @@ export function closeGoal(state: GoalState, sessionID: string, status: "complete
     goal.lastStatus = "Goal marked unmet."
     pushHistory(goal, "unmet", goal.blocker, at)
   }
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function recordGoalCheckpoint(state: GoalState, sessionID: string, summary: string, at = nowSeconds()): GoalSnapshot {
@@ -441,16 +537,32 @@ export function recordGoalCheckpoint(state: GoalState, sessionID: string, summar
   }
   goal.lastStatus = "Goal checkpoint recorded."
   goal.updatedAt = at
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
-export function clearGoal(state: GoalState, sessionID: string): boolean {
-  const existed = Object.hasOwn(state.goals, sessionID)
+export function clearGoal(state: GoalState, sessionID: string, at = nowSeconds()): boolean {
+  const goal = state.goals[sessionID]
+  const existed = Boolean(goal)
+  if (goal) {
+    accountTime(goal, at)
+    archiveGoal(state, goal, "cancelled", at)
+  }
   delete state.goals[sessionID]
   return existed
 }
 
-export function accountGoalTokens(state: GoalState, sessionID: string, tokens: number, at = nowSeconds()): GoalSnapshot | null {
+export function deleteGoalSession(state: GoalState, sessionID: string): boolean {
+  const existed = Object.hasOwn(state.goals, sessionID) || Object.hasOwn(state.archives, sessionID)
+  delete state.goals[sessionID]
+  delete state.archives[sessionID]
+  return existed
+}
+
+export function goalArchives(state: GoalState, sessionID: string): ArchivedGoal[] {
+  return (state.archives[sessionID] ?? []).map((entry) => ({ ...entry }))
+}
+
+export function accountGoalTokens(state: GoalState, sessionID: string, tokens: number, at = nowSeconds(), turns?: number): GoalSnapshot | null {
   const goal = state.goals[sessionID]
   if (!goal) return null
   const previousTokens = goal.tokensUsed
@@ -460,10 +572,14 @@ export function accountGoalTokens(state: GoalState, sessionID: string, tokens: n
     if (goal.tokenBaseline === null) goal.tokenBaseline = Math.max(0, tokens - goal.tokensUsed)
     goal.tokensUsed = Math.max(goal.tokensUsed, tokens - goal.tokenBaseline)
   }
+  if (turns !== undefined && Number.isSafeInteger(turns) && turns >= 0) {
+    if (goal.turnBaseline === null) goal.turnBaseline = Math.max(0, turns - goal.turnsUsed)
+    goal.turnsUsed = Math.max(goal.turnsUsed, turns - goal.turnBaseline)
+  }
   applyLimits(goal)
   if (goal.tokensUsed !== previousTokens || goal.status !== previousStatus) advanceSettlementGeneration(goal)
   goal.updatedAt = at
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function reserveGoalAutoContinue(
@@ -496,7 +612,7 @@ export function reserveGoalAutoContinue(
       goal.updatedAt = at
       advanceSettlementGeneration(goal)
     }
-    return snapshotGoal(goal, at)
+    return snapshotGoal(goal, at, state.archives[sessionID])
   }
   if (goal.maxAutoTurns !== null && goal.autoTurns >= goal.maxAutoTurns) {
     goal.status = "usageLimited"
@@ -517,7 +633,7 @@ export function reserveGoalAutoContinue(
   goal.lastStatus = `Auto-continuation ${goal.autoTurns} admitted.`
   goal.updatedAt = at
   pushHistory(goal, "autoContinue", goal.lastStatus, at)
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function cancelGoalAutoContinueReservation(state: GoalState, sessionID: string, reservedTurn: number, at = nowSeconds()): GoalSnapshot | null {
@@ -531,12 +647,12 @@ export function cancelGoalAutoContinueReservation(state: GoalState, sessionID: s
     goal.updatedAt = at
     pushHistory(goal, "warning", goal.lastStatus, at)
   }
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function failGoalAutoContinue(state: GoalState, sessionID: string, detail: string, at = nowSeconds()): GoalSnapshot | null {
   const goal = state.goals[sessionID]
-  if (!goal || goal.status !== "active") return goal ? snapshotGoal(goal, at) : null
+  if (!goal || goal.status !== "active") return goal ? snapshotGoal(goal, at, state.archives[sessionID]) : null
   accountTime(goal, at)
   goal.status = "paused"
   clearPendingContinuation(goal)
@@ -546,7 +662,7 @@ export function failGoalAutoContinue(state: GoalState, sessionID: string, detail
   goal.updatedAt = at
   advanceSettlementGeneration(goal)
   pushHistory(goal, "error", goal.lastStatus, at)
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function commitGoalContinuation(state: GoalState, sessionID: string, at = nowSeconds()): GoalSnapshot | null {
@@ -555,12 +671,12 @@ export function commitGoalContinuation(state: GoalState, sessionID: string, at =
   if (goal.pendingContinuation) advanceSettlementGeneration(goal)
   clearPendingContinuation(goal)
   goal.updatedAt = at
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function pauseGoalContinuationRecovery(state: GoalState, sessionID: string, detail: string, at = nowSeconds()): GoalSnapshot | null {
   const goal = state.goals[sessionID]
-  if (!goal || goal.status !== "active" || !goal.pendingContinuation) return goal ? snapshotGoal(goal, at) : null
+  if (!goal || goal.status !== "active" || !goal.pendingContinuation) return goal ? snapshotGoal(goal, at, state.archives[sessionID]) : null
   accountTime(goal, at)
   goal.status = "paused"
   clearPendingContinuation(goal)
@@ -571,7 +687,7 @@ export function pauseGoalContinuationRecovery(state: GoalState, sessionID: strin
   goal.updatedAt = at
   advanceSettlementGeneration(goal)
   pushHistory(goal, "warning", goal.lastStatus, at)
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function configureGoalVerification(state: GoalState, sessionID: string, input: { objective?: string; acceptanceCriteria?: string[]; tokenBudget?: number | null; maxAutoTurns?: number | null; maxDurationSeconds?: number | null; verifier?: Partial<GoalVerifierConfig>; planReference?: string | null; runGroupReference?: string | null; expectedSettlementGeneration?: number; agent?: string }, at = nowSeconds()): GoalSnapshot {
@@ -630,7 +746,7 @@ export function configureGoalVerification(state: GoalState, sessionID: string, i
   advanceSettlementGeneration(goal)
   goal.updatedAt = at
   pushHistory(goal, "updated", objectiveChanged ? "Goal objective and verification configuration updated." : "Goal verification configuration updated.", at)
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function recordGoalVerdict(
@@ -680,7 +796,7 @@ export function recordGoalVerdict(
   }
   goal.updatedAt = at
   pushHistory(goal, verdict.verdict === "blocked" ? "warning" : "updated", goal.lastStatus, at)
-  return snapshotGoal(goal, at)
+  return snapshotGoal(goal, at, state.archives[sessionID])
 }
 
 export function goalHistoryReport(goal: GoalSnapshot | null): string {

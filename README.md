@@ -18,8 +18,9 @@ your editor, source control, terminal, and debugger.
   todos, questions, and permission requests in one conversation.
 - Plan first, edit the plan, and explicitly hand it off to an implementation
   session, isolated worktree, model comparison, or goal.
-- Run the same task with two to five models in isolated worktrees and compare
-  their observable results without an automatic “winner.”
+- Run the same task with peer models in isolated worktrees—five concurrently by
+  default, with a user-adjustable limit—then compare their observable results
+  without an automatic “winner.”
 - Review the exact current diff with walkthroughs, model-labeled findings, test
   evidence, and native VS Code diff navigation.
 - Keep a bounded goal moving across turns, with limits and an independent,
@@ -129,7 +130,7 @@ work should continue:
 
 - the current checkout;
 - a new isolated worktree;
-- a two-to-five-model comparison; or
+- a multi-model comparison with independently queued isolated runs; or
 - the active session goal.
 
 If you start editing while OpenCode is still preparing its answer, your draft

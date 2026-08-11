@@ -20,9 +20,11 @@ import {
   configureGoalVerification,
   closeGoal,
   createGoal,
+  deleteGoalSession,
   emptyGoalState,
   failGoalAutoContinue,
   goalHistoryReport,
+  goalArchives,
   importLegacyGoalState,
   pauseGoalContinuationRecovery,
   parseGoalState,
@@ -146,6 +148,14 @@ function messageTokens(messages: Array<{ info?: unknown; parts?: unknown[] }>): 
     total += messageTotal
   }
   return Math.ceil(total)
+}
+
+function messageTurns(messages: Array<{ info?: unknown; parts?: unknown[] }>): number {
+  return messages.filter((message) => {
+    const info = message.info && typeof message.info === "object" && !Array.isArray(message.info) ? message.info as Record<string, unknown> : undefined
+    if (info?.role !== "assistant") return false
+    return (message.parts ?? []).some((part) => part && typeof part === "object" && (part as Record<string, unknown>).type === "step-finish")
+  }).length
 }
 
 function isGoalContinuationMarker(value: unknown): boolean {
@@ -361,7 +371,8 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
     if (eventType === "session.deleted") {
       cancelIdleContinuation(sessionID)
       autoContinuation.delete(sessionID)
-      if ((await goalStore.read()).goals[sessionID]) await goalStore.mutate((state) => clearGoal(state, sessionID))
+      const stored = await goalStore.read()
+      if (stored.goals[sessionID] || stored.archives[sessionID]) await goalStore.mutate((state) => deleteGoalSession(state, sessionID))
       return
     }
     if (eventType === "session.error" || eventType === "session.next.step.failed") {
@@ -430,15 +441,22 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
         description: "Get the current Workbench goal for this session, including status, usage, limits, and recent progress.",
         args: {},
         async execute(_args, context) {
-          return json({ goal: await goalStore.mutate((state) => refreshGoal(state, context.sessionID)) })
+          return json(await goalStore.mutate((state) => {
+            const goal = refreshGoal(state, context.sessionID)
+            return goal ? { goal } : { goal, archived_goals: goalArchives(state, context.sessionID) }
+          }))
         },
       }),
       get_goal_history: tool({
         description: "Get the current Workbench goal lifecycle history and recent checkpoints for this session.",
         args: {},
         async execute(_args, context) {
-          const goal = await goalStore.mutate((state) => refreshGoal(state, context.sessionID))
-          return json({ goal, history_report: goalHistoryReport(goal) })
+          return json(await goalStore.mutate((state) => {
+            const goal = refreshGoal(state, context.sessionID)
+            return goal
+              ? { goal, history_report: goalHistoryReport(goal) }
+              : { goal, archived_goals: goalArchives(state, context.sessionID), history_report: goalHistoryReport(goal) }
+          }))
         },
       }),
       create_goal: tool({
@@ -572,7 +590,10 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
         description: "Clear the current goal only when the user explicitly asks to clear, stop, cancel, or reset it.",
         args: {},
         async execute(_args, context) {
-          return json({ cleared: await goalStore.mutate((state) => clearGoal(state, context.sessionID)) })
+          return json(await goalStore.mutate((state) => ({
+            cleared: clearGoal(state, context.sessionID),
+            archived_goals: goalArchives(state, context.sessionID),
+          })))
         },
       }),
       memory_list: tool({
@@ -761,7 +782,8 @@ const PluginImplementation: Plugin = async ({ client, directory, worktree }) => 
       if (!sessionID) return
       if (!(await goalStore.read()).goals[sessionID]) return
       const tokens = messageTokens(output.messages)
-      if (tokens > 0) await goalStore.mutate((state) => accountGoalTokens(state, sessionID, tokens))
+      const turns = messageTurns(output.messages)
+      if (tokens > 0 || turns > 0) await goalStore.mutate((state) => accountGoalTokens(state, sessionID, tokens, undefined, turns))
     },
     "experimental.session.compacting": async (input, output) => {
       const state = await goalStore.read()

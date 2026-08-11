@@ -1,11 +1,13 @@
 const css = await Deno.readTextFile(new URL("../media/chat.css", import.meta.url))
 const webview = await Deno.readTextFile(new URL("../src/webview/main.ts", import.meta.url))
 const focusController = await Deno.readTextFile(new URL("../src/webview/controllers/focus-controller.ts", import.meta.url))
+const scrollController = await Deno.readTextFile(new URL("../src/webview/controllers/scroll-controller.ts", import.meta.url))
 const conversationView = await Deno.readTextFile(new URL("../src/webview/views/conversation.ts", import.meta.url))
 const sessionList = await Deno.readTextFile(new URL("../src/webview/views/session-list.ts", import.meta.url))
 const inspectorPresentation = await Deno.readTextFile(new URL("../src/webview/views/inspector/presentation.ts", import.meta.url))
 const historyView = await Deno.readTextFile(new URL("../src/webview/views/history.ts", import.meta.url))
 const turnNavigationView = await Deno.readTextFile(new URL("../src/webview/views/turn-navigation.ts", import.meta.url))
+const snapshotProjector = await Deno.readTextFile(new URL("../src/application/snapshot-projector.ts", import.meta.url))
 const chatView = await Deno.readTextFile(new URL("../src/views/chat-view.ts", import.meta.url))
 const extensionHost = await Deno.readTextFile(new URL("../src/extension.ts", import.meta.url))
 const manifest = JSON.parse(await Deno.readTextFile(new URL("../package.json", import.meta.url))) as {
@@ -22,7 +24,7 @@ const manifest = JSON.parse(await Deno.readTextFile(new URL("../package.json", i
   }
 }
 
-Deno.test("reduced motion replaces operational animation with legible static progress", () => {
+Deno.test("reduced motion preserves operational progress while suppressing decorative motion", () => {
   const reducedMotion = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"))
   if (/\*,\s*\*::before,\s*\*::after\s*\{[^}]*animation:\s*none/i.test(reducedMotion) ||
     /body\.vscode-reduce-motion\s+\*[^{}]*\{[^}]*animation:\s*none/i.test(reducedMotion)) {
@@ -41,9 +43,21 @@ Deno.test("reduced motion replaces operational animation with legible static pro
     ".todo-working .todo-state::before",
     ".active-throbber i",
     ".stopping-icon",
-  ]) if (!reducedMotion.includes(marker)) throw new Error(`Reduced-motion static progress omits ${marker}`)
-  if (!reducedMotion.includes('content: "●"') || !reducedMotion.includes("body.vscode-reduce-motion")) {
-    throw new Error("System and VS Code reduced-motion modes do not expose equivalent static progress")
+    ".session-row-icon.state-retry svg",
+  ]) {
+    const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    if (new RegExp(`${escaped}[^{}]*\\{[^}]*animation:\\s*none`, "i").test(reducedMotion)) {
+      throw new Error(`Reduced motion suppresses operational animation for ${marker}`)
+    }
+  }
+  if (reducedMotion.includes('content: "●"')) {
+    throw new Error("System reduced motion replaces operational animation with a static dot")
+  }
+  if (!reducedMotion.includes("body.vscode-reduce-motion") || !reducedMotion.includes("transition: none !important")) {
+    throw new Error("System and VS Code reduced-motion modes should still suppress optional transitions")
+  }
+  if (!css.includes('body[data-progress-motion="static"] *') || !css.includes('content: "●"')) {
+    throw new Error("The explicit static progress preference is no longer available")
   }
 })
 
@@ -127,6 +141,13 @@ Deno.test("attention and inspector routing preserve focus and actionable context
   }
   for (const marker of ["resolvedLastItem", "pendingAttentionTarget = undefined", 'announce("All attention items resolved")']) {
     if (!webview.includes(marker)) throw new Error(`Resolved attention lifecycle omits ${marker}`)
+  }
+  for (const marker of ['id="attention-mark-read"', 'type: "markAttentionRead"', "attentionRead?.markRead(items)", "attentionRead?.unread(projectedAttention)"]) {
+    const source = marker.startsWith("id=") ? chatView : marker.includes("attentionRead") ? chatView : webview
+    if (!source.includes(marker)) throw new Error(`Attention acknowledgement omits ${marker}`)
+  }
+  if (!css.includes(".attention-actions") || !css.includes("grid-template-rows: auto minmax(0, 1fr) auto")) {
+    throw new Error("Attention acknowledgement is not presented as a compact popup footer")
   }
   if (!chatView.includes('aria-label="Close session details"') || !webview.includes('inspectorPanel.setAttribute("aria-label"') ||
     !webview.includes("const scrollTop = previousTab === inspectorTab") || !webview.includes("focusedKey") ||
@@ -228,15 +249,26 @@ Deno.test("failed run and worktree launches become stable attention items", () =
 })
 
 Deno.test("turn navigation follows the compact Codex prompt-rail interaction", () => {
-  for (const marker of ["max-height: min(70%, 640px)", "overflow-y: auto", "width: 36px", "height: 10px", ".turn-navigation-preview", 'promptCount < 4']) {
+  for (const marker of ["max-height: min(70%, 640px)", "overflow-y: auto", "width: 36px", "height: 10px", ".turn-navigation-preview", "turnNavigation.hidden = promptCount < 4"]) {
     if (!(css + webview).includes(marker)) throw new Error(`Conversation turn rail omits ${marker}`)
   }
-  for (const marker of ["IntersectionObserver", "visibleTurnTargets", "data-marker-label", 'behavior: reduceMotion ? "auto" : "smooth"']) {
+  for (const marker of ["IntersectionObserver", "ResizeObserver", "visibleTurnTargets", "revealedTurnNavigationSessions", "transcriptOverflows()", "turnNavigationScrollTop", "activeBottom", "scheduleVisibleTurnMarkerSync", "scheduleConversationScrollSync", "scheduleViewportLayout", "requestAnimationFrame", "data-marker-label", 'behavior: reduceMotion ? "auto" : "smooth"']) {
     if (!webview.includes(marker)) throw new Error(`Conversation turn rail behavior omits ${marker}`)
   }
+  if (!webview.includes("messages.scrollHeight > messages.clientHeight + 1") || !webview.includes("syncTurnNavigationVisibility(session)")) {
+    throw new Error("Committed turn navigation is not followed by the visible transcript overflow override")
+  }
   if (!turnNavigationView.includes("MAX_TURN_NAVIGATION_MARKERS = 80")) throw new Error("Conversation turn rail does not retain a useful bounded history")
-  if (!turnNavigationView.includes("Forked or delegated session boundary") || !turnNavigationView.includes("Goal checkpoint recorded") ||
-    !turnNavigationView.includes('part.tool === "update_goal_checkpoint"')) throw new Error("Fork or goal-checkpoint navigation markers are missing")
+  if (!turnNavigationView.includes("Forked or delegated session boundary")) throw new Error("Fork navigation markers are missing")
+  if (turnNavigationView.includes("Goal checkpoint recorded")) {
+    throw new Error("Goal checkpoints can still appear as turn-navigation ticks")
+  }
+  if (!turnNavigationView.includes('label: `${automatic ? "Assistant work turn" : "User turn"}')) {
+    throw new Error("Automatic goal work is not represented as substantive assistant turn navigation")
+  }
+  if (!turnNavigationView.includes("turnContent(messages).finalTextPartKeys")) {
+    throw new Error("Turn navigation can diverge from final-response classification and expose update blocks as ticks")
+  }
 })
 
 Deno.test("session rail relies on smart grouping instead of redundant quick filters", () => {
@@ -247,19 +279,49 @@ Deno.test("session rail relies on smart grouping instead of redundant quick filt
 })
 
 Deno.test("older transcript paging is explicit and preserves the visual prepend anchor", () => {
-  if (!chatView.includes('id="history-boundary"') || !chatView.includes('id="history-load-older"') ||
+  if (!chatView.includes('id="history-boundary"') || !chatView.includes('id="history-load-older"') || !chatView.includes('id="history-load-all"') ||
     !chatView.includes('role="status" aria-live="polite"')) throw new Error("Bounded-history status and action are missing")
   for (const marker of [
     'post({ type: "loadOlderHistory"',
     "pendingHistoryAnchor = conversationView.capturePrependAnchor()",
     "renderTranscript(merged, active, anchor)",
   ]) if (!webview.includes(marker)) throw new Error(`Older-history scroll anchoring is missing: ${marker}`)
-  if (!conversationView.includes("this.scroll.restorePrependAnchor(prependAnchor)")) throw new Error("Conversation view does not restore the visual prepend anchor")
+  for (const marker of ["firstMessage ?? firstTurn", "this.scroll.restorePrependAnchor(prependAnchor)"]) {
+    if (!conversationView.includes(marker)) throw new Error(`Conversation view does not preserve a stable visual prepend anchor: ${marker}`)
+  }
+  for (const marker of ["getBoundingClientRect().top", "candidate.dataset.messageId === anchor.messageID", "Math.max(0, anchor.scrollTop + this.container.scrollHeight - anchor.scrollHeight)"]) {
+    if (!scrollController.includes(marker)) throw new Error(`Prepend anchoring cannot survive a regrouped boundary turn: ${marker}`)
+  }
+  const historyResponse = webview.slice(webview.indexOf('if (message.type === "historyPage")'), webview.indexOf('if (message.type === "messagePatches")'))
+  if (historyResponse.indexOf("renderHistoryBoundary(merged)") > historyResponse.indexOf("renderTranscript(merged, active, anchor)")) {
+    throw new Error("History boundary height can still shift the transcript after anchor restoration")
+  }
+  for (const marker of ["leadingElement?: HTMLElement", '":scope > .turn"', "turnIndex + leadingOffset", "replaceChildren(...(this.options.leadingElement"]) {
+    if (!conversationView.includes(marker)) throw new Error(`Inline history control is not preserved ahead of transcript turns: ${marker}`)
+  }
+  if (!chatView.includes('<main id="messages" role="log" aria-label="OpenCode conversation">\n          <section id="history-boundary"') ||
+    !css.includes(".history-boundary { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: center;") ||
+    css.includes(".history-boundary { position: absolute;")) throw new Error("Older-history loading still renders as a floating banner")
   if (!chatView.includes('case "loadOlderHistory":') || !chatView.includes('type: "historyPage"')) {
     throw new Error("Older-history request is not routed through the validated host path")
   }
+  if (!chatView.includes("await this.controller!.loadHistoryPage") || !historyView.includes("history.sourceMayBeTruncated")) {
+    throw new Error("Older-history loading does not advance bounded server pages")
+  }
   if (!historyView.includes("messages currently loaded from OpenCode") || !historyView.includes("older server history may exist") ||
     historyView.includes("all messages from OpenCode")) throw new Error("History status overstates the bounded transcript")
+  for (const marker of [
+    'beginHistoryLoad("all")',
+    'historyLoadAll.textContent = loadingAll',
+    "historyLoadAllCancelled = true",
+    "historyLoadAllPagesSinceRender >= 3",
+    'post({ type: "loadOlderHistory", sessionID: merged.id, beforeMessageID })',
+    "const deferHistoryTranscript",
+    "conversationView.restorePrependAnchor(anchor)",
+  ]) if (!webview.includes(marker)) throw new Error(`Load-all history sequencing omits: ${marker}`)
+  if (!css.includes(".history-boundary .history-load-all") || !css.includes(".history-load-progress")) {
+    throw new Error("Load-all history is not presented as a subtle progressive secondary action")
+  }
 })
 
 Deno.test("plan-first entry point uses the validated host command route", () => {
@@ -455,7 +517,7 @@ Deno.test("edited files offer a VS Code highlighted diff and theme-native inline
 Deno.test("contextual session work consolidates artifact and execution destinations", () => {
   for (const marker of [
     'id="session-task-dock" class="session-task-dock"',
-    'id="goal-dock" class="dock summary-dock goal-dock"',
+    'id="workspace-strip" class="workspace-strip"',
     'id="session-change-summary" class="session-change-summary"',
     'class="session-details-header"',
   ]) if (!chatView.includes(marker)) throw new Error(`Contextual session work omits ${marker}`)
@@ -464,18 +526,73 @@ Deno.test("contextual session work consolidates artifact and execution destinati
     '["runs", "lineage"].includes(tab)',
     'data-session-detail="plan"',
     'data-session-detail="jobs"',
+    'data-session-detail="runs"',
+    "const latestGroup = ownedGroups[0]",
+    'class="session-task-card session-task-card-compact"',
     'data-workbench-action="start-goal"',
     'data-workbench-action="refresh-session"',
   ]) if (!(webview + inspectorPresentation).includes(marker)) throw new Error(`Consolidated route or action omits ${marker}`)
+  for (const marker of [".session-task-card-compact", ".session-details.current-work-inspector", "max-height: min(52vh, 480px)"]) {
+    if (!css.includes(marker)) throw new Error(`Compact background-work presentation omits ${marker}`)
+  }
 })
 
-Deno.test("goal dock actions use theme-native toolbar controls instead of pills", () => {
+Deno.test("composer exposes an in-chat multi-model isolated-run flow", () => {
   for (const marker of [
-    ".goal-action { min-height: 24px; padding: 2px 6px; border: 1px solid transparent; border-radius: 4px;",
-    "background: var(--vscode-toolbar-hoverBackground)",
-    '.goal-action[data-goal-action="cancel"] { color: var(--vscode-errorForeground); }',
-  ]) if (!css.includes(marker)) throw new Error(`Goal dock styling omits ${marker}`)
-  if (/\.goal-action\s*\{[^}]*border-radius:\s*(?:1[0-9]|[2-9][0-9])px/.test(css)) throw new Error("Goal dock actions must not use pill geometry")
+    'data-send-multi-model',
+    'id="multi-model-picker"',
+    'id="multi-model-concurrency"',
+    'value="${MULTI_RUN_DEFAULT_CONCURRENCY}"',
+    'type: "sendMultiModel"',
+    "MULTI_RUN_MAX_CANDIDATES",
+    "Above the default concurrency of",
+    "Every candidate is a peer",
+    "Each candidate gets a separate OpenCode session, branch, and Git worktree.",
+  ]) if (!(chatView + webview).includes(marker)) throw new Error(`Multi-model composer flow omits ${marker}`)
+  for (const marker of [".multi-model-picker", "body[data-mode=\"sidebar\"] .multi-model-picker-footer"]) {
+    if (!css.includes(marker)) throw new Error(`Responsive multi-model picker omits ${marker}`)
+  }
+})
+
+Deno.test("goal metrics stay in one responsive status line with top-layer details", () => {
+  for (const marker of [
+    ".workspace-strip { min-height: 22px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto;",
+    ".workspace-goal > summary { min-width: 0; max-width: 100%; display: flex;",
+    "@container interaction (max-width: 540px)",
+    "body[data-mode=\"sidebar\"] .goal-workspace-popover",
+  ]) if (!css.includes(marker)) throw new Error(`Responsive goal status styling omits ${marker}`)
+  for (const marker of ["goalWorkspaceDetail", 'class="workspace-detail workspace-goal', 'data-goal-action="verify"', "metricDuration", "goalHistory"]) {
+    if (!webview.includes(marker)) throw new Error(`Goal status behavior omits ${marker}`)
+  }
+  for (const marker of [
+    "reconcileWorkspaceStrip",
+    "reconcileWorkspaceChildren",
+    "preserveOpen",
+    "preservePopoverPosition",
+    "scheduleViewportLayout()",
+  ]) if (!webview.includes(marker)) throw new Error(`Footer metric updates do not preserve open popovers in place: ${marker}`)
+  for (const marker of ["syncWorkspaceDurations", 'data-workspace-duration="session"', "timeUsedSeconds: undefined", "turnsTruncated"]) {
+    if (!webview.includes(marker)) throw new Error(`Goal metrics still require avoidable subtree replacement or overstate partial turns: ${marker}`)
+  }
+  if (webview.includes('<b>Session</b> ${compactMetric(metrics?.tokensUsed)}') || !webview.includes('goalStatus === "Active" ? ""')) {
+    throw new Error("The compact goal strip still spends space on static Active Session labels")
+  }
+  for (const marker of ["usageReported", '"Not reported"', "usageReported && contextLimit"]) {
+    if (!(webview + inspectorPresentation + snapshotProjector).includes(marker)) throw new Error(`Unavailable context usage is not distinguished from zero: ${marker}`)
+  }
+  for (const marker of ["renderDependencySignature?", "dataset.renderSignature", "dependencySignature"]) {
+    if (!conversationView.includes(marker)) throw new Error(`Conversation reconciliation omits an in-place update guard: ${marker}`)
+  }
+  if (chatView.includes('id="goal-dock"')) throw new Error("The legacy Goal dock still consumes composer height")
+})
+
+Deno.test("workspace status omits empty OpenCode service categories", () => {
+  for (const empty of ["LSP 0/0", "Fmt 0/0", "MCP 0/0"]) {
+    if (webview.includes(empty)) throw new Error(`Workspace status still renders empty category: ${empty}`)
+  }
+  for (const marker of ["...(lsp.length ?", "...(formatters.length ?", "...(mcp.length ?", "const hasRuntimeServices"]) {
+    if (!webview.includes(marker)) throw new Error(`Detected-only workspace health presentation omits: ${marker}`)
+  }
 })
 
 Deno.test("Task Workbench starts closed, restores its last visibility, and opens for routed destinations", () => {
@@ -549,13 +666,19 @@ Deno.test("synthetic goal continuations render as timeline markers instead of se
   if (marker < 0 || placeholder < 0 || marker > placeholder || !webview.includes("Goal continued automatically")) {
     throw new Error("Goal continuation messages can still fall through to the empty user-message placeholder")
   }
+  if (!webview.includes('class="compaction-divider goal-continuation-divider"') || !webview.includes('role="note"') ||
+    !css.includes(".compaction-divider { width: min(380px, calc(100% - 24px));") ||
+    !css.includes(".compaction-divider::before, .compaction-divider::after") ||
+    !css.includes(".goal-continuation-divider { color:")) {
+    throw new Error("Compaction and goal continuation annotations still resemble full-width turn dividers")
+  }
 })
 
 Deno.test("native compaction continuations stay hidden instead of rendering failed sent messages", () => {
   const marker = webview.indexOf("if (isNativeCompactionContinuationMessage(message))")
   const placeholder = webview.indexOf("Message failed before its content was saved")
   if (marker < 0 || placeholder < 0 || marker > placeholder || !webview.includes('class="native-compaction-continuation"') ||
-    !turnNavigationView.includes("!isNativeCompactionContinuationMessage(message)")) {
+    !conversationView.includes("if (isNativeCompactionContinuationMessage(message)) continue")) {
     throw new Error("Native compaction continuations can still appear as failed prompts or navigation turns")
   }
 })

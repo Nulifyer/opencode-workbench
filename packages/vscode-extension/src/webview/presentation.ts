@@ -2,6 +2,19 @@ import { isNativeCompactionContinuationMessage as sharedIsNativeCompactionContin
 
 export type SessionGroup = "Needs input" | "Working" | "Completed" | "Today" | "Yesterday" | "Previous 7 days" | "Older"
 
+export function compactMetric(value: number | undefined): string {
+  if (value === undefined) return "--"
+  if (value < 1_000) return value.toLocaleString()
+  const [divisor, suffix] = value >= 1_000_000_000_000
+    ? [1_000_000_000_000, "t"]
+    : value >= 1_000_000_000
+    ? [1_000_000_000, "b"]
+    : value >= 1_000_000
+    ? [1_000_000, "m"]
+    : [1_000, "k"]
+  return `${(value / divisor).toFixed(3).replace(/\.?0+$/, "")}${suffix}`
+}
+
 export function sessionLoadPhase(session?: { loaded: boolean; loadState: "idle" | "loading" | "ready" | "error" }): "none" | "initial" | "refreshing" | "ready" | "error" {
   if (!session) return "none"
   if (session.loadState === "error") return "error"
@@ -111,6 +124,16 @@ export function formatDuration(milliseconds: number): string {
   if (milliseconds < 1_000) return `${Math.max(0, Math.round(milliseconds))}ms`
   if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(milliseconds < 10_000 ? 1 : 0)}s`
   const minutes = Math.floor(milliseconds / 60_000)
+  if (minutes >= 1_440) {
+    const days = Math.floor(minutes / 1_440)
+    const hours = Math.floor(minutes % 1_440 / 60)
+    return `${days}d${hours ? ` ${hours}h` : ""}`
+  }
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60)
+    const remainder = minutes % 60
+    return `${hours}h${remainder ? ` ${remainder}m` : ""}`
+  }
   const seconds = Math.floor(milliseconds % 60_000 / 1_000)
   return `${minutes}m ${seconds}s`
 }

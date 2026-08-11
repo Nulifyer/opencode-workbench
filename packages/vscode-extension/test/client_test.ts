@@ -746,6 +746,36 @@ Deno.test("message reconciliation follows v2 and legacy pagination cursors", asy
   }
 })
 
+Deno.test("bounded message history pages advance both protocol cursors without loading the full session", async () => {
+  const originalFetch = globalThis.fetch
+  const requests: string[] = []
+  globalThis.fetch = (input) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    requests.push(`${url.pathname}?${url.searchParams}`)
+    const older = url.searchParams.has("cursor") || url.searchParams.has("before")
+    const id = older ? "old" : "new"
+    if (url.pathname.startsWith("/api/session/")) return Promise.resolve(new Response(JSON.stringify({
+      data: [{ id, type: "user", time: { created: older ? 1 : 2 }, text: id }],
+      cursor: older ? {} : { next: "v2-older" },
+    })))
+    const message = { info: { id, sessionID: "session", role: "user", time: { created: older ? 1 : 2 } }, parts: [] }
+    return Promise.resolve(new Response(JSON.stringify([message]), older ? undefined : { headers: { "x-next-cursor": "legacy-older" } }))
+  }
+  try {
+    const client = new OpenCodeClient({ baseUrl: "http://127.0.0.1:4096", username: "", password: "", directory: "/work" })
+    const recent = await client.messageHistoryPage("session", undefined, 400)
+    const older = await client.messageHistoryPage("session", recent.cursor, 1_000)
+    if (recent.messages.map((message) => message.info.id).join(",") !== "new" || recent.cursor.legacyComplete || recent.cursor.v2Complete ||
+      older.messages.map((message) => message.info.id).join(",") !== "old" || !older.cursor.legacyComplete || !older.cursor.v2Complete ||
+      !requests.some((request) => request.includes("limit=200")) || !requests.some((request) => request.includes("limit=500")) ||
+      !requests.some((request) => request.includes("cursor=v2-older")) || !requests.some((request) => request.includes("before=legacy-older"))) {
+      throw new Error(`Bounded history pagination did not preserve both cursors: ${JSON.stringify({ recent, older, requests })}`)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 Deno.test("prompt admission checks durable session history", async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (input) => {

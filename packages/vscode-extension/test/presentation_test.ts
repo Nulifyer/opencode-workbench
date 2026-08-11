@@ -1,4 +1,4 @@
-import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, isNativeCompactionContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, terminalAnsiMarkup, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, compactMetric, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, isNativeCompactionContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, terminalAnsiMarkup, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
@@ -102,11 +102,20 @@ Deno.test("summarizes reasoning and tool presentation", () => {
   assertEquals(reasoningDetail("Planning repo exploration\n\nInspect package manifests."), "Inspect package manifests.")
   assertEquals(formatDuration(1_250), "1.3s")
   assertEquals(formatDuration(119_999), "1m 59s")
+  assertEquals(formatDuration(3_900_000), "1h 5m")
+  assertEquals(formatDuration(104_400_000), "1d 5h")
   assertEquals(delegationCompletionSummary([{ kind: "reasoning" }, { kind: "tool" }, { kind: "output" }]), "1 tool call")
   assertEquals(delegationCompletionSummary([{ kind: "tool" }, { kind: "tool" }], true), "Failed · 2 tool calls")
   assertEquals(delegationCompletionSummary([]), "Completed")
   assertEquals(toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "grep" }), "explore")
   assertEquals(toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "apply_patch" }), "edit")
+})
+
+Deno.test("compact metrics scale through trillions without noisy trailing zeroes", () => {
+  assertEquals(compactMetric(1_289_000_000_000), "1.289t")
+  assertEquals(compactMetric(2_576_000_000), "2.576b")
+  assertEquals(compactMetric(5_650_000), "5.65m")
+  assertEquals(compactMetric(1_261_000_000), "1.261b")
 })
 
 Deno.test("presents OpenCode runtime service contracts accurately", () => {

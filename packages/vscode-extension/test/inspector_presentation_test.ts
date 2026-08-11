@@ -360,3 +360,12 @@ Deno.test("inspector names records omitted by a bounded transport projection", (
   assertStringIncludes(inspectorPresentation(value, "walkthrough").markup, "7 older items are hidden")
   assertStringIncludes(inspectorPresentation(value, "runs").markup, "stored records were not deleted")
 })
+
+Deno.test("context presentation labels unavailable provider usage without hiding known limits", () => {
+  const value = snapshot()
+  value.session!.context = { ...value.session!.context!, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, usageReported: false, usagePercent: undefined, contextLimit: 500_000 }
+  const markup = inspectorPresentation(value, "context").markup
+  assertStringIncludes(markup, "Not reported")
+  assertStringIncludes(markup, "500,000")
+  assertStringIncludes(markup, "did not report token usage")
+})

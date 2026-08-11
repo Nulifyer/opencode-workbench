@@ -5,6 +5,7 @@ import type {
   CommandOption,
   DelegationProgress,
   FileChange,
+  GoalMetricSummary,
   GoalSummary,
   EditorContextSummary,
   InlineAttachment,
@@ -18,6 +19,7 @@ import type {
   QuestionRequest,
   RuntimeStatus,
   ResourceOption,
+  SessionMetrics,
   SessionStatus,
   TodoItem,
 } from "./opencode.ts"
@@ -41,6 +43,7 @@ export type WebviewToHostMessage =
   | { type: "setDraft"; sessionID: string; draft: string }
   | { type: "setComposerPayload"; sessionID: string; revision: number; mutationID: string; attachments: InlineAttachment[]; pastedText: PastedTextBlock[] }
   | { type: "send"; sessionID: string; promptID?: string; composerRevision?: number; delivery?: "queue" | "steer" | "replace"; text: string; agent?: string; model?: string; variant?: string; attachments?: InlineAttachment[]; pastedText?: PastedTextBlock[]; contextIDs?: string[] }
+  | { type: "sendMultiModel"; sessionID: string; composerRevision?: number; text: string; models: string[]; concurrency: number; agent?: string; variant?: string; attachments?: InlineAttachment[]; pastedText?: PastedTextBlock[]; contextIDs?: string[] }
   | { type: "abort"; sessionID: string }
   | { type: "createSession"; draft?: string; submit?: boolean }
   | { type: "planTask" }
@@ -78,6 +81,7 @@ export type WebviewToHostMessage =
   | { type: "openInEditor"; tab?: WorkbenchInspectorTab }
   | { type: "openInSidebar" }
   | { type: "navigateBack" }
+  | { type: "markAttentionRead" }
   | { type: "refresh" }
   | { type: "openLogs" }
   | { type: "openHelp" }
@@ -254,7 +258,9 @@ export interface ChatSnapshot {
     todos?: TodoItem[]
     changes?: FileChange[]
     context?: ContextSummary
+    metrics?: SessionMetrics
     goal?: GoalSummary
+    goalHistory?: GoalMetricSummary[]
     delegations?: DelegationProgress[]
     contextReceipts?: ContextReceipt[]
     history?: TranscriptHistoryState
@@ -492,6 +498,8 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
       return exactKeys(value, ["type"]) ? { type: "openInSidebar" } : undefined
     case "navigateBack":
       return exactKeys(value, ["type"]) ? { type: "navigateBack" } : undefined
+    case "markAttentionRead":
+      return exactKeys(value, ["type"]) ? { type: "markAttentionRead" } : undefined
     case "refresh":
       return exactKeys(value, ["type"]) ? { type: "refresh" } : undefined
     case "openLogs":
@@ -522,6 +530,17 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
           (value.attachments?.length ?? 0) + (value.pastedText?.length ?? 0) <= PROMPT_ATTACHMENT_COUNT_LIMIT &&
           (value.contextIDs === undefined || (Array.isArray(value.contextIDs) && value.contextIDs.length <= 20 && value.contextIDs.every(validID) && new Set(value.contextIDs).size === value.contextIDs.length))
         ? { type: "send", sessionID: value.sessionID, promptID: value.promptID, composerRevision: value.composerRevision as number | undefined, delivery: value.delivery as "queue" | "steer" | "replace" | undefined, text: value.text, agent: value.agent, model: value.model, variant: value.variant, attachments: value.attachments, pastedText: value.pastedText as PastedTextBlock[] | undefined, contextIDs: value.contextIDs as string[] | undefined }
+        : undefined
+    case "sendMultiModel":
+      return exactKeys(value, ["type", "sessionID", "composerRevision", "text", "models", "concurrency", "agent", "variant", "attachments", "pastedText", "contextIDs"]) && boundedString(value.sessionID) && value.sessionID.length > 0 &&
+          (value.composerRevision === undefined || (Number.isSafeInteger(value.composerRevision) && Number(value.composerRevision) >= 0)) &&
+          typeof value.text === "string" && value.text.length <= PROMPT_TEXT_CHARACTER_LIMIT && value.text.trim().length > 0 &&
+          Array.isArray(value.models) && value.models.length >= 2 && value.models.length <= 100 && value.models.every(validID) && new Set(value.models).size === value.models.length &&
+          Number.isSafeInteger(value.concurrency) && Number(value.concurrency) >= 1 && Number(value.concurrency) <= 20 && Number(value.concurrency) <= value.models.length &&
+          boundedOptionalString(value.agent) && boundedOptionalString(value.variant) && validInlineAttachments(value.attachments) && (value.pastedText === undefined || validPastedText(value.pastedText)) &&
+          (value.attachments?.length ?? 0) + (value.pastedText?.length ?? 0) <= PROMPT_ATTACHMENT_COUNT_LIMIT &&
+          (value.contextIDs === undefined || (Array.isArray(value.contextIDs) && value.contextIDs.length <= 20 && value.contextIDs.every(validID) && new Set(value.contextIDs).size === value.contextIDs.length))
+        ? { type: "sendMultiModel", sessionID: value.sessionID, composerRevision: value.composerRevision as number | undefined, text: value.text, models: value.models as string[], concurrency: Number(value.concurrency), agent: value.agent, variant: value.variant, attachments: value.attachments, pastedText: value.pastedText as PastedTextBlock[] | undefined, contextIDs: value.contextIDs as string[] | undefined }
         : undefined
     case "pickFiles":
     case "attachCurrentEditor":
@@ -906,7 +925,7 @@ function validMessages(value: unknown[]): boolean {
         (part.state?.input === undefined ? 0 : jsonCharacters(part.state.input)) +
         (part.state?.metadata === undefined ? 0 : jsonCharacters(part.state.metadata))
     }
-    if (parts > 20_000 || characters > 4_000_000) return false
+    if (parts > 40_000 || characters > 8_000_000) return false
   }
   return true
 }
@@ -961,7 +980,7 @@ function validTranscriptHistory(value: unknown): value is TranscriptHistoryState
 
 function validTranscriptHistoryPage(value: unknown): value is TranscriptHistoryPage {
   if (!record(value) || !exactKeys(value, ["sessionID", "messages", "messageRevisions", "hasOlder", "totalMessages", "sourceMayBeTruncated"]) ||
-    !validID(value.sessionID) || !Array.isArray(value.messages) || value.messages.length > 200 || !validMessages(value.messages) ||
+    !validID(value.sessionID) || !Array.isArray(value.messages) || value.messages.length > 1_000 || !validMessages(value.messages) ||
     !validMessageRevisions(value.messageRevisions, value.messages) || typeof value.hasOlder !== "boolean" ||
     !Number.isSafeInteger(value.totalMessages) || Number(value.totalMessages) < value.messages.length || Number(value.totalMessages) > 1_000_000 ||
     (value.sourceMayBeTruncated !== undefined && typeof value.sourceMayBeTruncated !== "boolean")) return false
@@ -1125,7 +1144,7 @@ function validRunComparisonSnapshots(value: unknown): value is RunComparisonSnap
     if (!record(comparison) || !exactKeys(comparison, ["artifactID", "revision", "groupID", "rows", "updatedAt", "stale"]) ||
       !validDurableMetadataString(comparison.artifactID, 1_024, "Run comparison artifact ID") || artifactIDs.has(comparison.artifactID) ||
       !Number.isSafeInteger(comparison.revision) || Number(comparison.revision) < 1 || !validDurableMetadataString(comparison.groupID, 1_024, "Run comparison group ID") ||
-      !Number.isSafeInteger(comparison.updatedAt) || Number(comparison.updatedAt) < 0 || !Array.isArray(comparison.rows) || comparison.rows.length > 5 ||
+      !Number.isSafeInteger(comparison.updatedAt) || Number(comparison.updatedAt) < 0 || !Array.isArray(comparison.rows) || comparison.rows.length > 100 ||
       !comparison.rows.every(validRunComparisonRow) || (comparison.stale !== undefined && typeof comparison.stale !== "boolean")) return false
     const runIDs = comparison.rows.map((row) => row.runID)
     if (new Set(runIDs).size !== runIDs.length) return false
@@ -1136,8 +1155,8 @@ function validRunComparisonSnapshots(value: unknown): value is RunComparisonSnap
 
 function validRunGroups(value: unknown): value is RunGroup[] {
   if (!Array.isArray(value) || value.length > 500) return false
-  return value.every((group) => record(group) && boundedString(group.id) && boundedString(group.title, 500) && boundedString(group.repository, 8_192) && boundedString(group.baseRef) && boundedString(group.promptReceiptID) &&
-    ["shared", "worktree"].includes(String(group.isolation)) && Number.isSafeInteger(group.createdAt) && Number(group.createdAt) >= 0 && Array.isArray(group.runs) && group.runs.length <= 5 &&
+  return value.every((group) => record(group) && boundedString(group.id) && boundedOptionalString(group.ownerSessionID) && boundedString(group.title, 500) && boundedString(group.repository, 8_192) && boundedString(group.baseRef) && boundedString(group.promptReceiptID) &&
+    ["shared", "worktree"].includes(String(group.isolation)) && Number.isSafeInteger(group.createdAt) && Number(group.createdAt) >= 0 && Array.isArray(group.runs) && group.runs.length <= 100 &&
     group.runs.every((run) => record(run) && boundedString(run.id) && boundedString(run.model) && boundedOptionalString(run.agent) && boundedOptionalString(run.variant) && (run.retained === undefined || typeof run.retained === "boolean") && (run.discarded === undefined || typeof run.discarded === "boolean") && ["pending", "preparing", "admitting", "working", "needs-input", "completed", "failed", "cancelled"].includes(String(run.phase)) && record(run.session) && boundedString(run.session.sessionID) && boundedString(run.session.directory, 8_192)))
 }
 
@@ -1257,21 +1276,42 @@ function validPermissions(value: unknown): value is PermissionRequest[] {
 }
 
 function validContext(value: unknown): value is ContextSummary {
-  if (!record(value) || !exactKeys(value, ["inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens", "contextLimit", "inputLimit", "outputLimit", "model", "usagePercent", "cost"])) return false
+  if (!record(value) || !exactKeys(value, ["inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens", "contextLimit", "inputLimit", "outputLimit", "model", "usageReported", "usagePercent", "cost"])) return false
   const counts = [value.inputTokens, value.outputTokens, value.reasoningTokens, value.cacheReadTokens, value.cacheWriteTokens, value.totalTokens]
   return counts.every((count) => Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000_000_000) &&
     Number(value.totalTokens) === counts.slice(0, 5).reduce<number>((total, count) => total + Number(count), 0) &&
     (value.contextLimit === undefined || (Number.isSafeInteger(value.contextLimit) && Number(value.contextLimit) > 0)) &&
     (value.inputLimit === undefined || (Number.isSafeInteger(value.inputLimit) && Number(value.inputLimit) > 0)) &&
     (value.outputLimit === undefined || (Number.isSafeInteger(value.outputLimit) && Number(value.outputLimit) > 0)) && boundedOptionalString(value.model, 2_049) &&
+    (value.usageReported === undefined || typeof value.usageReported === "boolean") &&
+    (value.usageReported !== false || value.usagePercent === undefined) &&
     (value.usagePercent === undefined || (typeof value.usagePercent === "number" && Number.isFinite(value.usagePercent) && value.usagePercent >= 0 && value.usagePercent <= 100)) &&
     typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0 && value.cost <= 1_000_000_000_000
 }
 
+function validSessionMetrics(value: unknown): value is SessionMetrics {
+  if (!record(value) || !exactKeys(value, ["tokensUsed", "timeUsedSeconds", "turnsUsed", "turnsTruncated", "sampledAt"])) return false
+  return (value.tokensUsed === undefined || (Number.isSafeInteger(value.tokensUsed) && Number(value.tokensUsed) >= 0)) &&
+    Number.isSafeInteger(value.timeUsedSeconds) && Number(value.timeUsedSeconds) >= 0 &&
+    Number.isSafeInteger(value.turnsUsed) && Number(value.turnsUsed) >= 0 &&
+    (value.turnsTruncated === undefined || typeof value.turnsTruncated === "boolean") &&
+    Number.isSafeInteger(value.sampledAt) && Number(value.sampledAt) >= 0
+}
+
+function validGoalMetric(value: unknown): value is GoalMetricSummary {
+  if (!record(value) || !exactKeys(value, ["id", "sequence", "objective", "status", "tokensUsed", "timeUsedSeconds", "turnsUsed", "autoTurns", "createdAt", "closedAt"])) return false
+  return boundedString(value.id) && Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1 &&
+    boundedString(value.objective, 400) && boundedString(value.status, 100) &&
+    [value.tokensUsed, value.timeUsedSeconds, value.turnsUsed, value.autoTurns, value.createdAt]
+      .every((metric) => Number.isSafeInteger(metric) && Number(metric) >= 0) &&
+    (value.closedAt === undefined || (Number.isSafeInteger(value.closedAt) && Number(value.closedAt) >= Number(value.createdAt)))
+}
+
 function validGoal(value: unknown): value is GoalSummary {
-  if (!record(value) || !exactKeys(value, ["objective", "status", "sourceTool", "tokenBudget", "tokensUsed", "remainingTokens", "timeUsedSeconds", "maxDurationSeconds", "autoTurns", "maxAutoTurns", "lastStatus", "stopReason", "checkpoint", "completionEvidence", "blocker", "acceptanceCriteria", "verifier", "latestVerdict", "evidenceReferences", "consecutiveBlockedVerdicts", "pendingContinuation", "settlementGeneration", "planReference", "runGroupReference"]) ||
+  if (!record(value) || !exactKeys(value, ["id", "sequence", "objective", "status", "sourceTool", "tokenBudget", "tokensUsed", "remainingTokens", "timeUsedSeconds", "maxDurationSeconds", "turnsUsed", "autoTurns", "maxAutoTurns", "lastStatus", "stopReason", "checkpoint", "completionEvidence", "blocker", "acceptanceCriteria", "verifier", "latestVerdict", "evidenceReferences", "consecutiveBlockedVerdicts", "pendingContinuation", "settlementGeneration", "planReference", "runGroupReference", "createdAt", "closedAt", "archivedGoals", "sampledAt"]) ||
     !boundedOptionalString(value.objective, 20_000) || !boundedOptionalString(value.status, 100) || !boundedString(value.sourceTool, 100)) return false
-  return [value.tokenBudget, value.tokensUsed, value.remainingTokens, value.timeUsedSeconds, value.maxDurationSeconds, value.autoTurns, value.maxAutoTurns]
+  return boundedOptionalString(value.id) && (value.sequence === undefined || (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1)) &&
+    [value.tokenBudget, value.tokensUsed, value.remainingTokens, value.timeUsedSeconds, value.maxDurationSeconds, value.turnsUsed, value.autoTurns, value.maxAutoTurns, value.createdAt, value.closedAt, value.sampledAt]
       .every((metric) => metric === undefined || (Number.isSafeInteger(metric) && Number(metric) >= 0)) &&
     [value.lastStatus, value.stopReason, value.checkpoint, value.completionEvidence, value.blocker].every((text) => boundedOptionalString(text, 20_000)) &&
     (value.acceptanceCriteria === undefined || (Array.isArray(value.acceptanceCriteria) && value.acceptanceCriteria.length <= 100 && value.acceptanceCriteria.every((item) => boundedString(item, 2_000)))) &&
@@ -1281,6 +1321,7 @@ function validGoal(value: unknown): value is GoalSummary {
     (value.pendingContinuation === undefined || typeof value.pendingContinuation === "boolean") &&
     (value.settlementGeneration === undefined || (Number.isSafeInteger(value.settlementGeneration) && Number(value.settlementGeneration) >= 0)) &&
     boundedOptionalString(value.planReference, 8_192) && boundedOptionalString(value.runGroupReference) &&
+    (value.archivedGoals === undefined || (Array.isArray(value.archivedGoals) && value.archivedGoals.length <= 100 && value.archivedGoals.every(validGoalMetric))) &&
     (value.latestVerdict === undefined || (record(value.latestVerdict) && ["continue", "complete", "blocked", "needs-user"].includes(String(value.latestVerdict.verdict)) && boundedString(value.latestVerdict.reason, 4_000) && Array.isArray(value.latestVerdict.missingCriteria) && value.latestVerdict.missingCriteria.length <= 100 && value.latestVerdict.missingCriteria.every((item) => boundedString(item, 2_000)) && ["low", "medium", "high"].includes(String(value.latestVerdict.confidence))))
 }
 
@@ -1641,7 +1682,9 @@ export function parseHostMessage(
       (session.todos !== undefined && !validTodos(session.todos)) ||
       (session.changes !== undefined && !validChanges(session.changes)) ||
       (session.context !== undefined && !validContext(session.context)) ||
+      (session.metrics !== undefined && !validSessionMetrics(session.metrics)) ||
       (session.goal !== undefined && !validGoal(session.goal)) ||
+      (session.goalHistory !== undefined && (!Array.isArray(session.goalHistory) || session.goalHistory.length > 100 || !session.goalHistory.every(validGoalMetric))) ||
       (session.delegations !== undefined &&
         !validDelegations(session.delegations)) ||
       (session.contextReceipts !== undefined &&

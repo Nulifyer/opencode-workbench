@@ -141,3 +141,40 @@ Deno.test("split pane controller remains usable without ResizeObserver and rejec
     createResizeObserver: () => ({ observe: () => undefined, disconnect: () => undefined }),
   }), Error, "Duplicate split pane")
 })
+
+Deno.test("split pane pointer movement coalesces layout writes into one animation frame", () => {
+  const root = new FakeElement()
+  const separator = new FakeElement()
+  const frames = new Map<number, FrameRequestCallback>()
+  const cancelled: number[] = []
+  let nextFrame = 1
+  const controller = new SplitPaneController({
+    root: root as unknown as HTMLElement,
+    panes: [{ key: "sessions", separator: separator as unknown as HTMLElement, cssProperty: "--sessions-width", initialWidth: 300, minimumWidth: 200, maximumWidth: 500 }],
+    createResizeObserver: () => undefined,
+    requestFrame: (callback) => {
+      const handle = nextFrame++
+      frames.set(handle, callback)
+      return handle
+    },
+    cancelFrame: (handle) => {
+      cancelled.push(handle)
+      frames.delete(handle)
+    },
+  })
+
+  separator.dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 500 })
+  separator.dispatch("pointermove", { pointerId: 3, clientX: 480 })
+  separator.dispatch("pointermove", { pointerId: 3, clientX: 450 })
+  assertEquals(frames.size, 1)
+  assertEquals(root.style.values.get("--sessions-width"), "300px")
+  frames.get(1)?.(16)
+  frames.delete(1)
+  assertEquals(root.style.values.get("--sessions-width"), "350px")
+
+  separator.dispatch("pointermove", { pointerId: 3, clientX: 430 })
+  separator.dispatch("pointerup", { pointerId: 3, clientX: 430 })
+  assertEquals(root.style.values.get("--sessions-width"), "370px")
+  assertEquals(cancelled, [2])
+  controller.dispose()
+})

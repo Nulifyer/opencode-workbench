@@ -97,6 +97,17 @@ export interface SessionMessageHistory {
   v2MessageIDs: string[]
 }
 
+export interface SessionMessageHistoryCursor {
+  legacy?: string
+  v2?: string
+  legacyComplete: boolean
+  v2Complete: boolean
+}
+
+export interface SessionMessageHistoryPage extends SessionMessageHistory {
+  cursor: SessionMessageHistoryCursor
+}
+
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -1011,6 +1022,71 @@ export class OpenCodeClient {
       legacyMessageIDs: previous.map((message) => message.info.id),
       v2MessageIDs: (current ?? []).map((message) => message.info.id),
     }
+  }
+
+  /**
+   * Reads a bounded newest/older transcript page from both supported OpenCode
+   * transports. The cursor is intentionally opaque to the controller so a
+   * cold session can become interactive without downloading its entire
+   * transcript first.
+   */
+  async messageHistoryPage(sessionID: string, cursor?: SessionMessageHistoryCursor, limit = 400): Promise<SessionMessageHistoryPage> {
+    const encoded = encodeURIComponent(sessionID)
+    const boundedLimit = Math.max(2, Math.min(1_000, Math.floor(limit)))
+    // Each transport may contain distinct records. Splitting the bound keeps
+    // the merged protocol page within its 1,000-message limit without drops.
+    const transportLimit = Math.max(1, Math.floor(boundedLimit / 2))
+    const v2Request = cursor?.v2Complete
+      ? Promise.resolve({ messages: [] as MessageBundle[], next: undefined as string | undefined })
+      : this.v2MessagePage(encoded, sessionID, cursor?.v2, transportLimit)
+    const legacyRequest = cursor?.legacyComplete
+      ? Promise.resolve({ messages: [] as MessageBundle[], next: undefined as string | undefined })
+      : this.legacyMessagePage(encoded, cursor?.legacy, transportLimit)
+    const [v2, legacy] = await Promise.allSettled([v2Request, legacyRequest])
+    if (v2.status === "rejected" && legacy.status === "rejected") throw v2.reason
+    const current = v2.status === "fulfilled" ? v2.value.messages : []
+    const previous = legacy.status === "fulfilled" ? legacy.value.messages : []
+    if (current.length && legacy.status === "rejected") for (const message of current) {
+      if (message.info.role !== "user") continue
+      for (const part of message.parts) if (part.type === "text" && part.text === GOAL_CONTINUATION_PROMPT) part.synthetic = true
+    }
+    const merged = previous.slice()
+    const positions = new Map(merged.map((message, index) => [message.info?.id, index]))
+    for (const message of current) {
+      const position = positions.get(message.info.id)
+      if (position === undefined) {
+        positions.set(message.info.id, merged.length)
+        merged.push(message)
+      } else merged[position] = mergeMessageBundles(merged[position]!, message)
+    }
+    return {
+      messages: merged.sort((left, right) => (left.info.time?.created ?? 0) - (right.info.time?.created ?? 0) || left.info.id.localeCompare(right.info.id)),
+      legacyMessageIDs: previous.map((message) => message.info.id),
+      v2MessageIDs: current.map((message) => message.info.id),
+      cursor: {
+        legacy: legacy.status === "fulfilled" ? legacy.value.next : undefined,
+        v2: v2.status === "fulfilled" ? v2.value.next : undefined,
+        legacyComplete: cursor?.legacyComplete === true || legacy.status === "rejected" || legacy.value.next === undefined,
+        v2Complete: cursor?.v2Complete === true || v2.status === "rejected" || v2.value.next === undefined,
+      },
+    }
+  }
+
+  private async v2MessagePage(encodedSessionID: string, sessionID: string, cursor: string | undefined, limit: number): Promise<{ messages: MessageBundle[]; next?: string }> {
+    const pathname = this.locationPath(`/api/session/${encodedSessionID}/message`, cursor ? { limit: String(limit), cursor } : { limit: String(limit), order: "desc" })
+    const value = await this.request<unknown>("GET", pathname)
+    const page = projectedMessages(value, sessionID)
+    if (!page) throw new Error("OpenCode returned malformed v2 session messages")
+    const next = isRecord(value) && isRecord(value.cursor) && typeof value.cursor.next === "string" ? value.cursor.next : undefined
+    return { messages: page.reverse(), next }
+  }
+
+  private async legacyMessagePage(encodedSessionID: string, cursor: string | undefined, limit: number): Promise<{ messages: MessageBundle[]; next?: string }> {
+    const query = new URLSearchParams({ limit: String(limit) })
+    if (cursor) query.set("before", cursor)
+    const response = await this.requestResponse<unknown>("GET", `/session/${encodedSessionID}/message?${query}`)
+    if (!Array.isArray(response.data)) throw new Error("OpenCode returned malformed legacy session messages")
+    return { messages: response.data as MessageBundle[], next: response.headers.get("x-next-cursor") ?? undefined }
   }
 
   async hasPromptAdmission(sessionID: string, promptID: string): Promise<boolean | undefined> {

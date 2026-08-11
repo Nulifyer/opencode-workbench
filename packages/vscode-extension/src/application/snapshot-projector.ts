@@ -1,4 +1,4 @@
-import type { ContextSummary, GoalSummary, MessageBundle, MessagePart, ModelOption, RuntimeService, RuntimeStatus, TranscriptHistoryState, WorkbenchState } from "@opencode-workbench/shared"
+import type { ContextSummary, GoalMetricSummary, GoalSummary, MessageBundle, MessagePart, ModelOption, RuntimeService, RuntimeStatus, TranscriptHistoryState, WorkbenchState } from "@opencode-workbench/shared"
 
 type JsonRecord = Record<string, unknown>
 function record(value: unknown): value is JsonRecord { return typeof value === "object" && value !== null && !Array.isArray(value) }
@@ -299,6 +299,7 @@ export function deriveContext(messages: WorkbenchState["sessions"][string]["mess
   const modelID = typeof assistant.info.modelID === "string" ? assistant.info.modelID : undefined
   const model = providerID && modelID ? models.find((candidate) => candidate.providerID === providerID && candidate.id === modelID) : fallbackModel
   const contextLimit = model?.contextLimit
+  const usageReported = tokens.totalTokens > 0
   return {
     ...tokens,
     cost,
@@ -306,7 +307,8 @@ export function deriveContext(messages: WorkbenchState["sessions"][string]["mess
     inputLimit: model?.inputLimit,
     outputLimit: model?.outputLimit,
     model: model ? `${model.providerID}/${model.id}` : providerID && modelID ? `${providerID}/${modelID}` : undefined,
-    usagePercent: contextLimit ? Math.min(100, tokens.totalTokens / contextLimit * 100) : undefined,
+    usageReported,
+    usagePercent: usageReported && contextLimit ? Math.min(100, tokens.totalTokens / contextLimit * 100) : undefined,
   }
 }
 
@@ -346,6 +348,8 @@ function parsedGoal(output: unknown): GoalSummary | undefined {
     ? { enabled: verifierValue.enabled, model: textFromRecord(verifierValue, "model", 1_024), agent: textFromRecord(verifierValue, "agent", 1_024), timeoutMilliseconds: Number(verifierValue.timeoutMilliseconds), repeatedBlockThreshold: Number(verifierValue.repeatedBlockThreshold) }
     : undefined
   const result: GoalSummary = {
+    id: text("id", 256),
+    sequence: integer("sequence"),
     sourceTool: "goal",
     objective: text("objective"),
     status: text("status", 100),
@@ -354,6 +358,7 @@ function parsedGoal(output: unknown): GoalSummary | undefined {
     remainingTokens: integer("remainingTokens"),
     timeUsedSeconds: integer("timeUsedSeconds"),
     maxDurationSeconds: integer("maxDurationSeconds"),
+    turnsUsed: integer("turnsUsed"),
     autoTurns: integer("autoTurns"),
     maxAutoTurns: integer("maxAutoTurns"),
     lastStatus: text("lastStatus"),
@@ -370,8 +375,46 @@ function parsedGoal(output: unknown): GoalSummary | undefined {
     settlementGeneration: integer("settlementGeneration"),
     planReference: text("planReference", 8_192),
     runGroupReference: text("runGroupReference", 1_024),
+    createdAt: integer("createdAt"),
+    closedAt: integer("closedAt"),
+    archivedGoals: parseGoalMetrics(goal.archivedGoals),
+    sampledAt: integer("sampledAt"),
   }
   return result.objective !== undefined || result.status !== undefined ? result : undefined
+}
+
+function parseGoalMetrics(value: unknown): GoalMetricSummary[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.flatMap((candidate) => {
+    if (!record(candidate)) return []
+    const text = (key: string, limit: number) => typeof candidate[key] === "string" && candidate[key].length <= limit ? candidate[key] as string : undefined
+    const number = (key: string) => Number.isSafeInteger(candidate[key]) && Number(candidate[key]) >= 0 ? Number(candidate[key]) : undefined
+    const id = text("id", 256)
+    const sequence = number("sequence")
+    const objective = text("objective", 400)
+    const status = text("status", 100)
+    const tokensUsed = number("tokensUsed")
+    const timeUsedSeconds = number("timeUsedSeconds")
+    const turnsUsed = number("turnsUsed")
+    const autoTurns = number("autoTurns")
+    const createdAt = number("createdAt")
+    const closedAt = number("closedAt")
+    return id && sequence && objective && status && tokensUsed !== undefined && timeUsedSeconds !== undefined && turnsUsed !== undefined && autoTurns !== undefined && createdAt !== undefined && closedAt !== undefined
+      ? [{ id, sequence, objective, status, tokensUsed, timeUsedSeconds, turnsUsed, autoTurns, createdAt, closedAt }]
+      : []
+  }).slice(-100)
+}
+
+function outputGoalMetrics(output: unknown): GoalMetricSummary[] | undefined {
+  if (typeof output !== "string" || output.length === 0 || output.length > 64 * 1024) return undefined
+  try {
+    const value = JSON.parse(output)
+    if (!record(value)) return undefined
+    if (record(value.goal)) return parseGoalMetrics(value.goal.archivedGoals)
+    return parseGoalMetrics(value.archived_goals ?? value.archivedGoals)
+  } catch {
+    return undefined
+  }
 }
 
 function textFromRecord(value: JsonRecord, key: string, limit: number): string | undefined {
@@ -400,4 +443,18 @@ export function deriveGoal(messages: WorkbenchState["sessions"][string]["message
     }
   }
   return summary
+}
+
+export function deriveGoalHistory(messages: WorkbenchState["sessions"][string]["messages"]): GoalMetricSummary[] {
+  let history: GoalMetricSummary[] = []
+  for (const message of messages) {
+    if (message.info.role !== "assistant") continue
+    for (const part of message.parts) {
+      if (part.type !== "tool" || !part.tool || !GOAL_TOOLS.has(part.tool) ||
+        (part.state?.status !== "completed" && part.state?.status !== "complete")) continue
+      const parsed = outputGoalMetrics(part.state?.output)
+      if (parsed) history = parsed
+    }
+  }
+  return history
 }

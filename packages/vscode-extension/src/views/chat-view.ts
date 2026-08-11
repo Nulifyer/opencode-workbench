@@ -3,8 +3,8 @@ import { realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import * as vscode from "vscode"
-import type { AttentionItem, ContextAttachmentSummary, ContextReceiptItem, EditorContextSummary, HostToWebviewMessage, InlineAttachment, PastedTextBlock, RuntimeDescriptor, WebviewToHostMessage, WorkbenchCapability, WorkbenchHealthSummary, WorkbenchInspectorTab, WorkbenchTraceSummary } from "@opencode-workbench/shared"
-import { parseHostMessage, parseWebviewMessage, PROMPT_ATTACHMENT_CHARACTER_LIMIT, PROMPT_ATTACHMENT_COUNT_LIMIT, taskArtifactSummary } from "@opencode-workbench/shared"
+import type { AttentionItem, ContextAttachmentSummary, ContextReceiptItem, EditorContextSummary, HostToWebviewMessage, InlineAttachment, PastedTextBlock, RunGroup, RuntimeDescriptor, WebviewToHostMessage, WorkbenchCapability, WorkbenchHealthSummary, WorkbenchInspectorTab, WorkbenchTraceSummary } from "@opencode-workbench/shared"
+import { MULTI_RUN_DEFAULT_CONCURRENCY, parseHostMessage, parseWebviewMessage, PROMPT_ATTACHMENT_CHARACTER_LIMIT, PROMPT_ATTACHMENT_COUNT_LIMIT, taskArtifactSummary } from "@opencode-workbench/shared"
 import type { PromptFilePart } from "../opencode-client.js"
 import type { ControllerUpdate, SessionController } from "../session-controller.js"
 import { prepareFzf, rankPreparedFzf, workspaceSearchPaths, type PreparedFzfIndex } from "../fuzzy.js"
@@ -18,6 +18,7 @@ import { dataUrlPayload, receiptHash } from "../application/context-receipt-buil
 import { projectChatSnapshotForWebview } from "../application/webview-snapshot-projector.js"
 import type { EvidenceService } from "../application/evidence-service.js"
 import { RecoveryPreviewGuard, type RecoveryPreviewInput, type RecoveryPreviewService } from "../application/recovery-preview-service.js"
+import type { AttentionReadService } from "../application/attention-read-service.js"
 import { exactRunComparisonMarkdown } from "../application/run-comparison-service.js"
 import type { SessionPresentationService } from "../application/session-presentation-service.js"
 import type { TaskArtifactService } from "../application/task-artifact-service.js"
@@ -70,6 +71,7 @@ interface StoredContextAttachment {
 type InitialWorkbenchControl = "composer-focus" | "sessions-toggle" | "sessions-show" | "attention-show"
 
 export interface ChatWorkbenchServices {
+  attentionRead?: AttentionReadService
   artifacts?: TaskArtifactService
   evidence?: EvidenceService
   recovery?: RecoveryPreviewService
@@ -77,6 +79,7 @@ export interface ChatWorkbenchServices {
   health?: () => WorkbenchHealthSummary | undefined
   trace?: () => WorkbenchTraceSummary[]
   captureBrowserContext?: (request: Extract<WebviewToHostMessage, { type: "browserContextAction" }>) => Promise<void>
+  startMultiModel?: (request: { ownerSessionID: string; prompt: string; models: string[]; concurrency: number; agent?: string; variant?: string; files: PromptFilePart[]; receiptItems: ContextReceiptItem[] }) => Promise<RunGroup>
   openHealth?: () => Promise<void>
   openTrace?: () => Promise<void>
 }
@@ -504,6 +507,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       <section class="history-panel attention-panel" role="dialog" aria-modal="true" aria-labelledby="attention-title">
         <div class="overlay-heading"><strong id="attention-title">Needs Attention</strong><button type="button" class="text-action" data-close-attention>Close</button></div>
         <div id="attention-list" class="attention-list"></div>
+        <div class="attention-actions"><button id="attention-mark-read" type="button" class="text-action" title="Acknowledge all currently listed attention items">Mark as read</button></div>
       </section>
     </div>
 
@@ -532,11 +536,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         </section>
         <nav id="turn-navigation" class="turn-navigation" aria-label="Conversation turns" hidden></nav>
         <div id="turn-navigation-preview" class="turn-navigation-preview" role="tooltip" hidden></div>
-        <section id="history-boundary" class="history-boundary" role="status" aria-live="polite" hidden>
-          <span id="history-boundary-text"></span>
-          <button id="history-load-older" type="button">Load older messages</button>
-        </section>
-        <main id="messages" role="log" aria-label="OpenCode conversation"></main>
+        <main id="messages" role="log" aria-label="OpenCode conversation">
+          <section id="history-boundary" class="history-boundary" aria-label="Older transcript history" hidden>
+            <span class="history-boundary-actions">
+              <button id="history-load-older" type="button">Load older messages</button>
+              <button id="history-load-all" class="history-load-all" type="button">Load all</button>
+            </span>
+            <span id="history-load-progress" class="history-load-progress" aria-hidden="true" hidden></span>
+            <span id="history-boundary-text" class="visually-hidden" role="status" aria-live="polite"></span>
+          </section>
+        </main>
         <section id="inspector" class="session-details" aria-label="Session details" hidden>
           <div class="session-details-header"><div class="session-details-title"><strong>Session details</strong><span id="session-details-info" class="inspector-view-info" role="img" aria-label="About this view">i</span></div><button id="inspector-close" class="icon-action" type="button" aria-label="Close session details">${ICONS.close}</button></div>
           <section id="inspector-panel" class="inspector-panel session-details-panel" tabindex="0"></section>
@@ -564,7 +573,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           <section id="permission-dock" class="dock permission-dock" aria-label="Permission requests" aria-live="assertive" hidden></section>
           <section id="question-dock" class="dock question-dock" aria-label="Questions from OpenCode" aria-live="assertive" hidden></section>
           <div class="summary-docks">
-            <section id="goal-dock" class="dock summary-dock goal-dock" hidden></section>
             <section id="session-task-dock" class="session-task-dock" aria-label="Session task artifacts" hidden></section>
             <section id="todo-dock" class="dock todo-dock" aria-label="Session todos" hidden></section>
           </div>
@@ -576,6 +584,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             <div id="reasoning-options" class="picker-options reasoning-options"></div>
             <div id="model-options" class="picker-options model-options" role="listbox" aria-label="Models"></div>
             <div id="model-meta" class="model-picker-meta"></div>
+          </section>
+          <section id="multi-model-picker" class="multi-model-picker" role="dialog" aria-modal="true" aria-labelledby="multi-model-picker-title" hidden>
+            <header class="multi-model-picker-header"><div><strong id="multi-model-picker-title">Send to multiple models</strong><small>Each candidate gets a separate OpenCode session, branch, and Git worktree.</small></div><button id="multi-model-close" class="icon-action" type="button" aria-label="Close multi-model picker">${ICONS.close}</button></header>
+            <div class="multi-model-picker-tools"><label><span class="visually-hidden">Search models</span><input id="multi-model-search" type="search" placeholder="Search models" autocomplete="off"></label><button id="multi-model-select-visible" type="button">Select visible</button><button id="multi-model-clear" type="button">Clear</button></div>
+            <div id="multi-model-options" class="multi-model-options" aria-label="Models"></div>
+            <footer class="multi-model-picker-footer"><div class="multi-model-summary"><strong id="multi-model-count">0 selected</strong><small id="multi-model-disclosure" aria-live="polite">Runs are isolated from the current checkout.</small></div><label class="multi-model-concurrency" title="Five models run concurrently by default; raise this to start more together.">Concurrent <input id="multi-model-concurrency" type="number" inputmode="numeric" min="1" max="20" step="1" value="${MULTI_RUN_DEFAULT_CONCURRENCY}"></label><button id="multi-model-cancel" type="button">Cancel</button><button id="multi-model-start" class="primary-action" type="button" disabled>Start isolated runs</button></footer>
           </section>
           <div class="composer" id="composer">
             <div id="attachment-dock" class="attachment-dock" hidden></div>
@@ -596,6 +610,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                   <details id="send-options" hidden>
                     <summary aria-label="More send options" title="More send options">⌄</summary>
                     <div class="send-options-popover" role="menu" popover="auto">
+                      <button type="button" role="menuitem" data-send-multi-model><strong>Send to multiple models…</strong><small>Run the draft in isolated sessions and worktrees.</small></button>
                       <button type="button" role="menuitem" data-send-delivery="steer"><strong>Steer current work</strong><small>Deliver at OpenCode's next safe boundary.</small></button>
                       <button type="button" role="menuitem" data-send-delivery="queue"><strong>Follow up after completion</strong><small>Wait until the current work would otherwise stop.</small></button>
                       <button type="button" role="menuitem" data-send-delivery="replace"><strong>Replace queued instruction</strong><small>Cancel current work and admit this instruction next.</small></button>
@@ -903,6 +918,66 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     await this.publishEditorContext()
   }
 
+  private async multiModelComposerPrompt(message: Extract<WebviewToHostMessage, { type: "sendMultiModel" }>, source: vscode.Webview): Promise<{
+    composerPayload: { revision: number; attachments: InlineAttachment[]; pastedText: PastedTextBlock[] }
+    files: PromptFilePart[]
+    receiptItems: ContextReceiptItem[]
+  }> {
+    const composerPayload = this.composerPayloads.get(message.sessionID) ?? { revision: 0, attachments: [], pastedText: [] }
+    if ((message.composerRevision ?? 0) !== composerPayload.revision) {
+      await this.postTo(source, { type: "composerPayloadChanged", sessionID: message.sessionID, ...composerPayload })
+      throw new Error("Composer attachments changed in another chat view; review them before sending")
+    }
+    const contextFiles = (message.contextIDs ?? []).map((id) => {
+      const attachment = this.contextAttachments.get(id)
+      if (!attachment || attachment.sessionID !== message.sessionID) throw new Error("Context attachment is no longer available")
+      return attachment.file
+    })
+    const contextUrls = new Set(contextFiles.map((file) => file.url))
+    const mentionedFiles = (await this.workspaceMentions(message.text)).filter((file) => !contextUrls.has(file.url))
+    const files: PromptFilePart[] = [
+      ...mentionedFiles,
+      ...contextFiles,
+      ...composerPayload.attachments.map((attachment) => ({ type: "file" as const, mime: attachment.mime, filename: `${attachment.label} ${attachment.name}`.slice(0, 255), url: `data:${attachment.mime};base64,${attachment.data}` })),
+      ...composerPayload.pastedText.map((block, index) => ({ type: "file" as const, mime: "text/plain", filename: `${block.label} pasted-text-${index + 1}.txt`.slice(0, 255), url: `data:text/plain;base64,${Buffer.from(block.text, "utf8").toString("base64")}` })),
+    ]
+    const seenFiles = new Set<string>()
+    const uniqueFiles = files.filter((file) => {
+      const key = `${file.mime}\0${file.url}`
+      if (seenFiles.has(key)) return false
+      seenFiles.add(key)
+      return true
+    })
+    const fileCharacters = uniqueFiles.reduce((total, file) => total + file.filename.length + file.mime.length + file.url.length, 0)
+    if (uniqueFiles.length > PROMPT_ATTACHMENT_COUNT_LIMIT || fileCharacters > PROMPT_ATTACHMENT_CHARACTER_LIMIT) throw new Error(`Combined workspace, context, and composer attachments exceed the ${PROMPT_ATTACHMENT_COUNT_LIMIT}-file prompt limit`)
+    const receiptItems: ContextReceiptItem[] = [
+      ...await Promise.all(mentionedFiles.map((file, index) => this.promptFileReceipt(file, `mention:${index}`))),
+      ...(message.contextIDs ?? []).map((id) => {
+        const attachment = this.contextAttachments.get(id)!
+        return { id, label: attachment.summary.name, ...attachment.receipt }
+      }),
+      ...composerPayload.attachments.map((attachment) => ({ id: attachment.id, kind: "attachment" as const, label: attachment.label, bytes: attachment.size, contentHash: `sha256:${createHash("sha256").update(attachment.data).digest("hex")}` })),
+      ...composerPayload.pastedText.map((block, index) => ({ id: `paste:${index}`, kind: "attachment" as const, label: block.label, bytes: Buffer.byteLength(block.text), contentHash: `sha256:${createHash("sha256").update(block.text).digest("hex")}` })),
+    ]
+    return { composerPayload, files: uniqueFiles, receiptItems }
+  }
+
+  private async clearMultiModelComposer(sessionID: string, composerPayload: { revision: number; attachments: InlineAttachment[]; pastedText: PastedTextBlock[] }, contextIDs: readonly string[]): Promise<void> {
+    if ((this.composerPayloads.get(sessionID)?.revision ?? 0) === composerPayload.revision) {
+      const cleared = { revision: composerPayload.revision + 1, attachments: [] as InlineAttachment[], pastedText: [] as PastedTextBlock[] }
+      this.composerPayloads.set(sessionID, cleared)
+      await this.publishDirect({ type: "composerPayloadChanged", sessionID, ...cleared })
+    }
+    for (const id of contextIDs) this.contextAttachments.delete(id)
+    this.controller!.setSessionDraft(sessionID, "")
+    const revision = (this.draftRevisions.get(sessionID) ?? 0) + 1
+    this.draftRevisions.set(sessionID, revision)
+    await Promise.all([
+      this.publishDirect({ type: "draftChanged", sessionID, draft: "", revision }),
+      this.publishContextAttachments(sessionID),
+    ])
+  }
+
   private async handleMessage(raw: unknown, source: vscode.Webview, rethrow = false): Promise<void> {
     const message = parseWebviewMessage(raw)
     if (!message) {
@@ -1140,6 +1215,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "walkthroughAction":
           await vscode.commands.executeCommand("opencodeWorkbench.openWalkthroughStop", message.documentID, message.stopID)
           break
+        case "sendMultiModel": {
+          this.requireSelected(message.sessionID)
+          if (!this.workbench.startMultiModel) throw new Error("Multi-model runs are unavailable")
+          const resolved = await this.multiModelComposerPrompt(message, source)
+          await this.workbench.startMultiModel({
+            ownerSessionID: message.sessionID,
+            prompt: message.text,
+            models: message.models,
+            concurrency: message.concurrency,
+            agent: message.agent,
+            variant: message.variant,
+            files: resolved.files,
+            receiptItems: resolved.receiptItems,
+          })
+          await this.clearMultiModelComposer(message.sessionID, resolved.composerPayload, message.contextIDs ?? [])
+          break
+        }
         case "send":
           this.requireSelected(message.sessionID)
           const composerPayload = this.composerPayloads.get(message.sessionID) ?? { revision: 0, attachments: [], pastedText: [] }
@@ -1419,9 +1511,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "navigateBack":
           await vscode.commands.executeCommand("workbench.action.navigateBack")
           break
+        case "markAttentionRead": {
+          const items = this.snapshot().attentionItems ?? []
+          this.workbench.attentionRead?.markRead(items)
+          this.queueFullUpdate()
+          await this.postTo(source, { type: "snapshot", snapshot: this.snapshot() })
+          break
+        }
         case "loadOlderHistory":
           this.requireSelected(message.sessionID)
-          await this.postTo(source, { type: "historyPage", page: this.controller!.historyPage(message.sessionID, message.beforeMessageID) })
+          await this.postTo(source, { type: "historyPage", page: await this.controller!.loadHistoryPage(message.sessionID, message.beforeMessageID) })
           break
         case "refresh":
           if (!this.controller) throw new Error("Open a folder to refresh OpenCode")
@@ -1498,11 +1597,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }] : [])
     const baseAttention = decorated.attentionItems ?? []
     const supplementalLimit = Math.max(0, 500 - baseAttention.length)
-    const attentionItems = [...baseAttention, ...[...runAttention, ...standaloneWorktreeAttention]
+    const projectedAttention = [...baseAttention, ...[...runAttention, ...standaloneWorktreeAttention]
       .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
       .slice(0, supplementalLimit)]
       .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
       .slice(0, 500)
+    const attentionItems = this.workbench.attentionRead?.unread(projectedAttention) ?? projectedAttention
     const pins = new Set(this.workbench.sessionPresentation?.list().map((entry) => entry.sessionID) ?? [])
     const runBySession = new Map(runGroups.flatMap((group) => group.runs.flatMap((run) => run.session.sessionID === "pending" ? [] : [[run.session.sessionID, { group, run }] as const])))
     const worktreeByID = new Map(worktrees.map((entry) => [entry.id, entry]))
