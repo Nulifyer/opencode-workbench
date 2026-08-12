@@ -1,5 +1,4 @@
-import type { WorkbenchState } from "@opencode-workbench/shared"
-import type { ControllerUpdate } from "./session-controller.js"
+import type { SessionLifecycleState, SettlementReason, WorkbenchState } from "@opencode-workbench/shared"
 
 export type OpenCodeReloadReason = "skill-activation" | "configuration-change"
 
@@ -17,8 +16,12 @@ export interface ReloadRequestReceipt {
 
 interface ReloadController {
   readonly snapshot: WorkbenchState
-  subscribe(listener: (update: ControllerUpdate) => void): { dispose(): void }
   setPromptAdmissionPaused(paused: boolean): void
+  waitForSettlement(
+    sessionID: string,
+    signal?: AbortSignal,
+    ignoredReasons?: readonly SettlementReason[],
+  ): Promise<SessionLifecycleState>
 }
 
 export interface DeferredReloadOptions {
@@ -28,35 +31,14 @@ export interface DeferredReloadOptions {
   failed?(request: OpenCodeReloadRequest, error: unknown): void
 }
 
-function eventSessionID(update: ControllerUpdate): string | undefined {
-  if (update.type !== "event") return undefined
-  const properties = update.event.properties
-  if (typeof properties.sessionID === "string") return properties.sessionID
-  const info = properties.info
-  return typeof info === "object" && info !== null && "sessionID" in info && typeof info.sessionID === "string"
-    ? info.sessionID
-    : undefined
-}
-
-function terminalUpdate(update: ControllerUpdate, sessionID: string): boolean {
-  if (update.type !== "event" || eventSessionID(update) !== sessionID) return false
-  if (update.event.type === "session.idle" || update.event.type === "session.error") return true
-  const status = update.event.properties.status
-  return update.event.type === "session.status" && typeof status === "object" && status !== null && "type" in status &&
-    (status.type === "idle" || status.type === "error")
-}
-
 export class DeferredOpenCodeReload {
-  private readonly subscription: { dispose(): void }
   private pending?: OpenCodeReloadRequest
   private pendingIdleSessionID?: string
   private running?: OpenCodeReloadRequest
-  private timeout?: NodeJS.Timeout
+  private settlementCancellation?: AbortController
   private disposed = false
 
-  constructor(private readonly controller: ReloadController, private readonly options: DeferredReloadOptions) {
-    this.subscription = controller.subscribe((update) => this.update(update))
-  }
+  constructor(private readonly controller: ReloadController, private readonly options: DeferredReloadOptions) {}
 
   request(request: OpenCodeReloadRequest): ReloadRequestReceipt {
     if (this.disposed) throw new Error("OpenCode reload coordinator is unavailable")
@@ -87,26 +69,32 @@ export class DeferredOpenCodeReload {
     this.pendingIdleSessionID = idleSessionID
     this.controller.setPromptAdmissionPaused(true)
     const timeoutMilliseconds = this.options.timeoutMilliseconds ?? 5 * 60_000
-    this.timeout = setTimeout(() => {
-      if (this.pending !== request) return
-      this.pending = undefined
-      this.pendingIdleSessionID = undefined
-      this.timeout = undefined
-      this.controller.setPromptAdmissionPaused(false)
-      this.options.failed?.(request, new Error("Timed out waiting for OpenCode session to become idle"))
-    }, timeoutMilliseconds)
+    const cancellation = new AbortController()
+    this.settlementCancellation = cancellation
+    const timeout = setTimeout(
+      () => cancellation.abort(new Error("Timed out waiting for OpenCode session to settle")),
+      timeoutMilliseconds,
+    )
+    void this.controller.waitForSettlement(idleSessionID, cancellation.signal, ["QUEUED_PROMPT"])
+      .then(() => {
+        if (this.pending !== request || this.settlementCancellation !== cancellation) return
+        this.pending = undefined
+        this.pendingIdleSessionID = undefined
+        this.settlementCancellation = undefined
+        clearTimeout(timeout)
+        this.running = request
+        void this.execute(request)
+      })
+      .catch((error) => {
+        if (this.pending !== request || this.settlementCancellation !== cancellation) return
+        this.pending = undefined
+        this.pendingIdleSessionID = undefined
+        this.settlementCancellation = undefined
+        clearTimeout(timeout)
+        this.controller.setPromptAdmissionPaused(false)
+        this.options.failed?.(request, error)
+      })
     return { scheduled: true, when: "session-idle", sessionID: request.sessionID }
-  }
-
-  private update(update: ControllerUpdate): void {
-    const request = this.pending
-    if (!request || !this.pendingIdleSessionID || !terminalUpdate(update, this.pendingIdleSessionID)) return
-    this.pending = undefined
-    this.pendingIdleSessionID = undefined
-    if (this.timeout) clearTimeout(this.timeout)
-    this.timeout = undefined
-    this.running = request
-    void this.execute(request)
   }
 
   private async execute(request: OpenCodeReloadRequest): Promise<void> {
@@ -123,9 +111,8 @@ export class DeferredOpenCodeReload {
 
   dispose(): void {
     this.disposed = true
-    this.subscription.dispose()
-    if (this.timeout) clearTimeout(this.timeout)
-    this.timeout = undefined
+    this.settlementCancellation?.abort(new Error("OpenCode reload coordinator was disposed"))
+    this.settlementCancellation = undefined
     this.pending = undefined
     this.pendingIdleSessionID = undefined
     this.controller.setPromptAdmissionPaused(false)

@@ -11,9 +11,15 @@ export interface ScrollViewport {
 }
 
 export class ScrollController {
+  private followingLatest = true
+
   constructor(private readonly container: HTMLElement, private readonly threshold = 80) {}
   nearBottom(): boolean {
     return this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < this.threshold
+  }
+  observeScroll(): boolean {
+    this.followingLatest = this.nearBottom()
+    return this.followingLatest
   }
   capturePrependAnchor(preferred?: HTMLElement): ScrollAnchor | undefined {
     const node = preferred ?? this.container.firstElementChild
@@ -43,9 +49,19 @@ export class ScrollController {
     return { atBottom: this.nearBottom(), scrollTop: this.container.scrollTop }
   }
   restoreViewport(viewport: ScrollViewport): void {
+    this.followingLatest = viewport.atBottom
     this.container.scrollTop = viewport.atBottom ? this.container.scrollHeight : Math.max(0, viewport.scrollTop)
   }
   latest(): void {
+    this.followingLatest = true
     this.container.scrollTop = this.container.scrollHeight
+  }
+  maintainLatest(): boolean {
+    if (!this.followingLatest) return false
+    this.container.scrollTop = this.container.scrollHeight
+    return true
+  }
+  setFollowingLatest(value: boolean): void {
+    this.followingLatest = value
   }
 }

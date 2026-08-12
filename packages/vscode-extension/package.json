@@ -494,14 +494,16 @@
   "scripts": {
     "build": "deno run -A ../../scripts/build.ts",
     "check": "tsc --noEmit",
-    "test": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 --ignore=test/opencode_integration_test.ts test",
+    "test": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 --ignore=test/opencode_integration_test.ts --ignore=test/e2e test",
     "test:integration:synthetic": "deno task --cwd=../.. test:integration:synthetic",
     "test:integration:real": "deno task --cwd=../.. build && deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 test/opencode_integration_test.ts",
-    "test:stress": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 test/ordered-event-bus_test.ts test/latest-update-pump_test.ts test/event_pipeline_stress_test.ts"
+    "test:stress": "deno test --sloppy-imports --allow-env --allow-read --allow-write --allow-sys --allow-run --allow-net=127.0.0.1 test/ordered-event-bus_test.ts test/latest-update-pump_test.ts test/event_pipeline_stress_test.ts",
+    "test:vscode:e2e": "deno task --cwd=../.. test:vscode:e2e"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
     "@types/vscode": "1.106.0",
+    "@vscode/test-electron": "2.5.2",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   }

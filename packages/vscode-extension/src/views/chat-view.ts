@@ -36,7 +36,11 @@ import type { ContextReceiptService } from "../application/context-service.js"
 import type { MultiRunOrchestrator, RunGroupService } from "../application/run-group-service.js"
 import type { WalkthroughService } from "../application/walkthrough-service.js"
 import type { WorktreeService } from "../application/worktree-service.js"
-import { type ProtocolObservation, WebviewProtocolHost } from "../protocol/webview-protocol-host.js"
+import {
+  type ProtocolDispatchContext,
+  type ProtocolObservation,
+  WebviewProtocolHost,
+} from "../protocol/webview-protocol-host.js"
 import { dataUrlPayload, receiptHash } from "../application/context-receipt-builders.js"
 import { projectChatSnapshotForWebview } from "../application/webview-snapshot-projector.js"
 import type { EvidenceService } from "../application/evidence-service.js"
@@ -192,14 +196,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   ) {
     this.knownSessionIDs = new Set(Object.keys(controller?.snapshot.sessions ?? {}))
     this.lastConnected = controller?.snapshot.connected ?? false
-    this.protocol = new WebviewProtocolHost({
+    this.protocol = new WebviewProtocolHost<HostToWebviewMessage[], WebviewToHostMessage, HostToWebviewMessage>({
       state: () => this.initialMessages(),
       runtime: () => this.runtimeDescriptor(),
       parseInbound: parseWebviewMessage,
-      dispatch: async (surfaceID, message) => {
+      dispatch: async (surfaceID, message, context) => {
         const source = [...this.surfaceIDs].find(([, id]) => id === surfaceID)?.[0]
         if (!source) throw new Error("The Workbench surface was disposed")
-        await this.handleMessage(message, source, true)
+        await this.handleMessage(message, source, true, context)
       },
       requiredCapability: (message) => this.requiredCapability(message),
       eventDisposition: (message) =>
@@ -1231,7 +1235,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
-  private async handleMessage(raw: unknown, source: vscode.Webview, rethrow = false): Promise<void> {
+  private async handleMessage(
+    raw: unknown,
+    source: vscode.Webview,
+    rethrow = false,
+    context?: ProtocolDispatchContext,
+  ): Promise<void> {
     const message = parseWebviewMessage(raw)
     if (!message) {
       await this.postTo(source, { type: "error", message: "Ignored an invalid webview message" })
@@ -1661,6 +1670,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
               this.controller!.mentionedAgents(message.text),
               promptID,
               message.delivery,
+              context?.signal,
             )
           } catch (error) {
             this.contextReceipts?.reject(promptID)
@@ -1839,15 +1849,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           break
         case "abort":
           this.requireSelected(message.sessionID)
-          await this.controller!.abortSelected()
+          await this.controller!.abortSelected(context?.signal)
           break
         case "planTask":
           await vscode.commands.executeCommand("opencodeWorkbench.planTask")
           break
         case "createSession":
           if (!this.controller) throw new Error("Open a folder to create a session")
-          if (message.submit) await this.controller.createSessionWithPrompt(message.draft!)
-          else await this.controller.createSession(undefined, message.draft)
+          if (message.submit) await this.controller.createSessionWithPrompt(message.draft!, context?.signal)
+          else await this.controller.createSession(undefined, message.draft, context?.signal)
           break
         case "selectSession":
           if (!this.controller || !Object.hasOwn(this.controller.snapshot.sessions, message.sessionID)) {

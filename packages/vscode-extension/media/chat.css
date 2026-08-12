@@ -1267,6 +1267,15 @@ a {
 .tool-detail .code-block {
   margin: 0;
 }
+.tool-detail-compact {
+  gap: 5px;
+}
+.tool-result-summary {
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .tool-properties {
   display: grid;
   gap: 5px;

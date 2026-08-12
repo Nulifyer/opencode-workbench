@@ -235,6 +235,30 @@ Deno.test("summarizes reasoning and tool presentation", () => {
     }),
     "goal",
   )
+  assertEquals(
+    toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "vscode_get_active_buffer" }),
+    "vscodeContext",
+  )
+  assertEquals(
+    toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "vscode_get_references" }),
+    "vscodeLanguage",
+  )
+  assertEquals(
+    toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "vscode_run_task" }),
+    "vscodeAction",
+  )
+  assertEquals(
+    toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "memory_propose" }),
+    "memory",
+  )
+  assertEquals(
+    toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "skill_candidate_approve" }),
+    "skillCandidate",
+  )
+  assertEquals(
+    toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "document_extract" }),
+    "document",
+  )
 })
 
 Deno.test("turns todo tool input and output into a single human-readable list", () => {

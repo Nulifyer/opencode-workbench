@@ -384,6 +384,8 @@ Deno.test("turn navigation follows the compact Codex prompt-rail interaction", (
       "activeBottom",
       "scheduleVisibleTurnMarkerSync",
       "scheduleConversationScrollSync",
+      "const atLatest = transcriptNearBottom()",
+      "const first = atLatest ? buttons.at(-1) : visibleButtons[0]",
       "scheduleViewportLayout",
       "requestAnimationFrame",
       "data-marker-label",
@@ -392,6 +394,10 @@ Deno.test("turn navigation follows the compact Codex prompt-rail interaction", (
   ) {
     if (!webview.includes(marker)) throw new Error(`Conversation turn rail behavior omits ${marker}`)
   }
+  if (
+    !webview.includes("conversationView.jumpToLatest()") ||
+    !webview.includes("const followedLatest = conversationView.maintainLatest()")
+  ) throw new Error("Explicit sends and followed layout changes do not stay at the latest turn")
   if (
     !webview.includes("messages.scrollHeight > messages.clientHeight + 1") ||
     !webview.includes("syncTurnNavigationVisibility(session)")
@@ -1406,14 +1412,20 @@ Deno.test("activity wording follows actual state", () => {
   }
 })
 
-Deno.test("shell and structured tool details use labeled sections", () => {
+Deno.test("tool details are category-specific and omit transport debug metadata", () => {
   if (
     !webview.includes('class="code-block shell-block shell-${kind}"') ||
     !webview.includes("stripTerminalSequences(content)") ||
     !webview.includes("shellOutputWithoutCommandEcho(command, stringify(state.output))") ||
     !webview.includes('class="activity activity-static tool-${escapeHtml(state)}"') ||
     !webview.includes("presentedTodos(part)") ||
-    !webview.includes("Technical details") ||
+    !webview.includes("CHAT_DEBUG_FIELDS") ||
+    !webview.includes("vscodeDetailBody") ||
+    !webview.includes("memoryDetailBody") ||
+    !webview.includes("Editor context captured") ||
+    !webview.includes('detailFieldsForChat(input, ["description", "subagent_type", "agent", "model"])') ||
+    webview.includes("<summary>Full prompt</summary>") ||
+    webview.includes("<summary>Technical details</summary>") ||
     !css.includes(".activity-static {") || !css.includes(".tool-todo-list")
   ) {
     throw new Error(
@@ -1425,5 +1437,8 @@ Deno.test("shell and structured tool details use labeled sections", () => {
   }
   if (webview.includes('${shellBlock(command, "command")}${output}${error}')) {
     throw new Error("Expanded shell details still repeat the command from the activity summary")
+  }
+  for (const field of ["timeoutMilliseconds", "maxCharacters", "requestID", "expectedGeneration"]) {
+    if (!webview.includes(`\"${field}\"`)) throw new Error(`Chat debug-field policy omits ${field}`)
   }
 })

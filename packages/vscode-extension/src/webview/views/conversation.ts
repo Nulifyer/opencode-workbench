@@ -239,9 +239,18 @@ export class ConversationView {
   }
 
   handleScroll(): void {
-    if (this.nearBottom()) this.unseenMessages = 0
+    if (this.scroll.observeScroll()) this.unseenMessages = 0
     if (this.renderedSessionID) this.sessionViewports.set(this.renderedSessionID, this.scroll.captureViewport())
     this.updateJumpLatest()
+  }
+
+  maintainLatest(): boolean {
+    const followed = this.scroll.maintainLatest()
+    if (!followed) return false
+    this.unseenMessages = 0
+    if (this.renderedSessionID) this.sessionViewports.set(this.renderedSessionID, this.scroll.captureViewport())
+    this.updateJumpLatest()
+    return true
   }
 
   render(session: Session, active: boolean, forcedPrependAnchor?: ScrollAnchor): void {
@@ -253,6 +262,7 @@ export class ConversationView {
       this.renderedSessionID = session.id
     }
     const nearBottom = restoredViewport?.atBottom ?? this.nearBottom()
+    this.scroll.setFollowingLatest(nearBottom)
     const prependAnchor = forcedPrependAnchor ?? (!nearBottom ? this.scroll.capturePrependAnchor() : undefined)
     const projectedTurns = projectConversationTurnsWithCache(session, active, this.classifications)
     const expectedMessages = new Set<string>()

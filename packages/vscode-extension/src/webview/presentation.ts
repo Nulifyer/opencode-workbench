@@ -768,6 +768,12 @@ export type ToolKind =
   | "lsp"
   | "goal"
   | "question"
+  | "vscodeContext"
+  | "vscodeLanguage"
+  | "vscodeAction"
+  | "memory"
+  | "skillCandidate"
+  | "document"
   | "unknown"
 
 export function toolKind(part: MessagePart): ToolKind {
@@ -777,11 +783,34 @@ export function toolKind(part: MessagePart): ToolKind {
   if (["bash", "shell", "terminal"].includes(name)) return "bash"
   if (["apply_patch", "edit", "write"].includes(name)) return "edit"
   if (["todowrite", "todo_write", "todoread", "todo_read"].includes(name)) return "todo"
-  if (name === "task" || name.endsWith("_task")) return "task"
   if (["webfetch", "websearch", "web_fetch", "web_search"].includes(name)) return "web"
   if (name === "lsp" || name.startsWith("lsp_")) return "lsp"
   if (name.includes("goal")) return "goal"
   if (name === "question" || name.endsWith("_question")) return "question"
+  if (
+    [
+      "vscode_list_open_editors",
+      "vscode_get_selection",
+      "vscode_get_active_buffer",
+      "vscode_get_diagnostics",
+      "vscode_get_debug_context",
+      "vscode_list_tasks",
+    ].includes(name)
+  ) return "vscodeContext"
+  if (
+    [
+      "vscode_get_definitions",
+      "vscode_get_references",
+      "vscode_get_symbols",
+      "vscode_get_code_actions",
+      "vscode_preview_rename",
+    ].includes(name)
+  ) return "vscodeLanguage"
+  if (name.startsWith("vscode_")) return "vscodeAction"
+  if (name.startsWith("memory_")) return "memory"
+  if (name.startsWith("skill_candidate_")) return "skillCandidate"
+  if (name === "document_extract" || name.startsWith("document_")) return "document"
+  if (name === "task" || name.endsWith("_task")) return "task"
   if (name.includes("patch")) return "patch"
   return "unknown"
 }

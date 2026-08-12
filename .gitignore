@@ -1,4 +1,5 @@
 node_modules/
+.vscode-test/
 dist/
 packages/*/dist/
 packages/vscode-extension/media/chat.js

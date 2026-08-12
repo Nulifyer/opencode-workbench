@@ -25,7 +25,9 @@ import type {
   RuntimeService,
   RuntimeStatus,
   SessionInfo,
+  SessionLifecycleState,
   SessionStatus,
+  SettlementReason,
   TodoItem,
   TranscriptHistoryPage,
   WorkbenchState,
@@ -619,6 +621,25 @@ export class SessionController {
     return this.repository.subscribe(listener)
   }
 
+  settlementSnapshot(sessionID: string): SessionLifecycleState | undefined {
+    const session = this.state.sessions[sessionID]
+    if (!session) return undefined
+    return this.settlements.project(sessionID, {
+      connected: this.state.connected,
+      session,
+      retryPending: this.retryingSessions.has(sessionID),
+    })
+  }
+
+  waitForSettlement(
+    sessionID: string,
+    signal?: AbortSignal,
+    ignoredReasons: readonly SettlementReason[] = [],
+  ): Promise<SessionLifecycleState> {
+    if (!this.settlementSnapshot(sessionID)) return Promise.reject(new Error("Unknown OpenCode session"))
+    return this.settlements.waitForSettlement(sessionID, signal, ignoredReasons)
+  }
+
   start(): void {
     if (this.disposed) return
     this.connectionCoordinator.start()
@@ -665,6 +686,30 @@ export class SessionController {
 
   private dispatch(action: ControllerUpdate): void {
     this.repository.dispatch(action)
+    if (action.type === "reconcile" || action.type === "connected") {
+      for (const sessionID of this.state.order) this.settlementSnapshot(sessionID)
+      return
+    }
+    const sessionID = action.type === "event"
+      ? this.eventSessionID(action.event)
+      : "sessionID" in action
+      ? action.sessionID
+      : undefined
+    if (sessionID) this.settlementSnapshot(sessionID)
+  }
+
+  private eventSessionID(event: OpenCodeEvent): string | undefined {
+    const info = event.properties.info
+    const part = event.properties.part
+    return typeof event.properties.sessionID === "string"
+      ? event.properties.sessionID
+      : record(info) && typeof info.sessionID === "string"
+      ? info.sessionID
+      : record(info) && typeof info.id === "string" && event.type.startsWith("session.")
+      ? info.id
+      : record(part) && typeof part.sessionID === "string"
+      ? part.sessionID
+      : undefined
   }
 
   private scheduleSessionListRefresh(sessionID?: string): void {
@@ -1289,9 +1334,9 @@ export class SessionController {
     }
   }
 
-  async createSession(title?: string, draft?: string): Promise<string> {
+  async createSession(title?: string, draft?: string, signal?: AbortSignal): Promise<string> {
     const intent = ++this.selectionIntent
-    const session = await this.client.createSession(title)
+    const session = await this.client.createSession(title, signal)
     this.sessionRevision += 1
     this.dispatch({ type: "event", event: { type: "session.created", properties: { info: session } } })
     if (draft) this.updateDraft(session.id, draft)
@@ -1299,14 +1344,14 @@ export class SessionController {
     return session.id
   }
 
-  async createSessionWithPrompt(text: string): Promise<string> {
+  async createSessionWithPrompt(text: string, signal?: AbortSignal): Promise<string> {
     if (!text.trim() || text.length > PROMPT_TEXT_CHARACTER_LIMIT) throw new Error("Prompt must contain text")
-    const sessionID = await this.createSession(undefined, text)
+    const sessionID = await this.createSession(undefined, text, signal)
     if (this.state.selectedID !== sessionID) {
       throw new Error("Session selection changed while creating the conversation")
     }
     const composer = this.chatSnapshot().session
-    await this.send(text, composer?.agent, composer?.model, composer?.variant)
+    await this.send(text, composer?.agent, composer?.model, composer?.variant, [], [], undefined, "queue", signal)
     return sessionID
   }
 
@@ -1441,6 +1486,7 @@ export class SessionController {
       throw error
     } finally {
       this.retryingSessions.delete(sessionID)
+      this.settlementSnapshot(sessionID)
     }
   }
 
@@ -1814,6 +1860,7 @@ export class SessionController {
     mentionedAgents: string[] = [],
     promptID?: string,
     delivery: "queue" | "steer" | "replace" = "queue",
+    signal?: AbortSignal,
   ): Promise<void> {
     let sessionID = this.state.selectedID
     if (!sessionID) throw new Error("Create or select a session first")
@@ -1823,7 +1870,19 @@ export class SessionController {
         sessionID = await this.recoverUnsafeLegacySession(sessionID, agent, model, true)
       }
     }
-    await this.sendToSession(sessionID, text, agent, model, variant, files, mentionedAgents, promptID, true, delivery)
+    await this.sendToSession(
+      sessionID,
+      text,
+      agent,
+      model,
+      variant,
+      files,
+      mentionedAgents,
+      promptID,
+      true,
+      delivery,
+      signal,
+    )
   }
 
   private async sendToSession(
@@ -1837,6 +1896,7 @@ export class SessionController {
     promptID = createOpenCodeMessageID(),
     clearDraft = true,
     delivery: "queue" | "steer" | "replace" = "queue",
+    signal?: AbortSignal,
   ): Promise<void> {
     if (this.promptAdmissionPaused) {
       throw new Error("OpenCode is waiting to reload; send another prompt after reconnecting")
@@ -1892,7 +1952,7 @@ export class SessionController {
     if (active && delivery === "steer" && /^\/[A-Za-z0-9._-]+(?:\s|$)/.test(text.trimStart())) {
       throw new Error("Slash commands cannot steer a busy OpenCode session")
     }
-    if (active && delivery === "replace") await this.abortSession(sessionID)
+    if (active && delivery === "replace") await this.abortSession(sessionID, signal)
     const originalDraft = session.draft
     this.dispatch({ type: "preference", sessionID, agent, model, variant })
     if (clearDraft) this.updateDraft(sessionID, "")
@@ -1914,7 +1974,7 @@ export class SessionController {
     })
     if (delivery === "steer" || delivery === "replace") this.steeringPrompts.add(promptID)
     try {
-      await this.drainQueue(sessionID)
+      await this.drainQueue(sessionID, signal)
     } catch (error) {
       if (clearDraft && this.state.sessions[sessionID]?.draft === "") this.updateDraft(sessionID, originalDraft)
       throw error
@@ -1977,6 +2037,7 @@ export class SessionController {
 
   private cleanupSession(sessionID: string): void {
     this.cancelSettlementProbe(sessionID)
+    this.settlements.remove(sessionID)
     const session = this.state.sessions[sessionID]
     if (this.rootSessionID(sessionID) === sessionID) this.permissionGrants.delete(sessionID)
     for (const prompt of session?.queue ?? []) this.promptFiles.delete(prompt.id)
@@ -2016,7 +2077,7 @@ export class SessionController {
     this.transcriptRefreshTimers.delete(sessionID)
   }
 
-  private async drainQueue(sessionID: string): Promise<void> {
+  private async drainQueue(sessionID: string, signal?: AbortSignal): Promise<void> {
     if (this.promptAdmissionPaused) return
     if (this.drainingQueues.has(sessionID)) return
     const session = this.state.sessions[sessionID]
@@ -2058,6 +2119,7 @@ export class SessionController {
           prompt.variant,
           this.promptFiles.get(prompt.id) ?? [],
           prompt.id,
+          signal,
         )
       } else {
         const files = this.promptFiles.get(prompt.id) ?? []
@@ -2084,6 +2146,7 @@ export class SessionController {
               prompt.variant,
               files,
               admittedMessageID,
+              signal,
             )
           } else {
             const admission = await this.client.sendPrompt(
@@ -2096,6 +2159,7 @@ export class SessionController {
               prompt.variant,
               files,
               this.promptAgents.get(prompt.id) ?? [],
+              signal,
             )
             // Test doubles predating admission receipts may return undefined;
             // the real OpenCodeClient rejects any missing or mismatched receipt.
@@ -2192,14 +2256,14 @@ export class SessionController {
     }
   }
 
-  async abortSelected(): Promise<void> {
+  async abortSelected(signal?: AbortSignal): Promise<void> {
     const sessionID = this.state.selectedID
     if (!sessionID) return
-    await this.abortSession(sessionID)
+    await this.abortSession(sessionID, signal)
   }
 
-  private async abortSession(sessionID: string): Promise<void> {
-    const accepted = await this.client.abort(sessionID)
+  private async abortSession(sessionID: string, signal?: AbortSignal): Promise<void> {
+    const accepted = await this.client.abort(sessionID, signal)
     if (!accepted) throw new Error("OpenCode did not accept the stop request")
     this.cancelSettlementProbe(sessionID)
     this.statusRevision += 1

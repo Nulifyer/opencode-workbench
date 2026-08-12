@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["node", "vscode"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "test/e2e/**/*.ts"]
 }

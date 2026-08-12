@@ -636,6 +636,162 @@ function detailFields(value: UnknownRecord, excluded: ReadonlySet<string> = new 
     : ""
 }
 
+const CHAT_DEBUG_FIELDS = new Set([
+  "timeout",
+  "timeoutMilliseconds",
+  "maxCharacters",
+  "maxChars",
+  "limit",
+  "offset",
+  "preview",
+  "scope",
+  "extractImages",
+  "engine",
+  "requestID",
+  "mutationID",
+  "expectedGeneration",
+  "expectedSettlementGeneration",
+])
+
+function detailFieldsForChat(value: UnknownRecord, visible: readonly string[]): string {
+  const allowed = new Set(visible)
+  const fields = Object.fromEntries(
+    Object.entries(value).filter(([key]) => allowed.has(key) && !CHAT_DEBUG_FIELDS.has(key)),
+  )
+  return detailFields(fields)
+}
+
+function conciseResultHtml(value: unknown, label: string): string {
+  const structured = structuredDisplayValue(value)
+  if (structured === undefined || structured === null || structured === "") return ""
+  if (Array.isArray(structured)) {
+    return `<p class="tool-result-summary">${structured.length.toLocaleString()} ${escapeHtml(label)}${
+      structured.length === 1 ? "" : "s"
+    }</p>`
+  }
+  if (record(structured)) {
+    const entries = Object.entries(structured)
+    if (!entries.length) return ""
+    return `<p class="tool-result-summary">${entries.length.toLocaleString()} ${escapeHtml(label)}${
+      entries.length === 1 ? "" : "s"
+    }</p>`
+  }
+  if (typeof structured === "string") {
+    const trimmed = structured.trim()
+    if (!trimmed || trimmed === "null") return ""
+    return `<p class="tool-result-summary">${escapeHtml(trimmed.slice(0, 240))}${trimmed.length > 240 ? "…" : ""}</p>`
+  }
+  return `<p class="tool-result-summary">${escapeHtml(String(structured))}</p>`
+}
+
+function conciseReadResultHtml(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return ""
+  const lines = value.split(/\r?\n/).length
+  return `<p class="tool-result-summary">Read ${lines.toLocaleString()} line${lines === 1 ? "" : "s"}</p>`
+}
+
+function ordinaryToolDetailBody(part: MessagePart, state: UnknownRecord, input?: UnknownRecord): string | undefined {
+  const kind = toolKind(part)
+  const name = (part.tool ?? "").toLowerCase()
+  const error = state.error === undefined || state.error === ""
+    ? ""
+    : codeBlock(stringify(state.error), "Error", "tool-error-block")
+  if (kind === "skill") return error
+  if (kind === "explore") {
+    const visible = name === "read" ? ["filePath"] : ["path", "pattern", "query", "include"]
+    const request = input ? detailFieldsForChat(input, visible) : ""
+    const result = name === "read" ? conciseReadResultHtml(state.output) : conciseResultHtml(state.output, "result")
+    return `${request}${result}${error}`
+  }
+  if (kind === "web") {
+    const request = input ? detailFieldsForChat(input, ["url", "query", "format"]) : ""
+    return `${request}${conciseResultHtml(state.output, "result")}${error}`
+  }
+  if (kind === "lsp") {
+    const request = input ? detailFieldsForChat(input, ["uri", "filePath", "line", "column"]) : ""
+    return `${request}${conciseResultHtml(state.output, "result")}${error}`
+  }
+  if (kind === "document") {
+    const request = input ? detailFieldsForChat(input, ["filePath"]) : ""
+    return `${request}${conciseResultHtml(state.output, "result")}${error}`
+  }
+  return undefined
+}
+
+function vscodeDetailBody(part: MessagePart, state: UnknownRecord, input?: UnknownRecord): string {
+  const name = (part.tool ?? "").toLowerCase()
+  const kind = toolKind(part)
+  const errors = state.error === undefined || state.error === ""
+    ? ""
+    : codeBlock(stringify(state.error), "Error", "tool-error-block")
+  if (kind === "vscodeContext") {
+    const visible = name === "vscode_get_diagnostics" ? ["uri"] : []
+    const request = input ? detailFieldsForChat(input, visible) : ""
+    const result = name === "vscode_get_active_buffer"
+      ? state.output === undefined || state.output === null
+        ? ""
+        : `<p class="tool-result-summary">Editor context captured</p>`
+      : name === "vscode_get_selection"
+      ? state.output === undefined || state.output === null
+        ? ""
+        : `<p class="tool-result-summary">Selection captured</p>`
+      : name === "vscode_get_debug_context"
+      ? state.output === undefined || state.output === null
+        ? ""
+        : `<p class="tool-result-summary">Debug context captured</p>`
+      : conciseResultHtml(
+        state.output,
+        name.includes("diagnostics") ? "diagnostic" : name.includes("tasks") ? "task" : "editor",
+      )
+    return `${request}${result}${errors}`
+  }
+  if (kind === "vscodeLanguage") {
+    const visible = name === "vscode_preview_rename"
+      ? ["uri", "line", "column", "newName"]
+      : name === "vscode_get_code_actions"
+      ? ["uri", "startLine", "endLine"]
+      : ["uri", "line", "column"]
+    const request = input ? detailFieldsForChat(input, visible) : ""
+    const result = conciseResultHtml(state.output, name.includes("symbols") ? "symbol" : "result")
+    return `${request}${result}${errors}`
+  }
+  const visible = name === "vscode_execute_terminal"
+    ? ["executable", "args"]
+    : name === "vscode_run_task"
+    ? ["name", "source"]
+    : name === "vscode_open_file"
+    ? ["path", "line", "column"]
+    : name === "vscode_open_url"
+    ? ["url"]
+    : name === "vscode_request_opencode_reload"
+    ? ["reason"]
+    : []
+  const request = input ? detailFieldsForChat(input, visible) : ""
+  const result = errors || !["vscode_execute_terminal", "vscode_run_task"].includes(name)
+    ? ""
+    : conciseResultHtml(state.output, "result")
+  return `${request}${result}${errors}`
+}
+
+function memoryDetailBody(part: MessagePart, state: UnknownRecord, input?: UnknownRecord): string {
+  const name = (part.tool ?? "").toLowerCase()
+  const visible = name === "memory_propose"
+    ? ["scope", "category", "key", "value"]
+    : name === "memory_approve"
+    ? ["decision"]
+    : name === "skill_candidate_propose"
+    ? ["scope", "name", "rationale"]
+    : name.endsWith("_list")
+    ? ["query", "category", "status", "scope"]
+    : []
+  const request = input ? detailFieldsForChat(input, visible) : ""
+  const result = conciseResultHtml(state.output, name.endsWith("_list") ? "record" : "result")
+  const error = state.error === undefined || state.error === ""
+    ? ""
+    : codeBlock(stringify(state.error), "Error", "tool-error-block")
+  return `${request}${result}${error}`
+}
+
 function todoDetailBody(part: MessagePart): string {
   const todos = presentedTodos(part)
   if (!todos.length) return ""
@@ -678,6 +834,19 @@ function detailBody(part: MessagePart): string {
     if (todos) return todos
   }
   const input = record(state.input) ? state.input : undefined
+  const kind = toolKind(part)
+  const ordinary = ordinaryToolDetailBody(part, state, input)
+  if (ordinary !== undefined) {
+    return ordinary ? `<div class="tool-detail tool-detail-compact">${ordinary}</div>` : ""
+  }
+  if (["vscodeContext", "vscodeLanguage", "vscodeAction"].includes(kind)) {
+    const body = vscodeDetailBody(part, state, input)
+    return body ? `<div class="tool-detail tool-detail-compact">${body}</div>` : ""
+  }
+  if (kind === "memory" || kind === "skillCandidate") {
+    const body = memoryDetailBody(part, state, input)
+    return body ? `<div class="tool-detail tool-detail-compact">${body}</div>` : ""
+  }
   const command = toolKind(part) === "bash" && typeof input?.command === "string" ? input.command : undefined
   if (command) {
     const outputText = state.output === undefined || state.output === ""
@@ -689,7 +858,7 @@ function detailBody(part: MessagePart): string {
     return body ? `<div class="tool-detail shell-detail">${body}</div>` : ""
   }
   const inputBody = input
-    ? detailFields(input)
+    ? detailFields(input, CHAT_DEBUG_FIELDS)
     : state.input === undefined
     ? ""
     : `<section class="tool-value-section"><h4>Request</h4>${friendlyValueHtml(state.input)}</section>`
@@ -704,12 +873,7 @@ function detailBody(part: MessagePart): string {
   const error = state.error === undefined || state.error === ""
     ? ""
     : codeBlock(stringify(state.error), "Error", "tool-error-block")
-  const metadata = state.metadata === undefined || toolKind(part) !== "unknown"
-    ? ""
-    : `<details class="tool-metadata"><summary>Technical details</summary>${
-      friendlyValueHtml(state.metadata)
-    }</details>`
-  const body = `${inputBody}${output}${error}${metadata}`
+  const body = `${inputBody}${output}${error}`
   return body ? `<div class="tool-detail">${body}</div>` : ""
 }
 
@@ -717,7 +881,8 @@ function toolSubject(part: MessagePart): string {
   const state = stateRecord(part)
   const input = record(state?.input) ? state.input : undefined
   const metadata = record(state?.metadata) ? state.metadata : undefined
-  const subject = input?.filePath ?? input?.path ?? input?.pattern ?? input?.name ?? metadata?.name ?? part.state?.title
+  const subject = input?.filePath ?? input?.path ?? input?.uri ?? input?.pattern ?? input?.name ?? input?.query ??
+    input?.reason ?? metadata?.name ?? part.state?.title
   return typeof subject === "string" ? subject : ""
 }
 
@@ -765,6 +930,64 @@ function toolLabel(part: MessagePart, state = String(part.state?.status || "pend
       : stateful("Updating goal", "Updated goal", "Failed to update goal", "Stopped updating goal")
   } else if (kind === "question") {
     label = stateful("Asking question", "Asked question", "Question failed", "Stopped question")
+  } else if (kind === "vscodeContext") {
+    const action = name === "vscode_get_active_buffer"
+      ? "active editor context"
+      : name === "vscode_get_selection"
+      ? "editor selection"
+      : name === "vscode_list_open_editors"
+      ? "open editors"
+      : name === "vscode_get_diagnostics"
+      ? "diagnostics"
+      : name === "vscode_get_debug_context"
+      ? "debug context"
+      : "VS Code tasks"
+    label = stateful(`Reading ${action}`, `Read ${action}`, `Failed to read ${action}`, `Stopped reading ${action}`)
+  } else if (kind === "vscodeLanguage") {
+    label = stateful(
+      "Querying VS Code language tools",
+      "Queried VS Code language tools",
+      "VS Code language query failed",
+      "Stopped VS Code language query",
+    )
+  } else if (kind === "vscodeAction") {
+    const actions = name === "vscode_execute_terminal"
+      ? ["Running terminal command", "Ran terminal command"]
+      : name === "vscode_run_task"
+      ? ["Running VS Code task", "Ran VS Code task"]
+      : name === "vscode_open_file"
+      ? ["Opening file", "Opened file"]
+      : name === "vscode_open_url"
+      ? ["Opening URL", "Opened URL"]
+      : name === "vscode_request_opencode_reload"
+      ? ["Scheduling OpenCode reload", "Scheduled OpenCode reload"]
+      : ["Running VS Code action", "Ran VS Code action"]
+    label = stateful(actions[0]!, actions[1]!, `${actions[0]} failed`, `Stopped ${actions[0]!.toLowerCase()}`)
+  } else if (kind === "memory") {
+    label = name === "memory_list"
+      ? stateful("Reading preferences", "Read preferences", "Failed to read preferences", "Stopped reading preferences")
+      : stateful(
+        "Updating preferences",
+        "Updated preferences",
+        "Failed to update preferences",
+        "Stopped updating preferences",
+      )
+  } else if (kind === "skillCandidate") {
+    label = name.endsWith("_list")
+      ? stateful(
+        "Reading skill candidates",
+        "Read skill candidates",
+        "Failed to read skill candidates",
+        "Stopped reading skill candidates",
+      )
+      : stateful(
+        "Updating skill candidate",
+        "Updated skill candidate",
+        "Failed to update skill candidate",
+        "Stopped updating skill candidate",
+      )
+  } else if (kind === "document") {
+    label = stateful("Reading document", "Read document", "Failed to read document", "Stopped reading document")
   } else {label = ({
       skill: stateful("Loading skill", "Loaded skill", "Failed to load skill", "Stopped loading skill"),
       edit: patch
@@ -1050,17 +1273,11 @@ function delegationRequestHtml(part: MessagePart, key: string): string {
   const state = stateRecord(part)
   const input = record(state?.input) ? state.input : undefined
   if (!input) return ""
-  const prompt = typeof input.prompt === "string" ? input.prompt : undefined
-  const fields = detailFields(input, new Set(["prompt"]))
+  const fields = detailFieldsForChat(input, ["description", "subagent_type", "agent", "model"])
+  if (!fields) return ""
   return `<details class="delegation-raw" data-detail-key="${
     escapeHtml(`${key}:request`)
-  }"><summary>Task request</summary><div class="delegation-request-body">${fields}${
-    prompt
-      ? `<details class="task-prompt" data-detail-key="${escapeHtml(`${key}:prompt`)}"><summary>Full prompt</summary>${
-        codeBlock(prompt, "Prompt")
-      }</details>`
-      : ""
-  }</div></details>`
+  }"><summary>Task details</summary><div class="delegation-request-body">${fields}</div></details>`
 }
 
 function delegationHtml(part: MessagePart, key: string, delegation: Delegation, parentActive: boolean): string {
@@ -1421,9 +1638,10 @@ function markerTargetElement(value: string | undefined): HTMLElement | undefined
 function syncVisibleTurnMarkers(): void {
   const buttons = [...turnNavigation.querySelectorAll<HTMLButtonElement>("[data-marker-target]")]
   const visibleButtons = buttons.filter((button) => visibleTurnTargets.has(button.dataset.markerTarget ?? ""))
-  if (!visibleButtons.length) return
-  const first = visibleButtons[0]!
-  const last = visibleButtons.at(-1)!
+  const atLatest = transcriptNearBottom()
+  const first = atLatest ? buttons.at(-1) : visibleButtons[0]
+  const last = atLatest ? first : visibleButtons.at(-1)
+  if (!first || !last) return
   const nextScrollTop = turnNavigationScrollTop({
     scrollTop: turnNavigation.scrollTop,
     scrollHeight: turnNavigation.scrollHeight,
@@ -1458,6 +1676,7 @@ function scheduleConversationScrollSync(): void {
   conversationScrollFrame = requestAnimationFrame(() => {
     conversationScrollFrame = undefined
     conversationView.handleScroll()
+    syncVisibleTurnMarkers()
   })
 }
 
@@ -1510,6 +1729,7 @@ function renderTurnNavigation(session?: NonNullable<ChatSnapshot["session"]>): v
     }"><span aria-hidden="true"></span></button>`
   ).join("")
   observeTurnMarkers()
+  scheduleVisibleTurnMarkerSync()
 }
 
 const revealedTurnNavigationSessions = new Set<string>()
@@ -4196,6 +4416,8 @@ function submitMessage(delivery?: "queue" | "steer" | "replace"): void {
   }
   const active = snapshot.session?.status.type === "busy" || snapshot.session?.status.type === "retry"
   const effectiveDelivery = active ? delivery ?? "queue" : undefined
+  conversationView.jumpToLatest()
+  scheduleVisibleTurnMarkerSync()
   post({
     type: "send",
     sessionID,
@@ -5499,7 +5721,9 @@ function scheduleViewportLayout(syncTurnNavigation = false): void {
     viewportLayoutFrame = undefined
     const syncNavigation = viewportLayoutNeedsTurnNavigation
     viewportLayoutNeedsTurnNavigation = false
+    const followedLatest = conversationView.maintainLatest()
     if (syncNavigation) syncTurnNavigationVisibility()
+    if (followedLatest || syncNavigation) scheduleVisibleTurnMarkerSync()
     for (const owner of document.querySelectorAll<HTMLDetailsElement>("details[open]")) {
       const popover = detailsPopover(owner)
       if (popover?.matches(":popover-open")) positionDetailsPopover(owner, popover)
@@ -5703,6 +5927,7 @@ messages.addEventListener("click", (event) => {
 })
 jumpLatest.addEventListener("click", () => {
   conversationView.jumpToLatest()
+  scheduleVisibleTurnMarkerSync()
 })
 sessionChangeSummary.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target : undefined

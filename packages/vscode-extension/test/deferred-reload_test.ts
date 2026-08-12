@@ -1,6 +1,5 @@
-import type { WorkbenchState } from "@opencode-workbench/shared"
+import { createSessionLifecycle, type SettlementReason, type WorkbenchState } from "@opencode-workbench/shared"
 import { DeferredOpenCodeReload } from "../src/deferred-reload.ts"
-import type { ControllerUpdate } from "../src/session-controller.ts"
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -13,8 +12,7 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve }
 }
 
-Deno.test("deferred reload waits for terminal session event and deduplicates requests", async () => {
-  const listeners = new Set<(update: ControllerUpdate) => void>()
+Deno.test("deferred reload waits for lifecycle settlement and deduplicates requests", async () => {
   const pauses: boolean[] = []
   const snapshot = {
     connected: true,
@@ -25,16 +23,14 @@ Deno.test("deferred reload waits for terminal session event and deduplicates req
   } as unknown as WorkbenchState
   const controller = {
     snapshot,
-    subscribe(listener: (update: ControllerUpdate) => void) {
-      listeners.add(listener)
-      return { dispose: () => listeners.delete(listener) }
-    },
+    waitForSettlement: () => idle.promise,
     setPromptAdmissionPaused(paused: boolean) {
       pauses.push(paused)
     },
   }
   const release = deferred<void>()
   const started = deferred<void>()
+  const idle = deferred<ReturnType<typeof createSessionLifecycle>>()
   let completed = 0
   const coordinator = new DeferredOpenCodeReload(controller, {
     reload: async () => {
@@ -57,12 +53,7 @@ Deno.test("deferred reload waits for terminal session event and deduplicates req
       conflicting = true
     }
     if (!conflicting) throw new Error("Conflicting reload request was accepted")
-    for (const listener of listeners) {
-      listener({
-        type: "event",
-        event: { type: "session.status", properties: { sessionID: "one", status: { type: "idle" } } },
-      })
-    }
+    idle.resolve(createSessionLifecycle({ epoch: "one", generation: 0 }))
     await started.promise
     if (pauses.join(",") !== "true") throw new Error("Prompt admission resumed before reload completed")
     release.resolve(undefined)
@@ -79,7 +70,7 @@ Deno.test("deferred reload waits for terminal session event and deduplicates req
 Deno.test("deferred reload rejects unknown sessions", () => {
   const controller = {
     snapshot: { sessions: {} } as unknown as WorkbenchState,
-    subscribe: () => ({ dispose: () => undefined }),
+    waitForSettlement: async () => createSessionLifecycle({ epoch: "missing", generation: 0 }),
     setPromptAdmissionPaused: () => undefined,
   }
   const coordinator = new DeferredOpenCodeReload(controller, { reload: async () => undefined })
@@ -96,9 +87,11 @@ Deno.test("deferred reload rejects unknown sessions", () => {
   }
 })
 
-Deno.test("delegated reload waits for root session to become idle", async () => {
-  const listeners = new Set<(update: ControllerUpdate) => void>()
+Deno.test("delegated reload waits for root session to settle", async () => {
   const started = deferred<void>()
+  const rootSettled = deferred<ReturnType<typeof createSessionLifecycle>>()
+  let waitedFor = ""
+  let ignored: readonly SettlementReason[] = []
   const controller = {
     snapshot: {
       sessions: {
@@ -106,31 +99,24 @@ Deno.test("delegated reload waits for root session to become idle", async () => 
         child: { info: { id: "child", parentID: "root" }, status: { type: "busy" }, queue: [] },
       },
     } as unknown as WorkbenchState,
-    subscribe(listener: (update: ControllerUpdate) => void) {
-      listeners.add(listener)
-      return { dispose: () => listeners.delete(listener) }
+    waitForSettlement(sessionID: string, _signal?: AbortSignal, ignoredReasons?: readonly SettlementReason[]) {
+      waitedFor = sessionID
+      ignored = ignoredReasons ?? []
+      return rootSettled.promise
     },
     setPromptAdmissionPaused: () => undefined,
   }
   const coordinator = new DeferredOpenCodeReload(controller, { reload: async () => started.resolve(undefined) })
   try {
     coordinator.request({ sessionID: "child", reason: "skill-activation" })
-    for (const listener of listeners) {
-      listener({
-        type: "event",
-        event: { type: "session.status", properties: { sessionID: "child", status: { type: "idle" } } },
-      })
-    }
     let began = false
     void started.promise.then(() => began = true)
     await Promise.resolve()
     if (began) throw new Error("Child session idle triggered reload before root completed")
-    for (const listener of listeners) {
-      listener({
-        type: "event",
-        event: { type: "session.status", properties: { sessionID: "root", status: { type: "idle" } } },
-      })
+    if (waitedFor !== "root" || ignored.join(",") !== "QUEUED_PROMPT") {
+      throw new Error("Reload did not use the root lifecycle barrier with its explicit queue policy")
     }
+    rootSettled.resolve(createSessionLifecycle({ epoch: "root", generation: 0 }))
     await started.promise
   } finally {
     coordinator.dispose()

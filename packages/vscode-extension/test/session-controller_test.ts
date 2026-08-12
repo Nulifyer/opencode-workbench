@@ -1874,6 +1874,65 @@ Deno.test("pending prompt text fills an info-only server event before admission 
   controller.dispose()
 })
 
+Deno.test("cancelled prompt admission aborts transport and preserves unadmitted input", async () => {
+  const promptID = "msg_018bcfe568001234567890abcf"
+  const started = Promise.withResolvers<void>()
+  let transportSignal: AbortSignal | undefined
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messages: async () => [],
+    hasPromptAdmission: async () => false,
+    sendPrompt: (
+      _sessionID: string,
+      _promptID: string,
+      _text: string,
+      _delivery: string,
+      _agent?: string,
+      _model?: string,
+      _variant?: string,
+      _files?: unknown[],
+      _agents?: string[],
+      signal?: AbortSignal,
+    ) => {
+      transportSignal = signal
+      started.resolve()
+      return new Promise((_resolve, reject) =>
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+      )
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  const cancellation = new AbortController()
+  const sending = controller.send(
+    "Keep this after cancellation",
+    undefined,
+    undefined,
+    undefined,
+    [],
+    [],
+    promptID,
+    "queue",
+    cancellation.signal,
+  )
+  await started.promise
+  cancellation.abort(new Error("cancelled by webview"))
+  let rejected = false
+  await sending.catch((error) => {
+    rejected = /cancelled by webview/.test(error instanceof Error ? error.message : String(error))
+  })
+  const queued = controller.chatSnapshot().session?.queue?.find((prompt) => prompt.id === promptID)
+  if (
+    !rejected || transportSignal === undefined || !transportSignal.aborted ||
+    queued?.text !== "Keep this after cancellation"
+  ) {
+    throw new Error("Cancellation did not abort transport while preserving unadmitted prompt input")
+  }
+  controller.dispose()
+})
+
 Deno.test("ambiguous prompt failure retains visible text from the queued prompt", async () => {
   const promptID = "msg_018bcfe568001234567890abce"
   let emitInfo: () => void = () => undefined

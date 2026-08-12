@@ -790,6 +790,48 @@ Deno.test("v2 prompt admission preserves IDs, delivery, preferences, and file pa
   }
 })
 
+Deno.test("v2 prompt admission propagates caller cancellation to the active request", async () => {
+  const originalFetch = globalThis.fetch
+  let requestSignal: AbortSignal | undefined
+  const started = Promise.withResolvers<void>()
+  globalThis.fetch = (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    if (!url.pathname.endsWith("/prompt")) return Promise.resolve(new Response(null, { status: 204 }))
+    requestSignal = init?.signal ?? undefined
+    started.resolve()
+    return new Promise<Response>((_resolve, reject) => {
+      requestSignal!.addEventListener("abort", () => reject(requestSignal!.reason), { once: true })
+    })
+  }
+  try {
+    const client = new OpenCodeClient({
+      baseUrl: "http://127.0.0.1:4096",
+      username: "",
+      password: "",
+      directory: "/work",
+    })
+    const cancellation = new AbortController()
+    const sending = client.sendPrompt(
+      "session",
+      "msg_018bcfe568001234567890abcf",
+      "Cancel this request",
+      "steer",
+      undefined,
+      undefined,
+      undefined,
+      [],
+      [],
+      cancellation.signal,
+    )
+    await started.promise
+    cancellation.abort(new Error("cancelled by webview"))
+    await rejects(() => sending, /cancelled by webview/)
+    if (!requestSignal?.aborted) throw new Error("Prompt request did not receive caller cancellation")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 Deno.test("v2 prompt admission rejects malformed and mismatched receipts", async () => {
   const originalFetch = globalThis.fetch
   let response: unknown = { data: {} }

@@ -1137,8 +1137,8 @@ export class OpenCodeClient {
     return statuses
   }
 
-  async createSession(title?: string): Promise<SessionInfo> {
-    return requiredSessionInfo(await this.request<unknown>("POST", "/session", title ? { title } : {}))
+  async createSession(title?: string, signal?: AbortSignal): Promise<SessionInfo> {
+    return requiredSessionInfo(await this.request<unknown>("POST", "/session", title ? { title } : {}, signal))
   }
 
   deleteSession(sessionID: string): Promise<boolean> {
@@ -1514,11 +1514,11 @@ export class OpenCodeClient {
     )
   }
 
-  async abort(sessionID: string): Promise<boolean> {
+  async abort(sessionID: string, signal?: AbortSignal): Promise<boolean> {
     const encoded = encodeURIComponent(sessionID)
     const [current, legacy] = await Promise.allSettled([
-      this.request<void>("POST", `/api/session/${encoded}/interrupt`),
-      this.request<boolean>("POST", `/session/${encoded}/abort`),
+      this.request<void>("POST", `/api/session/${encoded}/interrupt`, undefined, signal),
+      this.request<boolean>("POST", `/session/${encoded}/abort`, undefined, signal),
     ])
     if (current.status === "rejected" && legacy.status === "rejected") throw current.reason
     return current.status === "fulfilled" || (legacy.status === "fulfilled" && legacy.value === true)
@@ -1536,6 +1536,7 @@ export class OpenCodeClient {
     variant?: string,
     files: PromptFilePart[] = [],
     messageID?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const body: JsonRecord = { parts: [...(text.trim() ? [{ type: "text", text }] : []), ...files] }
     if (messageID) body.messageID = messageID
@@ -1546,7 +1547,7 @@ export class OpenCodeClient {
       body.model = { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
     }
     if (variant) body.variant = variant
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/prompt_async`, body)
+    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/prompt_async`, body, signal)
   }
 
   async sendPrompt(
@@ -1559,15 +1560,18 @@ export class OpenCodeClient {
     variant?: string,
     files: PromptFilePart[] = [],
     agents: string[] = [],
+    signal?: AbortSignal,
   ): Promise<PromptAdmission> {
     const encodedSessionID = encodeURIComponent(sessionID)
-    if (agent) await this.request("POST", this.locationPath(`/api/session/${encodedSessionID}/agent`), { agent })
+    if (agent) {
+      await this.request("POST", this.locationPath(`/api/session/${encodedSessionID}/agent`), { agent }, signal)
+    }
     if (model) {
       const slash = model.indexOf("/")
       if (slash <= 0 || slash === model.length - 1) throw new Error("Model must be provider/model")
       await this.request("POST", this.locationPath(`/api/session/${encodedSessionID}/model`), {
         model: { providerID: model.slice(0, slash), id: model.slice(slash + 1), ...(variant ? { variant } : {}) },
-      })
+      }, signal)
     }
     const value = await this.request<unknown>("POST", this.locationPath(`/api/session/${encodedSessionID}/prompt`), {
       id: promptID,
@@ -1578,7 +1582,7 @@ export class OpenCodeClient {
       },
       delivery,
       resume: true,
-    })
+    }, signal)
     return parsePromptAdmission(value, { id: promptID, sessionID, delivery })
   }
 
@@ -1638,6 +1642,7 @@ export class OpenCodeClient {
     variant?: string,
     files: PromptFilePart[] = [],
     messageID?: string,
+    signal?: AbortSignal,
   ): Promise<unknown> {
     const body: JsonRecord = { command, arguments: args }
     if (messageID) body.messageID = messageID
@@ -1653,7 +1658,7 @@ export class OpenCodeClient {
       "POST",
       `/session/${encodeURIComponent(sessionID)}/command`,
       body,
-      undefined,
+      signal,
       LONG_REQUEST_TIMEOUT_MS,
     )
   }

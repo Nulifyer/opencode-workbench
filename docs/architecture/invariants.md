@@ -222,11 +222,12 @@ Evidence: `protocol_test.ts`, `protocol_v2_test.ts`, `event_stream_test.ts`,
 
 ## Known gaps
 
-- Protocol cancellation is cooperative: a handler that does not observe its
-  abort signal can finish upstream work after its surface is disposed.
-- Ordinary HTTP/SSE prompt settlement now follows OpenCode's authoritative
-  status projection. The shared lifecycle reducer is not yet wired as one
-  universal barrier across every supplemental goal, run, and reload workflow.
+- Protocol-v2 cancellation reaches production prompt, session-creation, stop,
+  command, and OpenCode HTTP operations. VS Code commands and supplemental
+  handlers that do not accept an abort signal remain cooperative boundaries.
+- Ordinary HTTP/SSE prompt settlement is projected through the shared lifecycle
+  reducer, and deferred reload consumes that barrier. Plugin-owned goals and
+  run-group orchestration retain separate durable lifecycle adapters.
 - `SessionController` and `webview/main.ts` remain concentration points.
 - `OpenCodeConnection` has one directory; run-group and worktree identities do
   not exist in `WorkbenchState`.

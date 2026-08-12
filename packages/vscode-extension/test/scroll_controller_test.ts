@@ -54,3 +54,34 @@ Deno.test("prepend restoration falls back to the added scroll height when no anc
 
   assertEquals(container.scrollTop, 600)
 })
+
+Deno.test("latest following survives layout growth until the user scrolls away", () => {
+  const container = { scrollTop: 400, scrollHeight: 1_000, clientHeight: 600 }
+  const controller = new ScrollController(container as unknown as HTMLElement)
+
+  controller.latest()
+  container.scrollHeight = 1_400
+  assertEquals(controller.maintainLatest(), true)
+  assertEquals(container.scrollTop, 1_400)
+
+  container.scrollTop = 300
+  assertEquals(controller.observeScroll(), false)
+  container.scrollHeight = 1_800
+  assertEquals(controller.maintainLatest(), false)
+  assertEquals(container.scrollTop, 300)
+})
+
+Deno.test("restored viewport controls whether later layout changes follow latest", () => {
+  const container = { scrollTop: 0, scrollHeight: 1_000, clientHeight: 600 }
+  const controller = new ScrollController(container as unknown as HTMLElement)
+
+  controller.restoreViewport({ atBottom: false, scrollTop: 125 })
+  container.scrollHeight = 1_200
+  assertEquals(controller.maintainLatest(), false)
+  assertEquals(container.scrollTop, 125)
+
+  controller.restoreViewport({ atBottom: true, scrollTop: 0 })
+  container.scrollHeight = 1_500
+  assertEquals(controller.maintainLatest(), true)
+  assertEquals(container.scrollTop, 1_500)
+})
