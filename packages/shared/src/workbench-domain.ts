@@ -122,6 +122,7 @@ export interface RunReference {
 export interface RunGroup {
   id: string
   mutationID?: string
+  requestFingerprint?: string
   ownerSessionID?: string
   title: string
   repository: string

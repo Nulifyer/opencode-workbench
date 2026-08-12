@@ -430,6 +430,12 @@ Deno.test("older transcript paging is explicit and preserves the visual prepend 
     !chatView.includes('id="history-load-all"') ||
     !chatView.includes('role="status" aria-live="polite"')
   ) throw new Error("Bounded-history status and action are missing")
+  if (
+    !webview.includes("const accessibleHistory = Boolean(session?.history?.hasOlder") ||
+    !webview.includes("emptyConversation && !accessibleHistory") ||
+    !webview.includes("const actionable = Boolean(presentation.actionLabel && session)") ||
+    webview.includes("!session?.history?.hasOlder || !beforeMessageID")
+  ) throw new Error("An empty projected page can still hide its accessible older-history controls")
   for (
     const marker of [
       'post({ type: "loadOlderHistory"',
@@ -538,6 +544,15 @@ Deno.test("older transcript paging is explicit and preserves the visual prepend 
     !css.includes(".history-boundary .history-load-all") || !css.includes(".history-load-progress")
   ) {
     throw new Error("Load-all history is not presented as a subtle progressive secondary action")
+  }
+})
+
+Deno.test("grouped permission rejection responds to every request ID", () => {
+  if (!webview.includes("for (const request of requests)")) {
+    throw new Error("Grouped permission actions do not address every represented request")
+  }
+  if (webview.includes('const targets = response === "reject"')) {
+    throw new Error("Grouped rejection still deduplicates distinct permission request IDs")
   }
 })
 
@@ -1080,7 +1095,7 @@ Deno.test("permission Allow menu uses a centered down-chevron icon", () => {
       "data-request-group",
       "identical requests",
       "Allow all",
-      "for (const request of targets)",
+      "for (const request of requests)",
     ]
   ) {
     if (!webview.includes(marker)) {

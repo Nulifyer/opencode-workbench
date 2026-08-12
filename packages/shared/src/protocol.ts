@@ -88,7 +88,7 @@ export type WebviewToHostMessage =
   | { type: "abort"; sessionID: string }
   | { type: "createSession"; draft?: string; submit?: boolean }
   | { type: "planTask" }
-  | { type: "loadOlderHistory"; sessionID: string; beforeMessageID: string }
+  | { type: "loadOlderHistory"; sessionID: string; beforeMessageID?: string }
   | { type: "selectSession"; sessionID: string }
   | { type: "setPreference"; sessionID: string; agent?: string; model?: string; variant?: string }
   | { type: "removeQueued"; sessionID: string; promptID: string }
@@ -693,7 +693,7 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
       return exactKeys(value, ["type"]) ? { type: "planTask" } : undefined
     case "loadOlderHistory":
       return exactKeys(value, ["type", "sessionID", "beforeMessageID"]) && validID(value.sessionID) &&
-          validID(value.beforeMessageID)
+          (value.beforeMessageID === undefined || validID(value.beforeMessageID))
         ? { type: "loadOlderHistory", sessionID: value.sessionID, beforeMessageID: value.beforeMessageID }
         : undefined
     case "ready":
@@ -987,7 +987,7 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
     case "changeReviewAction":
       return exactKeys(value, ["type", "sessionID", "action", "file"]) && validID(value.sessionID) &&
           ["review-session", "mark-reviewed", "mark-all-reviewed", "timeline"].includes(String(value.action)) &&
-          boundedOptionalString(value.file) &&
+          boundedOptionalString(value.file, 8_192) &&
           (["mark-reviewed", "timeline"].includes(String(value.action))
             ? typeof value.file === "string" && value.file.length > 0
             : value.file === undefined)
@@ -1935,6 +1935,8 @@ function validRunGroups(value: unknown): value is RunGroup[] {
   if (!Array.isArray(value) || value.length > 500) return false
   return value.every((group) =>
     record(group) && boundedString(group.id) && boundedOptionalString(group.ownerSessionID) &&
+    boundedOptionalString(group.requestFingerprint, 64) &&
+    (group.requestFingerprint === undefined || /^[a-f0-9]{64}$/.test(group.requestFingerprint)) &&
     boundedString(group.title, 500) && boundedString(group.repository, 8_192) && boundedString(group.baseRef) &&
     boundedString(group.promptReceiptID) &&
     ["shared", "worktree"].includes(String(group.isolation)) && Number.isSafeInteger(group.createdAt) &&

@@ -2268,20 +2268,29 @@ export class SessionController {
     return Boolean(cursor && (!cursor.legacyComplete || !cursor.v2Complete))
   }
 
-  async loadHistoryPage(sessionID: string, beforeMessageID: string): Promise<TranscriptHistoryPage> {
+  async loadHistoryPage(sessionID: string, beforeMessageID?: string): Promise<TranscriptHistoryPage> {
     const session = this.requireSession(sessionID)
-    const beforeIndex = session.messages.findIndex((message) => message.info.id === beforeMessageID)
-    if (beforeIndex < 0) throw new Error("Cannot load history before an unknown message")
+    const beforeIndex = beforeMessageID === undefined
+      ? 0
+      : session.messages.findIndex((message) => message.info.id === beforeMessageID)
+    if (beforeMessageID !== undefined && beforeIndex < 0) {
+      throw new Error("Cannot load history before an unknown message")
+    }
+    if (beforeMessageID === undefined && session.messages.length) return this.initialHistoryPage(sessionID)
     const cursor = this.historyCursors.get(sessionID)
     if (session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT) {
       this.historyLimitReached.add(sessionID)
-      return this.historyPage(sessionID, beforeMessageID)
+      return beforeMessageID === undefined
+        ? this.initialHistoryPage(sessionID)
+        : this.historyPage(sessionID, beforeMessageID)
     }
     if (
       beforeIndex > 0 || !cursor || (cursor.legacyComplete && cursor.v2Complete) ||
       typeof this.client.messageHistoryPage !== "function"
     ) {
-      return this.historyPage(sessionID, beforeMessageID)
+      return beforeMessageID === undefined
+        ? this.initialHistoryPage(sessionID)
+        : this.historyPage(sessionID, beforeMessageID)
     }
     const page = await this.client.messageHistoryPage(sessionID, cursor, HISTORY_PAGE_MESSAGE_LIMIT)
     this.historyCursors.set(sessionID, page.cursor)
@@ -2299,7 +2308,30 @@ export class SessionController {
       current.messages,
     )
     this.dispatch({ type: "transcript", sessionID, messages: merged })
-    return this.historyPage(sessionID, beforeMessageID)
+    return beforeMessageID === undefined
+      ? this.initialHistoryPage(sessionID)
+      : this.historyPage(sessionID, beforeMessageID)
+  }
+
+  private initialHistoryPage(sessionID: string): TranscriptHistoryPage {
+    const session = this.requireSession(sessionID)
+    const transcript = snapshotTranscript(
+      session.messages,
+      this.messageRevisions.get(sessionID) ?? new Map(),
+      SELECTED_TRANSCRIPT_CHARACTER_LIMIT,
+      SELECTED_TRANSCRIPT_PART_LIMIT,
+      HISTORY_PAGE_MESSAGE_LIMIT,
+      (messageID) => this.pendingPromptTextFor(messageID),
+    )
+    return {
+      sessionID,
+      messages: transcript.messages,
+      messageRevisions: transcript.revisions,
+      hasOlder: transcript.history.hasOlder || this.serverHistoryHasOlder(sessionID),
+      totalMessages: session.messages.length,
+      sourceMayBeTruncated: this.historyLimitReached.has(sessionID) || this.serverHistoryHasOlder(sessionID) ||
+        session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+    }
   }
 
   historyPage(sessionID: string, beforeMessageID: string): TranscriptHistoryPage {

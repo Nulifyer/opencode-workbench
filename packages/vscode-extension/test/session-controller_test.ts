@@ -414,6 +414,13 @@ Deno.test("chat history exposes and pages messages older than the bounded snapsh
       }`,
     )
   }
+  const initial = await controller.loadHistoryPage("one")
+  if (
+    initial.messages.length !== 1_000 || initial.messages[0]?.info.id !== "message-5201" || !initial.hasOlder ||
+    initial.totalMessages !== 6_201
+  ) {
+    throw new Error("Anchorless history loading did not return a bounded recent page")
+  }
   const oldest = controller.historyPage("one", page.messages[0]!.info.id)
   if (oldest.messages.length !== 201 || oldest.messages[0]?.info.id !== "message-0000" || oldest.hasOlder) {
     throw new Error("Final older-history page did not terminate at the retained transcript boundary")

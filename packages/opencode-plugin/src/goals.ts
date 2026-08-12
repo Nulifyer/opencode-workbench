@@ -439,7 +439,7 @@ function pruneGoalArchives(state: GoalState): void {
       right.entry.closedAt - left.entry.closedAt || right.entry.sequence - left.entry.sequence ||
       left.sessionID.localeCompare(right.sessionID)
     )
-  const retained: GoalState["archives"] = {}
+  const retained = Object.create(null) as GoalState["archives"]
   let bytes = 2
   for (const candidate of candidates) {
     const entryBytes = encoder.encode(JSON.stringify([candidate.sessionID, candidate.entry])).byteLength

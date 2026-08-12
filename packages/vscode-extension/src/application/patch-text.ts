@@ -14,13 +14,15 @@ interface PatchHunk {
   newStart?: number
   oldLines: string[]
   newLines: string[]
+  oldFinalNewline?: false
+  newFinalNewline?: false
 }
 
 function splitText(value: string): TextLines {
   const newline = value.includes("\r\n") ? "\r\n" : "\n"
   const normalized = value.replaceAll("\r\n", "\n")
   const finalNewline = normalized.endsWith("\n")
-  const lines = normalized.split("\n")
+  const lines = normalized ? normalized.split("\n") : []
   if (finalNewline) lines.pop()
   return { lines, newline, finalNewline }
 }
@@ -32,6 +34,7 @@ function joinText(value: TextLines): string {
 function patchHunks(patch: string): PatchHunk[] {
   const hunks: PatchHunk[] = []
   let current: PatchHunk | undefined
+  let previous: "context" | "old" | "new" | undefined
   const begin = (oldStart?: number, newStart?: number): PatchHunk => {
     const hunk = { oldStart, newStart, oldLines: [], newLines: [] }
     hunks.push(hunk)
@@ -41,20 +44,33 @@ function patchHunks(patch: string): PatchHunk[] {
     const marker = /^@@(?:\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?)?/.exec(line)
     if (marker) {
       current = begin(marker[1] ? Number(marker[1]) : undefined, marker[2] ? Number(marker[2]) : undefined)
+      previous = undefined
       continue
     }
-    if (
-      /^(?:diff --git|index |--- |\+\+\+ |\*\*\* (?:Begin Patch|End Patch|Update File:|Add File:|Delete File:))/.test(
-        line,
-      ) || line === "\\ No newline at end of file"
-    ) continue
+    if (/^(?:diff --git|\*\*\* (?:Begin Patch|End Patch|Update File:|Add File:|Delete File:))/.test(line)) {
+      current = undefined
+      previous = undefined
+      continue
+    }
+    if (/^index /.test(line) || (!current && /^(?:--- |\+\+\+ )/.test(line))) continue
+    if (line === "\\ No newline at end of file") {
+      if (current && (previous === "context" || previous === "old")) current.oldFinalNewline = false
+      if (current && (previous === "context" || previous === "new")) current.newFinalNewline = false
+      continue
+    }
     if (!/^[ +\-]/.test(line)) continue
     current ??= begin()
     if (line.startsWith(" ")) {
       current.oldLines.push(line.slice(1))
       current.newLines.push(line.slice(1))
-    } else if (line.startsWith("-")) current.oldLines.push(line.slice(1))
-    else if (line.startsWith("+")) current.newLines.push(line.slice(1))
+      previous = "context"
+    } else if (line.startsWith("-")) {
+      current.oldLines.push(line.slice(1))
+      previous = "old"
+    } else if (line.startsWith("+")) {
+      current.newLines.push(line.slice(1))
+      previous = "new"
+    }
   }
   return hunks.filter((hunk) => hunk.oldLines.length || hunk.newLines.length)
 }
@@ -90,6 +106,11 @@ function transform(current: string, patch: string, direction: "forward" | "rever
     const index = locate(text.lines, source, expected)
     text.lines.splice(index, source.length, ...target)
     offset += target.length - source.length
+    const sourceFinalNewline = direction === "forward" ? hunk.oldFinalNewline : hunk.newFinalNewline
+    const targetFinalNewline = direction === "forward" ? hunk.newFinalNewline : hunk.oldFinalNewline
+    if (targetFinalNewline === false) text.finalNewline = false
+    else if (sourceFinalNewline === false) text.finalNewline = true
+    if (!text.lines.length) text.finalNewline = false
   }
   return joinText(text)
 }

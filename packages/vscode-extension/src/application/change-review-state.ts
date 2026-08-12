@@ -51,7 +51,9 @@ export class ChangeReviewState {
   markReviewed(sessionID: string, changes: readonly FileChange[]): void {
     const reviewedAt = Date.now()
     for (const change of changes) {
-      this.reviewed.set(recordKey(sessionID, change.file), {
+      const key = recordKey(sessionID, change.file)
+      this.reviewed.delete(key)
+      this.reviewed.set(key, {
         sessionID,
         file: change.file,
         signature: signature(change),

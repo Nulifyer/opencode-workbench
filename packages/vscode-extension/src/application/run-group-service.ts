@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
 import {
   createOpenCodeMessageID,
@@ -188,7 +188,8 @@ export class RunGroupService {
       if (
         existing.ownerSessionID !== input.ownerSessionID || existing.title !== input.title.slice(0, 500) ||
         existing.repository !== input.repository || existing.baseRef !== input.baseRef ||
-        existing.promptReceiptID !== input.promptReceiptID || existing.isolation !== input.isolation || !sameRuns
+        existing.promptReceiptID !== input.promptReceiptID || existing.isolation !== input.isolation ||
+        existing.requestFingerprint !== input.requestFingerprint || !sameRuns
       ) {
         throw new Error(`Run-group mutation ${input.mutationID} was reused with a different request`)
       }
@@ -204,6 +205,7 @@ export class RunGroupService {
     const group: RunGroup = {
       id: randomUUID(),
       mutationID: input.mutationID,
+      requestFingerprint: input.requestFingerprint,
       ownerSessionID: input.ownerSessionID,
       title: input.title.slice(0, 500),
       repository: input.repository,
@@ -323,6 +325,32 @@ export interface MultiRunInput {
   runtimeEpoch: string
 }
 
+function launchRequestFingerprint(
+  input: MultiRunInput,
+  runs: Array<{ id: string; model: string; agent?: string; variant?: string }>,
+  concurrency: number,
+): string {
+  const payload = {
+    ownerSessionID: input.ownerSessionID,
+    title: input.title,
+    repository: input.repository,
+    baseRef: input.baseRef,
+    promptReceiptID: input.promptReceiptID,
+    prompt: input.prompt,
+    files: (input.files ?? []).map((file) => ({
+      type: file.type,
+      mime: file.mime,
+      url: file.url,
+      filename: file.filename,
+    })),
+    runs: runs.map((run) => ({ id: run.id, model: run.model, agent: run.agent, variant: run.variant })),
+    concurrency,
+    worktreeParent: input.worktreeParent,
+    runtimeEpoch: input.runtimeEpoch,
+  }
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex")
+}
+
 export class MultiRunOrchestrator {
   private readonly operations = new Map<string, Promise<void>>()
   private readonly controllers = new Map<string, AbortController>()
@@ -368,8 +396,10 @@ export class MultiRunOrchestrator {
       throw new Error(`Multi-run concurrency must be between 1 and ${MULTI_RUN_MAX_CONCURRENCY}`)
     }
     const selections = input.runs.map((run, index) => ({ ...run, id: run.id ?? `run-${index + 1}` }))
+    const requestFingerprint = launchRequestFingerprint(input, selections, concurrency)
     const group = this.groups.create({
       mutationID: input.mutationID,
+      requestFingerprint,
       ownerSessionID: input.ownerSessionID,
       title: input.title,
       repository: input.repository,

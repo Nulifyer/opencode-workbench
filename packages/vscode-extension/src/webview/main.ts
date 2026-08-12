@@ -1573,7 +1573,7 @@ function renderHistoryBoundary(session?: NonNullable<ChatSnapshot["session"]>): 
   const presentation = historyPresentation(session?.history)
   const loading = Boolean(session && historyController.sessionID === session.id)
   const loadingAll = loading && historyController.mode === "all"
-  const actionable = Boolean(presentation.actionLabel && session?.messages.length)
+  const actionable = Boolean(presentation.actionLabel && session)
   const loadAllLabel = historyLoadAllLabel(session?.history)
   const loadAllProgress = historyLoadAllProgress(
     historyController.loaded,
@@ -1624,7 +1624,7 @@ function resetHistoryLoading(): void {
 function beginHistoryLoad(mode: "page" | "all"): void {
   const session = snapshot.session
   const beforeMessageID = session?.messages[0]?.info.id
-  if (!session?.history?.hasOlder || !beforeMessageID || historyController.loading) return
+  if (!session?.history?.hasOlder || historyController.loading) return
   const anchor = conversationView.capturePrependAnchor()
   const target = mode === "all" && !session.history.sourceMayBeTruncated
     ? Math.max(0, session.history.totalMessages - session.history.visibleMessages)
@@ -3793,9 +3793,10 @@ function render(): void {
   createEmpty.disabled = !snapshot.connected
   planTask.disabled = !snapshot.connected
   const emptyConversation = Boolean(session && session.messages.length === 0)
-  empty.hidden = loading || Boolean(session && !emptyConversation)
+  const accessibleHistory = Boolean(session?.history?.hasOlder || session?.history?.sourceMayBeTruncated)
+  empty.hidden = loading || Boolean(session && (!emptyConversation || accessibleHistory))
   sessionLoading.hidden = !loading
-  messages.hidden = loading || !session || emptyConversation
+  messages.hidden = loading || !session || (emptyConversation && !accessibleHistory)
   createEmpty.hidden = Boolean(session)
   draft.disabled = loading || !snapshot.connected || creatingSession
   composer.setAttribute("aria-busy", String(Boolean(active)))
@@ -5257,15 +5258,7 @@ permissionDock.addEventListener("click", (event) => {
         requests = parsed
       }
     } catch { /* Fall back to the representative request. */ }
-    const targets = response === "reject"
-      ? requests.filter((request, index) =>
-        requests.findIndex((candidate) =>
-          candidate.sessionID === request.sessionID &&
-          candidate.protocol === request.protocol
-        ) === index
-      )
-      : requests
-    for (const request of targets) {
+    for (const request of requests) {
       post({
         type: "respondPermission",
         sessionID: request.sessionID,
@@ -6072,7 +6065,7 @@ transport.listen((message) => {
     }
     if (continueLoadingAll) {
       const beforeMessageID = merged.messages[0]?.info.id
-      if (beforeMessageID) post({ type: "loadOlderHistory", sessionID: merged.id, beforeMessageID })
+      post({ type: "loadOlderHistory", sessionID: merged.id, beforeMessageID })
       return
     }
     announce(

@@ -133,6 +133,10 @@ Deno.test("validates webview messages", () => {
     "older-history request rejected",
   )
   assert(
+    parseWebviewMessage({ type: "loadOlderHistory", sessionID: "session-1" })?.type === "loadOlderHistory",
+    "anchorless initial history request rejected",
+  )
+  assert(
     parseWebviewMessage({ type: "loadOlderHistory", sessionID: "session-1", beforeMessageID: "" }) === undefined,
     "empty older-history cursor accepted",
   )
@@ -226,6 +230,15 @@ Deno.test("validates webview messages", () => {
     parseWebviewMessage({ type: "changeReviewAction", sessionID: "session-1", action: "timeline", file: "src/main.ts" })
       ?.type === "changeReviewAction",
     "timeline request rejected",
+  )
+  assert(
+    parseWebviewMessage({
+      type: "changeReviewAction",
+      sessionID: "session-1",
+      action: "timeline",
+      file: `src/${"a".repeat(2_000)}.ts`,
+    })?.type === "changeReviewAction",
+    "protocol-safe long timeline path rejected",
   )
   assert(
     parseWebviewMessage({ type: "changeReviewAction", sessionID: "session-1", action: "timeline" }) === undefined,

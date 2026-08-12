@@ -151,6 +151,22 @@ Deno.test("multi-run isolates partial launch failures and persists no prompt byt
   })
   assertEquals(group.runs.map((run) => run.phase), ["working", "failed"])
   assertEquals(JSON.stringify(groups.list()).includes("Implement it"), false)
+  await assertRejects(
+    () =>
+      orchestrator.start({
+        mutationID: "mutation",
+        title: "Compare",
+        repository: Deno.cwd(),
+        baseRef: "HEAD",
+        promptReceiptID: "receipt",
+        prompt: "Different prompt",
+        runs: [{ model: "provider/a" }, { model: "provider/b" }],
+        worktreeParent: "/tmp/runs",
+        runtimeEpoch: "epoch",
+      }),
+    Error,
+    "different request",
+  )
 })
 
 Deno.test("multi-run queues candidate launches independently from group size", async () => {
@@ -207,6 +223,24 @@ Deno.test("multi-run queues candidate launches independently from group size", a
   assertEquals(admitted.size, 2)
   assertEquals(group.runs.map((run) => run.phase), ["working", "working", "pending", "pending", "pending", "pending"])
   assertEquals(peak, 2)
+  await assertRejects(
+    () =>
+      orchestrator.start({
+        mutationID: "queued",
+        ownerSessionID: "origin",
+        title: "Queued comparison",
+        repository: Deno.cwd(),
+        baseRef: "HEAD",
+        promptReceiptID: "receipt",
+        prompt: "Different prompt",
+        runs: Array.from({ length: 6 }, (_, index) => ({ model: `provider/model-${index}` })),
+        concurrency: 2,
+        worktreeParent: "/tmp/runs",
+        runtimeEpoch: "epoch",
+      }),
+    Error,
+    "different request",
+  )
   for (let target = 3; target <= 6; target += 1) {
     const active = [...admitted].find((id) => !completed.has(id))!
     completed.add(active)

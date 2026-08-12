@@ -147,6 +147,13 @@ Deno.test("completed and cancelled goals retain bounded session metrics", () => 
   equal(goalArchives(state, "session")[1]?.status, "cancelled")
 })
 
+Deno.test("goal archives accept session IDs that match object prototype properties", () => {
+  const state = emptyGoalState()
+  createGoal(state, "constructor", { objective: "Prototype-safe archive" }, 10)
+  assert(clearGoal(state, "constructor", 20))
+  equal(goalArchives(state, "constructor").length, 1)
+})
+
 Deno.test("goal usage remains cumulative when context compaction resets observed totals", () => {
   const state = emptyGoalState()
   createGoal(state, "compacted", { objective: "Track work across compaction" }, 10)
