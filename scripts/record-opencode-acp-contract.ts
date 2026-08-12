@@ -172,7 +172,9 @@ class AcpProcess {
   readonly rawInput: string[] = []
   readonly stderr: string[] = []
   private readonly pending = new Map<number | string, PendingRequest>()
-  private readonly waiters = new Set<{ predicate(message: JsonRpcMessage): boolean; resolve(message: JsonRpcMessage): void }>()
+  private readonly waiters = new Set<
+    { predicate(message: JsonRpcMessage): boolean; resolve(message: JsonRpcMessage): void }
+  >()
   private readonly child: Deno.ChildProcess
   private readonly writer: WritableStreamDefaultWriter<Uint8Array>
   private readonly decoder = new TextEncoder()
@@ -240,7 +242,9 @@ class AcpProcess {
         if (retained) this.stderr.push(retained)
       }
       const tail = decoder.decode()
-      if (tail && characters < MAX_STDERR_CHARACTERS) this.stderr.push(tail.slice(0, MAX_STDERR_CHARACTERS - characters))
+      if (tail && characters < MAX_STDERR_CHARACTERS) {
+        this.stderr.push(tail.slice(0, MAX_STDERR_CHARACTERS - characters))
+      }
     } finally {
       reader.releaseLock()
     }
@@ -263,7 +267,11 @@ class AcpProcess {
     if (message.id !== undefined && message.method) {
       const response = message.method === "session/request_permission"
         ? { jsonrpc: "2.0" as const, id: message.id, result: { outcome: { outcome: "cancelled" } } }
-        : { jsonrpc: "2.0" as const, id: message.id, error: { code: -32601, message: `Unsupported recorder client method: ${message.method}` } }
+        : {
+          jsonrpc: "2.0" as const,
+          id: message.id,
+          error: { code: -32601, message: `Unsupported recorder client method: ${message.method}` },
+        }
       await this.writeMessage(response)
       return
     }
@@ -360,21 +368,25 @@ function commandNames(process: AcpProcess): string[] {
 
 function updateKinds(processes: AcpProcess[]): string[] {
   const kinds = new Set<string>()
-  for (const process of processes) for (const entry of process.wire) {
-    if (entry.direction !== "agent-to-client" || entry.message.method !== "session/update") continue
-    const params = isRecord(entry.message.params) ? entry.message.params : undefined
-    const update = params && isRecord(params.update) ? params.update : undefined
-    if (typeof update?.sessionUpdate === "string") kinds.add(update.sessionUpdate)
+  for (const process of processes) {
+    for (const entry of process.wire) {
+      if (entry.direction !== "agent-to-client" || entry.message.method !== "session/update") continue
+      const params = isRecord(entry.message.params) ? entry.message.params : undefined
+      const update = params && isRecord(params.update) ? params.update : undefined
+      if (typeof update?.sessionUpdate === "string") kinds.add(update.sessionUpdate)
+    }
   }
   return [...kinds].sort()
 }
 
 function methodInventory(processes: AcpProcess[], direction: WireEntry["direction"], requests: boolean): string[] {
   const methods = new Set<string>()
-  for (const process of processes) for (const entry of process.wire) {
-    if (entry.direction !== direction || !entry.message.method) continue
-    if ((entry.message.id !== undefined) !== requests) continue
-    methods.add(entry.message.method)
+  for (const process of processes) {
+    for (const entry of process.wire) {
+      if (entry.direction !== direction || !entry.message.method) continue
+      if ((entry.message.id !== undefined) !== requests) continue
+      methods.add(entry.message.method)
+    }
   }
   return [...methods].sort()
 }
@@ -386,7 +398,10 @@ function processSummary(process: AcpProcess, cleanExit: boolean): ProcessSummary
     notificationMethods: methodInventory([process], "client-to-agent", false),
     agentRequestMethods: methodInventory([process], "agent-to-client", true),
     agentNotificationMethods: methodInventory([process], "agent-to-client", false),
-    malformedInputSurvived: process.rawInput.length > 0 && process.wire.some((entry) => entry.direction === "agent-to-client" && entry.message.id !== undefined && entry.message.result !== undefined),
+    malformedInputSurvived: process.rawInput.length > 0 &&
+      process.wire.some((entry) =>
+        entry.direction === "agent-to-client" && entry.message.id !== undefined && entry.message.result !== undefined
+      ),
     cleanExit,
   }
 }
@@ -434,17 +449,31 @@ export async function recordAcpContract(options: RecordAcpContractOptions): Prom
   const timeoutMilliseconds = options.timeoutMilliseconds ?? DEFAULT_TIMEOUT_MS
   const version = await executableVersion(options.executable)
   if (options.expectedVersion && version !== options.expectedVersion) {
-    throw new Error(`OpenCode ACP fixture is pinned to ${options.expectedVersion}, but the executable reports ${version}. Review the contract before re-recording.`)
+    throw new Error(
+      `OpenCode ACP fixture is pinned to ${options.expectedVersion}, but the executable reports ${version}. Review the contract before re-recording.`,
+    )
   }
   if (options.pluginPath) {
     const stat = await Deno.stat(options.pluginPath).catch(() => undefined)
-    if (!stat?.isFile) throw new Error(`Bundled plugin is unavailable at ${options.pluginPath}; run deno task build first`)
+    if (!stat?.isFile) {
+      throw new Error(`Bundled plugin is unavailable at ${options.pluginPath}; run deno task build first`)
+    }
   }
 
   const root = await Deno.makeTempDir({ prefix: "opencode-workbench-acp-contract-" })
   const workspaceA = path.join(root, "workspace-a")
   const workspaceB = path.join(root, "workspace-b")
-  for (const directory of [workspaceA, workspaceB, path.join(root, "home"), path.join(root, "config"), path.join(root, "data"), path.join(root, "cache"), path.join(root, "state")]) {
+  for (
+    const directory of [
+      workspaceA,
+      workspaceB,
+      path.join(root, "home"),
+      path.join(root, "config"),
+      path.join(root, "data"),
+      path.join(root, "cache"),
+      path.join(root, "state"),
+    ]
+  ) {
     await Deno.mkdir(directory, { recursive: true })
   }
   const environment = isolatedEnvironment(root, options.pluginPath)
@@ -458,16 +487,23 @@ export async function recordAcpContract(options: RecordAcpContractOptions): Prom
     processes.push(primary)
     const initialization = await initialize(primary)
     await primary.result("authenticate", { methodId: "opencode-login" })
-    const created = asRecord(await primary.result("session/new", { cwd: workspaceA, mcpServers: [] }), "session/new result")
+    const created = asRecord(
+      await primary.result("session/new", { cwd: workspaceA, mcpServers: [] }),
+      "session/new result",
+    )
     const sessionID = asString(created.sessionId, "session/new sessionId")
     const configOptions = resultConfigOptions(created)
     const modelOption = configOptions.find((option) => option.id === "model")
     const modeOption = configOptions.find((option) => option.id === "mode")
     const modelID = typeof modelOption?.currentValue === "string" ? modelOption.currentValue : undefined
     const modeIDs = Array.isArray(modeOption?.options)
-      ? modeOption.options.flatMap((option) => isRecord(option) && typeof option.value === "string" ? [option.value] : [])
+      ? modeOption.options.flatMap((option) =>
+        isRecord(option) && typeof option.value === "string" ? [option.value] : []
+      )
       : []
-    if (modeIDs.includes("plan")) await primary.result("session/set_config_option", { sessionId: sessionID, configId: "mode", value: "plan" })
+    if (modeIDs.includes("plan")) {
+      await primary.result("session/set_config_option", { sessionId: sessionID, configId: "mode", value: "plan" })
+    }
     if (modeIDs.includes("build")) await primary.result("session/set_mode", { sessionId: sessionID, modeId: "build" })
     if (modelID) {
       await primary.result("session/set_config_option", { sessionId: sessionID, configId: "model", value: modelID })
@@ -476,7 +512,10 @@ export async function recordAcpContract(options: RecordAcpContractOptions): Prom
     const listed = asRecord(await primary.result("session/list", { cwd: workspaceA }), "session/list result")
     const listedSessions = asArray(listed.sessions, "session/list sessions")
     const workingDirectoryFiltered = listedSessions.every((session) => isRecord(session) && session.cwd === workspaceA)
-    const forked = asRecord(await primary.result("session/fork", { sessionId: sessionID, cwd: workspaceA, mcpServers: [] }), "session/fork result")
+    const forked = asRecord(
+      await primary.result("session/fork", { sessionId: sessionID, cwd: workspaceA, mcpServers: [] }),
+      "session/fork result",
+    )
     const forkedID = asString(forked.sessionId, "session/fork sessionId")
     await primary.result("session/close", { sessionId: forkedID })
     await primary.result("session/resume", { sessionId: forkedID, cwd: workspaceA, mcpServers: [] })
@@ -499,24 +538,40 @@ export async function recordAcpContract(options: RecordAcpContractOptions): Prom
     secondary = new AcpProcess("secondary", options.executable, workspaceB, environment, timeoutMilliseconds)
     processes.push(secondary)
     await initialize(secondary)
-    const secondaryCreated = asRecord(await secondary.result("session/new", { cwd: workspaceB, mcpServers: [] }), "secondary session/new result")
+    const secondaryCreated = asRecord(
+      await secondary.result("session/new", { cwd: workspaceB, mcpServers: [] }),
+      "secondary session/new result",
+    )
     const secondaryID = asString(secondaryCreated.sessionId, "secondary sessionId")
     const primaryFiltered = asRecord(await primary.result("session/list", { cwd: workspaceA }), "primary filtered list")
-    const secondaryFiltered = asRecord(await secondary.result("session/list", { cwd: workspaceB }), "secondary filtered list")
-    const simultaneousProcesses = asArray(primaryFiltered.sessions, "primary sessions").every((session) => isRecord(session) && session.cwd === workspaceA) &&
-      asArray(secondaryFiltered.sessions, "secondary sessions").some((session) => isRecord(session) && session.sessionId === secondaryID && session.cwd === workspaceB)
+    const secondaryFiltered = asRecord(
+      await secondary.result("session/list", { cwd: workspaceB }),
+      "secondary filtered list",
+    )
+    const simultaneousProcesses = asArray(primaryFiltered.sessions, "primary sessions").every((session) =>
+      isRecord(session) && session.cwd === workspaceA
+    ) &&
+      asArray(secondaryFiltered.sessions, "secondary sessions").some((session) =>
+        isRecord(session) && session.sessionId === secondaryID && session.cwd === workspaceB
+      )
 
     let promptStopReason: string | undefined
     if (options.allowModelPrompt) {
       const prompt = primary.request("session/prompt", {
         sessionId: sessionID,
-        prompt: [{ type: "text", text: options.modelPromptText ?? "Reply with the single word READY. Do not use tools." }],
+        prompt: [{
+          type: "text",
+          text: options.modelPromptText ?? "Reply with the single word READY. Do not use tools.",
+        }],
       })
-      const cancelTimer = setTimeout(() => void primary?.notification("session/cancel", { sessionId: sessionID }), 5_000)
+      const cancelTimer = setTimeout(() =>
+        void primary?.notification("session/cancel", { sessionId: sessionID }), 5_000)
       try {
         const response = await prompt
         const result = asRecord(response.result, "session/prompt result")
-        if (typeof result.stopReason === "string") promptStopReason = result.stopReason
+        if (typeof result.stopReason === "string") {
+          promptStopReason = result.stopReason
+        }
       } finally {
         clearTimeout(cancelTimer)
       }
@@ -530,8 +585,13 @@ export async function recordAcpContract(options: RecordAcpContractOptions): Prom
     restarted = new AcpProcess("restart", options.executable, workspaceA, environment, timeoutMilliseconds)
     processes.push(restarted)
     await initialize(restarted)
-    const afterRestart = asRecord(await restarted.result("session/list", { cwd: workspaceA }), "restart session/list result")
-    const persistedAcrossRestart = asArray(afterRestart.sessions, "restart sessions").some((session) => isRecord(session) && session.sessionId === sessionID)
+    const afterRestart = asRecord(
+      await restarted.result("session/list", { cwd: workspaceA }),
+      "restart session/list result",
+    )
+    const persistedAcrossRestart = asArray(afterRestart.sessions, "restart sessions").some((session) =>
+      isRecord(session) && session.sessionId === sessionID
+    )
     await restarted.result("session/resume", { sessionId: sessionID, cwd: workspaceA, mcpServers: [] })
     await restarted.result("session/close", { sessionId: sessionID })
     const restartStatus = await restarted.close()
@@ -544,31 +604,117 @@ export async function recordAcpContract(options: RecordAcpContractOptions): Prom
     terminated = undefined
 
     const allCommands = [...new Set(processes.flatMap(commandNames))].sort()
-    const optionIDs = configOptions.flatMap((option) => typeof option.id === "string" ? [option.id] : []).sort()
+    const optionIDs = configOptions.flatMap((option) =>
+      typeof option.id === "string" ? [option.id] : []
+    ).sort()
     const variantSelection = optionIDs.includes("effort")
     const capabilities = initialization.agentCapabilities
     const agentInfo = asRecord(initialization.agentInfo, "initialize agentInfo")
     const authMethods = asArray(initialization.authMethods, "initialize authMethods")
     const classifications: AcpCapabilityClassification[] = [
-      { capability: "initialize and capability negotiation", classification: "supported", evidence: "initialize response, protocolVersion 1" },
-      { capability: "session create/list/load/resume/fork/close", classification: "supported", evidence: "provider-free JSON-RPC probes and restart probe" },
-      { capability: "working-directory isolation", classification: "supported", evidence: "two simultaneous subprocesses with filtered session/list results" },
-      { capability: "agent/mode selection", classification: modeIDs.length ? "supported" : "unknown", evidence: "mode config option and session/set_mode" },
-      { capability: "model selection", classification: modelID ? "supported" : "unknown", evidence: "model config option and session/set_model" },
-      { capability: "variant selection", classification: variantSelection ? "supported" : "unknown", evidence: variantSelection ? "effort config option" : "no effort option for the provider-free default model" },
-      { capability: "slash-command discovery", classification: "supported", evidence: "session/update available_commands_update" },
-      { capability: "companion-plugin commands", classification: options.pluginPath ? "supported" : "unknown", evidence: options.pluginPath ? "goal and goal-unlimited in available_commands_update" : "plugin not loaded by recorder" },
-      { capability: "tool and companion-tool schema discovery", classification: "missing", evidence: "no ACP tool-list method or provider-free tool-schema update", limitation: "Tool calls are observable only during a model turn." },
-      { capability: "MCP registration", classification: "supported", evidence: "initialize mcpCapabilities advertises HTTP and SSE; session setup accepts mcpServers" },
-      { capability: "MCP tool discovery", classification: "unknown", evidence: "no provider-free MCP tool-list update observed", limitation: "Requires an MCP fixture plus a model turn to observe tool use." },
-      { capability: "permission request and response choices", classification: "unknown", evidence: "session/request_permission requires an opt-in model/tool turn", limitation: "Not exercised by default." },
-      { capability: "questions and durable user input", classification: "unknown", evidence: "no provider-free question request can be triggered", limitation: "Not exercised by default." },
-      { capability: "prompt/message/reasoning/tool/diff/usage lifecycle", classification: options.allowModelPrompt ? "mapped" : "unknown", evidence: options.allowModelPrompt ? "opt-in session/prompt recording" : "session/prompt disabled by default", limitation: options.allowModelPrompt ? undefined : "Use --allow-model-prompt explicitly." },
-      { capability: "cancellation", classification: "mapped", evidence: "session/cancel is a notification accepted for an idle session", limitation: "Active-turn cancellation needs the opt-in prompt seam." },
-      { capability: "queue/steer/follow-up/replace", classification: "missing", evidence: "no distinct ACP 0.21.0 methods or advertised capabilities" },
-      { capability: "/undo and /redo", classification: "missing", evidence: "not present in available_commands_update" },
-      { capability: "malformed input recovery", classification: malformedInputSurvived ? "supported" : "missing", evidence: "invalid NDJSON line followed by successful session/list" },
-      { capability: "process crash recovery", classification: "mapped", evidence: "SIGTERM observed and sessions remained server-persisted" },
+      {
+        capability: "initialize and capability negotiation",
+        classification: "supported",
+        evidence: "initialize response, protocolVersion 1",
+      },
+      {
+        capability: "session create/list/load/resume/fork/close",
+        classification: "supported",
+        evidence: "provider-free JSON-RPC probes and restart probe",
+      },
+      {
+        capability: "working-directory isolation",
+        classification: "supported",
+        evidence: "two simultaneous subprocesses with filtered session/list results",
+      },
+      {
+        capability: "agent/mode selection",
+        classification: modeIDs.length ? "supported" : "unknown",
+        evidence: "mode config option and session/set_mode",
+      },
+      {
+        capability: "model selection",
+        classification: modelID ? "supported" : "unknown",
+        evidence: "model config option and session/set_model",
+      },
+      {
+        capability: "variant selection",
+        classification: variantSelection ? "supported" : "unknown",
+        evidence: variantSelection ? "effort config option" : "no effort option for the provider-free default model",
+      },
+      {
+        capability: "slash-command discovery",
+        classification: "supported",
+        evidence: "session/update available_commands_update",
+      },
+      {
+        capability: "companion-plugin commands",
+        classification: options.pluginPath ? "supported" : "unknown",
+        evidence: options.pluginPath
+          ? "goal and goal-unlimited in available_commands_update"
+          : "plugin not loaded by recorder",
+      },
+      {
+        capability: "tool and companion-tool schema discovery",
+        classification: "missing",
+        evidence: "no ACP tool-list method or provider-free tool-schema update",
+        limitation: "Tool calls are observable only during a model turn.",
+      },
+      {
+        capability: "MCP registration",
+        classification: "supported",
+        evidence: "initialize mcpCapabilities advertises HTTP and SSE; session setup accepts mcpServers",
+      },
+      {
+        capability: "MCP tool discovery",
+        classification: "unknown",
+        evidence: "no provider-free MCP tool-list update observed",
+        limitation: "Requires an MCP fixture plus a model turn to observe tool use.",
+      },
+      {
+        capability: "permission request and response choices",
+        classification: "unknown",
+        evidence: "session/request_permission requires an opt-in model/tool turn",
+        limitation: "Not exercised by default.",
+      },
+      {
+        capability: "questions and durable user input",
+        classification: "unknown",
+        evidence: "no provider-free question request can be triggered",
+        limitation: "Not exercised by default.",
+      },
+      {
+        capability: "prompt/message/reasoning/tool/diff/usage lifecycle",
+        classification: options.allowModelPrompt ? "mapped" : "unknown",
+        evidence: options.allowModelPrompt ? "opt-in session/prompt recording" : "session/prompt disabled by default",
+        limitation: options.allowModelPrompt ? undefined : "Use --allow-model-prompt explicitly.",
+      },
+      {
+        capability: "cancellation",
+        classification: "mapped",
+        evidence: "session/cancel is a notification accepted for an idle session",
+        limitation: "Active-turn cancellation needs the opt-in prompt seam.",
+      },
+      {
+        capability: "queue/steer/follow-up/replace",
+        classification: "missing",
+        evidence: "no distinct ACP 0.21.0 methods or advertised capabilities",
+      },
+      {
+        capability: "/undo and /redo",
+        classification: "missing",
+        evidence: "not present in available_commands_update",
+      },
+      {
+        capability: "malformed input recovery",
+        classification: malformedInputSurvived ? "supported" : "missing",
+        evidence: "invalid NDJSON line followed by successful session/list",
+      },
+      {
+        capability: "process crash recovery",
+        classification: "mapped",
+        evidence: "SIGTERM observed and sessions remained server-persisted",
+      },
     ]
 
     return {
@@ -582,7 +728,9 @@ export async function recordAcpContract(options: RecordAcpContractOptions): Prom
       },
       initialization: {
         agentName: asString(agentInfo.name, "agentInfo name"),
-        authMethodIDs: authMethods.flatMap((method) => isRecord(method) && typeof method.id === "string" ? [method.id] : []).sort(),
+        authMethodIDs: authMethods.flatMap((method) =>
+          isRecord(method) && typeof method.id === "string" ? [method.id] : []
+        ).sort(),
         capabilities,
       },
       session: {
@@ -654,10 +802,16 @@ function parseArguments(args: string[]): CliOptions {
     const value = args[index + 1]
     if (argument === "--allow-model-prompt") options.allowModelPrompt = true
     else if (argument === "--without-plugin") options.pluginPath = null
-    else if (argument === "--executable" && value) { options.executable = value; index += 1 }
-    else if (argument === "--expected-version" && value) { options.expectedVersion = value; index += 1 }
-    else if (argument === "--output" && value) { options.output = path.resolve(value); index += 1 }
-    else throw new Error(`Unknown or incomplete argument: ${argument}`)
+    else if (argument === "--executable" && value) {
+      options.executable = value
+      index += 1
+    } else if (argument === "--expected-version" && value) {
+      options.expectedVersion = value
+      index += 1
+    } else if (argument === "--output" && value) {
+      options.output = path.resolve(value)
+      index += 1
+    } else throw new Error(`Unknown or incomplete argument: ${argument}`)
   }
   return options
 }
@@ -665,7 +819,9 @@ function parseArguments(args: string[]): CliOptions {
 if (import.meta.main) {
   const options = parseArguments(Deno.args)
   if (options.allowModelPrompt) {
-    console.warn("WARNING: --allow-model-prompt permits a real provider/model request. This mode is never enabled by default.")
+    console.warn(
+      "WARNING: --allow-model-prompt permits a real provider/model request. This mode is never enabled by default.",
+    )
   }
   const fixture = await recordAcpContract(options)
   await Deno.mkdir(path.dirname(options.output), { recursive: true })

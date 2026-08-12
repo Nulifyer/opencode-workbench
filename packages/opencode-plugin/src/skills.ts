@@ -1,11 +1,11 @@
 import {
-  MAX_EVIDENCE,
   type Evidence,
+  MAX_EVIDENCE,
   type PluginState,
   type Provenance,
+  sameScope,
   type Scope,
   type SkillCandidate,
-  sameScope,
   visibleInProject,
 } from "./model.ts"
 import { LIMITS, validateDurableText, validateSkillName } from "./security.ts"
@@ -87,14 +87,18 @@ export function listEvidence(
   query?: string,
 ): Evidence[] {
   const term = query?.trim().toLocaleLowerCase()
-  return state.evidence.filter((evidence) => visibleInProject(evidence.scope, project) &&
-    (!term || `${evidence.kind} ${evidence.subject}`.toLocaleLowerCase().includes(term)))
+  return state.evidence.filter((evidence) =>
+    visibleInProject(evidence.scope, project) &&
+    (!term || `${evidence.kind} ${evidence.subject}`.toLocaleLowerCase().includes(term))
+  )
     .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
 }
 
 export function appendEvidence(state: PluginState, evidence: Evidence): void {
-  const duplicate = state.evidence.some((item) => item.kind === evidence.kind && item.subject === evidence.subject &&
-    item.sessionID === evidence.sessionID && item.messageID === evidence.messageID && item.callID === evidence.callID)
+  const duplicate = state.evidence.some((item) =>
+    item.kind === evidence.kind && item.subject === evidence.subject &&
+    item.sessionID === evidence.sessionID && item.messageID === evidence.messageID && item.callID === evidence.callID
+  )
   if (duplicate) return
   state.evidence.push(evidence)
   if (state.evidence.length > MAX_EVIDENCE) state.evidence.splice(0, state.evidence.length - MAX_EVIDENCE)

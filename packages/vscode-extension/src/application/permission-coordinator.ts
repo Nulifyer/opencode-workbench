@@ -1,4 +1,8 @@
-import { PERMISSION_AGGREGATE_CHARACTER_LIMIT, permissionRequestCharacters, type PermissionRequest } from "@opencode-workbench/shared"
+import {
+  PERMISSION_AGGREGATE_CHARACTER_LIMIT,
+  type PermissionRequest,
+  permissionRequestCharacters,
+} from "@opencode-workbench/shared"
 
 export type PermissionGrant = { protocol: PermissionRequest["protocol"]; type?: string; pattern: string }
 
@@ -9,7 +13,16 @@ export class PermissionCoordinator {
   generation = 0
   revision = 0
 
-  rejectOnly(request: PermissionRequest): PermissionRequest { return { id: request.id, sessionID: request.sessionID, title: request.title, type: request.type, protocol: request.protocol, truncated: true } }
+  rejectOnly(request: PermissionRequest): PermissionRequest {
+    return {
+      id: request.id,
+      sessionID: request.sessionID,
+      title: request.title,
+      type: request.type,
+      protocol: request.protocol,
+      truncated: true,
+    }
+  }
 
   bounded(requests: PermissionRequest[]): PermissionRequest[] {
     const output: PermissionRequest[] = []
@@ -23,10 +36,16 @@ export class PermissionCoordinator {
         size = permissionRequestCharacters(safe)
       }
       if (characters + size > PERMISSION_AGGREGATE_CHARACTER_LIMIT) break
-      output.push(safe); characters += size
+      output.push(safe)
+      characters += size
     }
     return output
   }
 
-  dispose(): void { this.responding.clear(); this.automaticallyResponding.clear(); this.grants.clear(); this.generation += 1 }
+  dispose(): void {
+    this.responding.clear()
+    this.automaticallyResponding.clear()
+    this.grants.clear()
+    this.generation += 1
+  }
 }

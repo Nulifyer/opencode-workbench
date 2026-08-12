@@ -1,20 +1,42 @@
 import { randomUUID } from "node:crypto"
 import path from "node:path"
-import { createOpenCodeMessageID, MULTI_RUN_DEFAULT_CONCURRENCY, MULTI_RUN_MAX_CANDIDATES, MULTI_RUN_MAX_CONCURRENCY, type MessageBundle, type RunGroup, type RunReference, type SessionLocator, type SessionStatus, type StructuredError } from "@opencode-workbench/shared"
+import {
+  createOpenCodeMessageID,
+  type MessageBundle,
+  MULTI_RUN_DEFAULT_CONCURRENCY,
+  MULTI_RUN_MAX_CANDIDATES,
+  MULTI_RUN_MAX_CONCURRENCY,
+  type RunGroup,
+  type RunReference,
+  type SessionLocator,
+  type SessionStatus,
+  type StructuredError,
+} from "@opencode-workbench/shared"
 import type { PromptFilePart } from "../opencode-client.js"
 import type { WorktreeService } from "./worktree-service.js"
 import { sessionTurnOutcome } from "./session-turn-outcome.js"
 
 export interface RunRuntime {
   createSession(title: string): Promise<{ id: string }>
-  sendPrompt(sessionID: string, promptID: string, text: string, delivery: "steer" | "queue", agent?: string, model?: string, variant?: string, files?: PromptFilePart[]): Promise<unknown>
+  sendPrompt(
+    sessionID: string,
+    promptID: string,
+    text: string,
+    delivery: "steer" | "queue",
+    agent?: string,
+    model?: string,
+    variant?: string,
+    files?: PromptFilePart[],
+  ): Promise<unknown>
   abort(sessionID: string): Promise<boolean>
   statuses(): Promise<Record<string, SessionStatus>>
   needsInput?(sessionID: string): Promise<boolean>
   inspectSession(sessionID: string): Promise<{ exists: boolean; messages: MessageBundle[] }>
 }
 
-export interface RunRuntimeFactory { forDirectory(directory: string): RunRuntime }
+export interface RunRuntimeFactory {
+  forDirectory(directory: string): RunRuntime
+}
 
 export interface RunAdmissionTracker {
   prepare(sourceReceiptID: string | undefined, sessionID: string, promptID: string): void
@@ -25,12 +47,14 @@ export interface RunAdmissionTracker {
 export interface MultiRunOrchestratorOptions {
   admission?: RunAdmissionTracker
   monitorIntervalMilliseconds?: number
+  onRunAdmitted?(groupID: string, runID: string): void | PromiseLike<void>
 }
 
 const MAX_ERROR_MESSAGE_LENGTH = 2_000
 const AUTHORIZATION_VALUE = /\b((?:proxy-authorization|authorization)\s*:\s*)[^\r\n]+/gi
 const COOKIE_HEADER_VALUE = /\b((?:set-cookie|cookie)\s*:\s*)[^\r\n]+/gi
-const SECRET_VALUE = /\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|password|secret|token|credential)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi
+const SECRET_VALUE =
+  /\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|password|secret|token|credential)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi
 const URL_CREDENTIAL = /\b([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi
 
 function sanitizedErrorMessage(value: unknown): string {
@@ -71,7 +95,17 @@ function isTerminalGroup(group: RunGroup): boolean {
   return group.runs.every((run) => TERMINAL_RUN_PHASES.has(run.phase))
 }
 
-async function forEachConcurrent<T>(values: readonly T[], concurrency: number, work: (value: T, index: number) => Promise<void>): Promise<void> {
+function runValueEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if ((typeof left !== "object" || left === null) || (typeof right !== "object" || right === null)) return false
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+async function forEachConcurrent<T>(
+  values: readonly T[],
+  concurrency: number,
+  work: (value: T, index: number) => Promise<void>,
+): Promise<void> {
   let next = 0
   const worker = async (): Promise<void> => {
     while (next < values.length) {
@@ -96,12 +130,19 @@ export class RunGroupService {
       if (group.mutationID) this.mutations.set(group.mutationID, group.id)
     }
     const pruned = this.pruneTerminalHistory()
-    if (this.groups.size > MAX_RUN_GROUPS) throw new Error("Run-group journal limit exceeded by active or needs-input groups")
+    if (this.groups.size > MAX_RUN_GROUPS) {
+      throw new Error("Run-group journal limit exceeded by active or needs-input groups")
+    }
     if (pruned) this.publish()
   }
 
-  list(): RunGroup[] { return [...this.groups.values()].map(cloneRunGroup) }
-  get(id: string): RunGroup | undefined { const group = this.groups.get(id); return group ? cloneRunGroup(group) : undefined }
+  list(): RunGroup[] {
+    return [...this.groups.values()].map(cloneRunGroup)
+  }
+  get(id: string): RunGroup | undefined {
+    const group = this.groups.get(id)
+    return group ? cloneRunGroup(group) : undefined
+  }
 
   async flush(): Promise<void> {
     await this.persistenceTail
@@ -125,18 +166,30 @@ export class RunGroupService {
     }
   }
 
-  create(input: Omit<RunGroup, "id" | "createdAt" | "runs"> & { mutationID: string; runs: Array<Pick<RunReference, "id" | "model" | "agent" | "variant">> }): RunGroup {
+  create(
+    input: Omit<RunGroup, "id" | "createdAt" | "runs"> & {
+      mutationID: string
+      runs: Array<Pick<RunReference, "id" | "model" | "agent" | "variant">>
+    },
+  ): RunGroup {
     if (!input.mutationID || input.mutationID.length > 1_024) throw new Error("Invalid run-group mutation ID")
-    if (input.runs.length < 2 || input.runs.length > MULTI_RUN_MAX_CANDIDATES || new Set(input.runs.map((run) => run.id)).size !== input.runs.length) throw new Error(`Multi-run requires two to ${MULTI_RUN_MAX_CANDIDATES} unique runs`)
+    if (
+      input.runs.length < 2 || input.runs.length > MULTI_RUN_MAX_CANDIDATES ||
+      new Set(input.runs.map((run) => run.id)).size !== input.runs.length
+    ) throw new Error(`Multi-run requires two to ${MULTI_RUN_MAX_CANDIDATES} unique runs`)
     const existingID = this.mutations.get(input.mutationID)
     if (existingID) {
       const existing = this.get(existingID)!
       const sameRuns = existing.runs.length === input.runs.length && existing.runs.every((run, index) => {
         const requested = input.runs[index]
-        return requested !== undefined && run.id === requested.id && run.model === requested.model && run.agent === requested.agent && run.variant === requested.variant
+        return requested !== undefined && run.id === requested.id && run.model === requested.model &&
+          run.agent === requested.agent && run.variant === requested.variant
       })
-      if (existing.ownerSessionID !== input.ownerSessionID || existing.title !== input.title.slice(0, 500) || existing.repository !== input.repository || existing.baseRef !== input.baseRef ||
-        existing.promptReceiptID !== input.promptReceiptID || existing.isolation !== input.isolation || !sameRuns) {
+      if (
+        existing.ownerSessionID !== input.ownerSessionID || existing.title !== input.title.slice(0, 500) ||
+        existing.repository !== input.repository || existing.baseRef !== input.baseRef ||
+        existing.promptReceiptID !== input.promptReceiptID || existing.isolation !== input.isolation || !sameRuns
+      ) {
         throw new Error(`Run-group mutation ${input.mutationID} was reused with a different request`)
       }
       return existing
@@ -144,12 +197,31 @@ export class RunGroupService {
     const pruned = this.pruneTerminalHistory(1)
     if (this.groups.size >= MAX_RUN_GROUPS) {
       if (pruned) this.publish()
-      throw new Error("Run-group journal limit reached by active or needs-input groups; finish or cancel an existing group before creating another")
+      throw new Error(
+        "Run-group journal limit reached by active or needs-input groups; finish or cancel an existing group before creating another",
+      )
     }
     const group: RunGroup = {
-      id: randomUUID(), mutationID: input.mutationID, ownerSessionID: input.ownerSessionID, title: input.title.slice(0, 500), repository: input.repository, baseRef: input.baseRef,
-      promptReceiptID: input.promptReceiptID, isolation: input.isolation, createdAt: Date.now(),
-      runs: input.runs.map((run) => ({ ...run, phase: "pending", session: { sessionID: "pending", directory: input.repository, experience: "workbench", transport: "http-sse", runtimeEpoch: "pending" } })),
+      id: randomUUID(),
+      mutationID: input.mutationID,
+      ownerSessionID: input.ownerSessionID,
+      title: input.title.slice(0, 500),
+      repository: input.repository,
+      baseRef: input.baseRef,
+      promptReceiptID: input.promptReceiptID,
+      isolation: input.isolation,
+      createdAt: Date.now(),
+      runs: input.runs.map((run) => ({
+        ...run,
+        phase: "pending",
+        session: {
+          sessionID: "pending",
+          directory: input.repository,
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "pending",
+        },
+      })),
     }
     this.groups.set(group.id, group)
     this.mutations.set(input.mutationID, group.id)
@@ -163,18 +235,29 @@ export class RunGroupService {
     if (!group || !run) throw new Error("Unknown run group or run")
     const next = structuredClone(values)
     if (next.error) next.error = sanitizedStructuredError(next.error)
+    if (Object.entries(next).every(([key, value]) => runValueEqual(run[key as keyof RunReference], value))) {
+      return cloneRunGroup(group)
+    }
     Object.assign(run, next)
     this.commit()
     return cloneRunGroup(group)
   }
 
-  updateIf(groupID: string, runID: string, expected: RunReference["phase"][], values: Partial<Omit<RunReference, "id">>): RunGroup | undefined {
+  updateIf(
+    groupID: string,
+    runID: string,
+    expected: RunReference["phase"][],
+    values: Partial<Omit<RunReference, "id">>,
+  ): RunGroup | undefined {
     const group = this.groups.get(groupID)
     const run = group?.runs.find((candidate) => candidate.id === runID)
     if (!group || !run) throw new Error("Unknown run group or run")
     if (!expected.includes(run.phase)) return undefined
     const next = structuredClone(values)
     if (next.error) next.error = sanitizedStructuredError(next.error)
+    if (Object.entries(next).every(([key, value]) => runValueEqual(run[key as keyof RunReference], value))) {
+      return cloneRunGroup(group)
+    }
     Object.assign(run, next)
     this.commit()
     return cloneRunGroup(group)
@@ -202,7 +285,9 @@ export class RunGroupService {
         const pending = Promise.resolve(this.persist(snapshot))
         this.persistenceTail = Promise.all([this.persistenceTail, pending]).then(
           () => undefined,
-          (error) => { if (this.persistenceFailure === undefined) this.persistenceFailure = error },
+          (error) => {
+            if (this.persistenceFailure === undefined) this.persistenceFailure = error
+          },
         )
       } catch (error) {
         if (this.persistenceFailure === undefined) this.persistenceFailure = error
@@ -243,11 +328,20 @@ export class MultiRunOrchestrator {
   private readonly controllers = new Map<string, AbortController>()
   private readonly monitorTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly interruptionResults = new Map<string, boolean>()
+  private readonly launchQueues = new Map<string, { input: MultiRunInput; concurrency: number }>()
+  private readonly launchPumps = new Map<string, Promise<void>>()
   private disposed = false
 
-  constructor(private readonly groups: RunGroupService, private readonly worktrees: WorktreeService, private readonly runtimes: RunRuntimeFactory, private readonly options: MultiRunOrchestratorOptions = {}) {
+  constructor(
+    private readonly groups: RunGroupService,
+    private readonly worktrees: WorktreeService,
+    private readonly runtimes: RunRuntimeFactory,
+    private readonly options: MultiRunOrchestratorOptions = {},
+  ) {
     const interval = options.monitorIntervalMilliseconds
-    if (interval !== undefined && (!Number.isSafeInteger(interval) || interval < 100 || interval > 60_000)) throw new Error("Multi-run monitor interval must be between 100 and 60,000 milliseconds")
+    if (interval !== undefined && (!Number.isSafeInteger(interval) || interval < 100 || interval > 60_000)) {
+      throw new Error("Multi-run monitor interval must be between 100 and 60,000 milliseconds")
+    }
   }
 
   dispose(): void {
@@ -257,11 +351,12 @@ export class MultiRunOrchestrator {
     for (const controller of this.controllers.values()) controller.abort(new Error("Multi-run orchestrator disposed"))
     this.controllers.clear()
     this.interruptionResults.clear()
+    this.launchQueues.clear()
   }
 
   async shutdown(): Promise<void> {
     this.dispose()
-    await Promise.allSettled([...this.operations.values()])
+    await Promise.allSettled([...this.operations.values(), ...this.launchPumps.values()])
     await Promise.all([this.groups.flush(), this.worktrees.flush()])
   }
 
@@ -269,17 +364,24 @@ export class MultiRunOrchestrator {
     if (this.disposed) throw new Error("Multi-run orchestrator is disposed")
     if (!input.prompt.trim() || input.prompt.length > 200_000) throw new Error("Multi-run prompt is empty or too large")
     const concurrency = input.concurrency ?? MULTI_RUN_DEFAULT_CONCURRENCY
-    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > MULTI_RUN_MAX_CONCURRENCY) throw new Error(`Multi-run concurrency must be between 1 and ${MULTI_RUN_MAX_CONCURRENCY}`)
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > MULTI_RUN_MAX_CONCURRENCY) {
+      throw new Error(`Multi-run concurrency must be between 1 and ${MULTI_RUN_MAX_CONCURRENCY}`)
+    }
     const selections = input.runs.map((run, index) => ({ ...run, id: run.id ?? `run-${index + 1}` }))
     const group = this.groups.create({
-      mutationID: input.mutationID, ownerSessionID: input.ownerSessionID, title: input.title, repository: input.repository, baseRef: input.baseRef,
-      promptReceiptID: input.promptReceiptID, isolation: "worktree", runs: selections,
+      mutationID: input.mutationID,
+      ownerSessionID: input.ownerSessionID,
+      title: input.title,
+      repository: input.repository,
+      baseRef: input.baseRef,
+      promptReceiptID: input.promptReceiptID,
+      isolation: "worktree",
+      runs: selections,
     })
     await this.groups.flush()
-    await forEachConcurrent(group.runs, concurrency, async (run, index) => await this.ensureLaunch(input, group.id, run.id, index))
-    const launched = this.groups.get(group.id)!
-    for (const run of launched.runs) this.scheduleMonitor(group.id, run.id)
-    return launched
+    this.launchQueues.set(group.id, { input: { ...input, runs: selections }, concurrency })
+    await this.launchPump(group.id)
+    return this.groups.get(group.id)!
   }
 
   async refresh(groupID: string): Promise<RunGroup> {
@@ -287,8 +389,12 @@ export class MultiRunOrchestrator {
     const group = this.groups.get(groupID)
     if (!group) throw new Error("Unknown run group")
     await this.worktrees.recover()
-    await forEachConcurrent(group.runs, MULTI_RUN_MAX_CONCURRENCY, async (run) => await this.recoverRun(group.id, run.id))
+    await forEachConcurrent(group.runs, MULTI_RUN_MAX_CONCURRENCY, async (run) => {
+      if (run.phase === "pending" && this.launchQueues.has(group.id)) return
+      await this.recoverRun(group.id, run.id)
+    })
     await this.groups.flush()
+    if (this.launchQueues.has(groupID)) await this.launchPump(groupID)
     const refreshed = this.groups.get(groupID)!
     for (const run of refreshed.runs) this.scheduleMonitor(groupID, run.id)
     return refreshed
@@ -297,9 +403,12 @@ export class MultiRunOrchestrator {
   async cancel(groupID: string, runID?: string): Promise<RunGroup> {
     const group = this.groups.get(groupID)
     if (!group) throw new Error("Unknown run group")
+    if (!runID) this.launchQueues.delete(groupID)
     const runs = runID ? group.runs.filter((run) => run.id === runID) : group.runs
     if (runID && !runs.length) throw new Error("Unknown run group or run")
-    const cancellable = runs.filter((run) => ["working", "admitting", "preparing", "pending", "needs-input"].includes(run.phase))
+    const cancellable = runs.filter((run) =>
+      ["working", "admitting", "preparing", "pending", "needs-input"].includes(run.phase)
+    )
     for (const run of cancellable) {
       this.stopMonitor(group.id, run.id)
       this.controllers.get(this.key(group.id, run.id))?.abort(new Error("Run cancelled"))
@@ -313,23 +422,38 @@ export class MultiRunOrchestrator {
       let accepted = this.interruptionResults.get(key) ?? current?.session.sessionID === "pending"
       this.interruptionResults.delete(key)
       if (accepted !== true && current && current.session.sessionID !== "pending") {
-        accepted = await this.runtimes.forDirectory(current.session.directory).abort(current.session.sessionID).catch(() => false)
+        accepted = await this.runtimes.forDirectory(current.session.directory).abort(current.session.sessionID).catch(
+          () => false,
+        )
       }
       if (accepted) {
         this.groups.updateIf(group.id, run.id, ["working", "admitting", "preparing", "pending", "needs-input"], {
-          phase: "cancelled", completedAt: Date.now(), error: undefined,
+          phase: "cancelled",
+          completedAt: Date.now(),
+          error: undefined,
         })
       } else {
         rejected += 1
-        if (current) this.groups.updateIf(group.id, run.id, [current.phase], {
-          phase: current.phase,
-          error: { code: "INTERNAL", message: "OpenCode did not confirm interruption; the run remains active", retryable: true },
-        })
+        if (current) {
+          this.groups.updateIf(group.id, run.id, [current.phase], {
+            phase: current.phase,
+            error: {
+              code: "INTERNAL",
+              message: "OpenCode did not confirm interruption; the run remains active",
+              retryable: true,
+            },
+          })
+        }
         this.scheduleMonitor(group.id, run.id)
       }
     }
     await this.groups.flush()
-    if (rejected) throw new Error(`OpenCode did not confirm interruption for ${rejected} run${rejected === 1 ? "" : "s"}; monitoring continues`)
+    if (runID) this.scheduleLaunchPump(groupID)
+    if (rejected) {
+      throw new Error(
+        `OpenCode did not confirm interruption for ${rejected} run${rejected === 1 ? "" : "s"}; monitoring continues`,
+      )
+    }
     return this.groups.get(groupID)!
   }
 
@@ -338,11 +462,22 @@ export class MultiRunOrchestrator {
     const group = this.groups.get(groupID)
     const run = group?.runs.find((candidate) => candidate.id === runID)
     if (!group || !run) throw new Error("Unknown run group or run")
-    if (run.discarded || !["failed", "cancelled"].includes(run.phase) || !run.worktreeID) throw new Error("Only a retained failed or cancelled run with a worktree can be retried")
+    if (run.discarded || !["failed", "cancelled"].includes(run.phase) || !run.worktreeID) {
+      throw new Error("Only a retained failed or cancelled run with a worktree can be retried")
+    }
     if (!prompt.trim() || prompt.length > 200_000) throw new Error("Retry prompt is empty or too large")
     const entry = this.worktrees.get(run.worktreeID)
-    if (!entry || ["cleanup-pending", "removed"].includes(entry.phase)) throw new Error("Run worktree is no longer available for retry")
-    if (!this.groups.updateIf(group.id, run.id, ["failed", "cancelled"], { phase: "admitting", error: undefined, completedAt: undefined, startedAt: Date.now() })) throw new Error("Run is no longer retryable")
+    if (!entry || ["cleanup-pending", "removed"].includes(entry.phase)) {
+      throw new Error("Run worktree is no longer available for retry")
+    }
+    if (
+      !this.groups.updateIf(group.id, run.id, ["failed", "cancelled"], {
+        phase: "admitting",
+        error: undefined,
+        completedAt: undefined,
+        startedAt: Date.now(),
+      })
+    ) throw new Error("Run is no longer retryable")
     await this.groups.flush()
     const key = this.key(group.id, run.id)
     const controller = new AbortController()
@@ -356,7 +491,57 @@ export class MultiRunOrchestrator {
       if (this.controllers.get(key) === controller) this.controllers.delete(key)
     }
     this.scheduleMonitor(group.id, run.id)
+    if (this.run(group.id, run.id)?.phase === "working") await this.notifyRunAdmitted(group.id, run.id)
     return this.groups.get(group.id)!
+  }
+
+  private scheduleLaunchPump(groupID: string): void {
+    if (this.disposed || !this.launchQueues.has(groupID)) return
+    void this.launchPump(groupID)
+  }
+
+  private launchPump(groupID: string): Promise<void> {
+    const existing = this.launchPumps.get(groupID)
+    if (existing) return existing
+    const pump = this.pumpLaunches(groupID).finally(() => {
+      if (this.launchPumps.get(groupID) === pump) this.launchPumps.delete(groupID)
+    })
+    this.launchPumps.set(groupID, pump)
+    return pump
+  }
+
+  private async pumpLaunches(groupID: string): Promise<void> {
+    while (!this.disposed) {
+      const queued = this.launchQueues.get(groupID)
+      const group = this.groups.get(groupID)
+      if (!queued || !group) return
+      const active = group.runs.filter((run) =>
+        ["preparing", "admitting", "working", "needs-input"].includes(run.phase)
+      ).length
+      const pending = group.runs.filter((run) =>
+        run.phase === "pending" && !this.operations.has(this.key(groupID, run.id))
+      )
+      const available = Math.max(0, queued.concurrency - active)
+      if (!pending.length) {
+        this.launchQueues.delete(groupID)
+        return
+      }
+      if (!available) return
+      const selected = pending.slice(0, available)
+      await Promise.all(selected.map(async (run) => {
+        const index = group.runs.findIndex((candidate) => candidate.id === run.id)
+        await this.ensureLaunch(queued.input, groupID, run.id, index)
+        const current = this.run(groupID, run.id)
+        if (current && ["working", "needs-input"].includes(current.phase)) {
+          this.scheduleMonitor(groupID, run.id)
+          await this.notifyRunAdmitted(groupID, run.id)
+        }
+      }))
+    }
+  }
+
+  private async notifyRunAdmitted(groupID: string, runID: string): Promise<void> {
+    await this.options.onRunAdmitted?.(groupID, runID)
   }
 
   private async ensureLaunch(input: MultiRunInput, groupID: string, runID: string, index: number): Promise<void> {
@@ -377,7 +562,13 @@ export class MultiRunOrchestrator {
     }
   }
 
-  private async launchRun(input: MultiRunInput, groupID: string, runID: string, index: number, controller: AbortController): Promise<void> {
+  private async launchRun(
+    input: MultiRunInput,
+    groupID: string,
+    runID: string,
+    index: number,
+    controller: AbortController,
+  ): Promise<void> {
     let worktreeID: string | undefined
     let runtime: RunRuntime | undefined
     let sessionID: string | undefined
@@ -394,13 +585,19 @@ export class MultiRunOrchestrator {
       const slug = `${groupID.slice(0, 8)}-${index + 1}`
       const mutationID = `${input.mutationID}:worktree:${runID}`
       const worktree = await this.worktrees.create({
-        directory: input.repository, path: path.join(input.worktreeParent, slug), branch: `workbench/run-${slug}`,
-        baseRef: input.baseRef, mutationID,
+        directory: input.repository,
+        path: path.join(input.worktreeParent, slug),
+        branch: `workbench/run-${slug}`,
+        baseRef: input.baseRef,
+        mutationID,
       }, controller.signal)
       worktreeID = worktree.id
       const beforeSession = this.run(groupID, runID)!
       const provisional: SessionLocator = {
-        ...beforeSession.session, directory: worktree.path, worktreeID: worktree.id, runtimeEpoch: input.runtimeEpoch,
+        ...beforeSession.session,
+        directory: worktree.path,
+        worktreeID: worktree.id,
+        runtimeEpoch: input.runtimeEpoch,
       }
       this.groups.update(groupID, runID, { worktreeID: worktree.id, session: provisional })
       await this.groups.flush()
@@ -410,7 +607,9 @@ export class MultiRunOrchestrator {
       runtime = this.runtimes.forDirectory(worktree.path)
 
       if (worktree.phase === "prompt-admitted") {
-        if (!worktree.sessionID || !worktree.promptID) throw new Error("Recovered prompt-admitted journal entry is incomplete")
+        if (!worktree.sessionID || !worktree.promptID) {
+          throw new Error("Recovered prompt-admitted journal entry is incomplete")
+        }
         sessionID = worktree.sessionID
         const locator: SessionLocator = { ...provisional, sessionID }
         this.groups.update(groupID, runID, { session: locator })
@@ -443,7 +642,16 @@ export class MultiRunOrchestrator {
       if (await this.stopCancelled(groupID, runID, controller, runtime, sessionID)) return
       this.options.admission?.prepare(input.promptReceiptID, sessionID, promptID)
       promptAttempted = true
-      await runtime.sendPrompt(sessionID, promptID, input.prompt, "steer", beforeSession.agent, beforeSession.model, beforeSession.variant, input.files)
+      await runtime.sendPrompt(
+        sessionID,
+        promptID,
+        input.prompt,
+        "steer",
+        beforeSession.agent,
+        beforeSession.model,
+        beforeSession.variant,
+        input.files,
+      )
       this.options.admission?.admit(sessionID, promptID)
       await this.worktrees.markDurably(worktree.id, "prompt-admitted", { sessionID, promptID })
       if (await this.stopCancelled(groupID, runID, controller, runtime, sessionID)) return
@@ -451,31 +659,57 @@ export class MultiRunOrchestrator {
       await this.groups.flush()
     } catch (error) {
       if (promptID) this.options.admission?.reject(promptID)
-      const journal = worktreeID ? this.worktrees.get(worktreeID) : this.worktrees.findByMutation(`${input.mutationID}:worktree:${runID}`)
+      const journal = worktreeID
+        ? this.worktrees.get(worktreeID)
+        : this.worktrees.findByMutation(`${input.mutationID}:worktree:${runID}`)
       if (journal) {
         const current = this.run(groupID, runID)
-        if (current) this.groups.update(groupID, runID, {
-          worktreeID: journal.id,
-          session: { ...current.session, directory: journal.path, worktreeID: journal.id, sessionID: journal.sessionID ?? current.session.sessionID },
-        })
+        if (current) {
+          this.groups.update(groupID, runID, {
+            worktreeID: journal.id,
+            session: {
+              ...current.session,
+              directory: journal.path,
+              worktreeID: journal.id,
+              sessionID: journal.sessionID ?? current.session.sessionID,
+            },
+          })
+        }
       }
       if (!this.isActive(groupID, runID, controller)) {
         if (runtime && sessionID) await runtime.abort(sessionID).catch(() => undefined)
         return
       }
       const structured = promptAttempted ? promptAdmissionError() : errorValue(error)
-      if (journal && journal.phase !== "failed" && journal.phase !== "removed") await this.worktrees.failDurably(journal.id, structured)
-      this.groups.updateIf(groupID, runID, ["pending", "preparing", "admitting"], { phase: "failed", completedAt: Date.now(), error: structured, worktreeID: journal?.id })
+      if (journal && journal.phase !== "failed" && journal.phase !== "removed") {
+        await this.worktrees.failDurably(journal.id, structured)
+      }
+      this.groups.updateIf(groupID, runID, ["pending", "preparing", "admitting"], {
+        phase: "failed",
+        completedAt: Date.now(),
+        error: structured,
+        worktreeID: journal?.id,
+      })
       await this.groups.flush()
     }
   }
 
-  private async retryRun(groupID: string, runID: string, prompt: string, files: PromptFilePart[], controller: AbortController): Promise<void> {
+  private async retryRun(
+    groupID: string,
+    runID: string,
+    prompt: string,
+    files: PromptFilePart[],
+    controller: AbortController,
+  ): Promise<void> {
     const initial = this.run(groupID, runID)!
     const worktreeID = initial.worktreeID!
     const entry = this.worktrees.get(worktreeID)
     if (!entry) {
-      this.groups.updateIf(groupID, runID, ["admitting"], { phase: "failed", completedAt: Date.now(), error: { code: "SESSION_NOT_FOUND", message: "Run worktree journal entry is missing", retryable: false } })
+      this.groups.updateIf(groupID, runID, ["admitting"], {
+        phase: "failed",
+        completedAt: Date.now(),
+        error: { code: "SESSION_NOT_FOUND", message: "Run worktree journal entry is missing", retryable: false },
+      })
       await this.groups.flush()
       return
     }
@@ -490,7 +724,9 @@ export class MultiRunOrchestrator {
         sessionID = session.id
         await this.worktrees.markDurably(entry.id, "session-ready", { sessionID })
       }
-      this.groups.update(groupID, runID, { session: { ...initial.session, sessionID, directory: entry.path, worktreeID: entry.id } })
+      this.groups.update(groupID, runID, {
+        session: { ...initial.session, sessionID, directory: entry.path, worktreeID: entry.id },
+      })
       await this.groups.flush()
       if (await this.stopCancelled(groupID, runID, controller, runtime, sessionID)) return
       promptID = createOpenCodeMessageID()
@@ -499,7 +735,16 @@ export class MultiRunOrchestrator {
       const sourceReceiptID = this.groups.get(groupID)?.promptReceiptID
       this.options.admission?.prepare(sourceReceiptID, sessionID, promptID)
       promptAttempted = true
-      await runtime.sendPrompt(sessionID, promptID, prompt, "steer", initial.agent, initial.model, initial.variant, files)
+      await runtime.sendPrompt(
+        sessionID,
+        promptID,
+        prompt,
+        "steer",
+        initial.agent,
+        initial.model,
+        initial.variant,
+        files,
+      )
       this.options.admission?.admit(sessionID, promptID)
       await this.worktrees.markDurably(entry.id, "prompt-admitted", { sessionID, promptID })
       if (await this.stopCancelled(groupID, runID, controller, runtime, sessionID)) return
@@ -512,8 +757,14 @@ export class MultiRunOrchestrator {
         return
       }
       const structured = promptAttempted ? promptAdmissionError() : errorValue(error)
-      try { await this.worktrees.failDurably(entry.id, structured) } catch { /* Cleanup may have completed while the retry was in flight. */ }
-      this.groups.updateIf(groupID, runID, ["admitting"], { phase: "failed", completedAt: Date.now(), error: structured })
+      try {
+        await this.worktrees.failDurably(entry.id, structured)
+      } catch { /* Cleanup may have completed while the retry was in flight. */ }
+      this.groups.updateIf(groupID, runID, ["admitting"], {
+        phase: "failed",
+        completedAt: Date.now(),
+        error: structured,
+      })
       await this.groups.flush()
     }
   }
@@ -525,7 +776,8 @@ export class MultiRunOrchestrator {
     const group = this.groups.get(groupID)
     if (!run || !group || run.discarded) return
     const mutationID = group.mutationID ? `${group.mutationID}:worktree:${run.id}` : undefined
-    const entry = (run.worktreeID ? this.worktrees.get(run.worktreeID) : undefined) ?? (mutationID ? this.worktrees.findByMutation(mutationID) : undefined)
+    const entry = (run.worktreeID ? this.worktrees.get(run.worktreeID) : undefined) ??
+      (mutationID ? this.worktrees.findByMutation(mutationID) : undefined)
     if (entry?.phase === "removed") {
       this.groups.update(groupID, runID, {
         phase: "cancelled",
@@ -538,7 +790,15 @@ export class MultiRunOrchestrator {
     if (["completed", "failed", "cancelled"].includes(run.phase)) return
     if (!entry) {
       if (["pending", "preparing", "admitting", "working", "needs-input"].includes(run.phase)) {
-        this.groups.updateIf(groupID, runID, [run.phase], { phase: "failed", completedAt: Date.now(), error: { code: "SESSION_NOT_FOUND", message: "Run worktree journal entry is missing after restart", retryable: false } })
+        this.groups.updateIf(groupID, runID, [run.phase], {
+          phase: "failed",
+          completedAt: Date.now(),
+          error: {
+            code: "SESSION_NOT_FOUND",
+            message: "Run worktree journal entry is missing after restart",
+            retryable: false,
+          },
+        })
       }
       return
     }
@@ -555,7 +815,9 @@ export class MultiRunOrchestrator {
       ? "Prompt admission was interrupted and cannot be replayed without explicit user confirmation"
       : `Run launch was interrupted during ${entry.phase}`
     this.groups.updateIf(groupID, runID, ["pending", "preparing", "admitting", "working", "needs-input"], {
-      phase: "failed", completedAt: Date.now(), error: { code: retryable ? "OPERATION_CONFLICT" : "SESSION_NOT_FOUND", message, retryable },
+      phase: "failed",
+      completedAt: Date.now(),
+      error: { code: retryable ? "OPERATION_CONFLICT" : "SESSION_NOT_FOUND", message, retryable },
     })
   }
 
@@ -566,9 +828,15 @@ export class MultiRunOrchestrator {
       const runtime = this.runtimes.forDirectory(run.session.directory)
       const status = (await runtime.statuses())[run.session.sessionID]
       const needsInput = await runtime.needsInput?.(run.session.sessionID) ?? false
-      if (status?.type === "error") this.groups.updateIf(groupID, runID, ["working", "needs-input"], { phase: "failed", completedAt: Date.now(), error: { code: "INTERNAL", message: "OpenCode run failed", retryable: true } })
-      else if (needsInput) this.groups.updateIf(groupID, runID, ["working", "needs-input"], { phase: "needs-input", error: undefined })
-      else if (!status || status.type === "idle") {
+      if (status?.type === "error") {
+        this.groups.updateIf(groupID, runID, ["working", "needs-input"], {
+          phase: "failed",
+          completedAt: Date.now(),
+          error: { code: "INTERNAL", message: "OpenCode run failed", retryable: true },
+        })
+      } else if (needsInput) {
+        this.groups.updateIf(groupID, runID, ["working", "needs-input"], { phase: "needs-input", error: undefined })
+      } else if (!status || status.type === "idle") {
         const inspection = await runtime.inspectSession(run.session.sessionID)
         const outcome = sessionTurnOutcome(status, inspection.exists, inspection.messages)
         if (outcome.state === "missing") {
@@ -584,22 +852,33 @@ export class MultiRunOrchestrator {
             error: { code: "INTERNAL", message: "OpenCode run failed", retryable: true },
           })
         } else if (outcome.state === "completed") {
-          this.groups.updateIf(groupID, runID, ["working", "needs-input"], { phase: "completed", completedAt: Date.now(), error: undefined })
+          this.groups.updateIf(groupID, runID, ["working", "needs-input"], {
+            phase: "completed",
+            completedAt: Date.now(),
+            error: undefined,
+          })
         } else {
           this.groups.updateIf(groupID, runID, ["working", "needs-input"], { phase: "working", error: undefined })
         }
-      }
-      else this.groups.updateIf(groupID, runID, ["working", "needs-input"], { phase: "working", error: undefined })
+      } else this.groups.updateIf(groupID, runID, ["working", "needs-input"], { phase: "working", error: undefined })
       await this.groups.flush()
     } catch {
       const current = this.run(groupID, runID)
       if (current && ["working", "needs-input"].includes(current.phase)) {
         this.groups.updateIf(groupID, runID, [current.phase], {
           phase: current.phase,
-          error: { code: "INTERNAL", message: "Run status is temporarily unavailable; monitoring will retry", retryable: true },
+          error: {
+            code: "INTERNAL",
+            message: "Run status is temporarily unavailable; monitoring will retry",
+            retryable: true,
+          },
         })
       }
       await this.groups.flush()
+    }
+    const current = this.run(groupID, runID)
+    if (!current || !["preparing", "admitting", "working", "needs-input"].includes(current.phase)) {
+      this.scheduleLaunchPump(groupID)
     }
   }
 
@@ -607,7 +886,10 @@ export class MultiRunOrchestrator {
     const interval = this.options.monitorIntervalMilliseconds
     const key = this.key(groupID, runID)
     const run = this.run(groupID, runID)
-    if (this.disposed || interval === undefined || this.monitorTimers.has(key) || !run || !["working", "needs-input"].includes(run.phase)) return
+    if (
+      this.disposed || interval === undefined || this.monitorTimers.has(key) || !run ||
+      !["working", "needs-input"].includes(run.phase)
+    ) return
     const timer = setTimeout(() => {
       this.monitorTimers.delete(key)
       void this.pollRun(groupID, runID).finally(() => this.scheduleMonitor(groupID, runID))
@@ -622,7 +904,13 @@ export class MultiRunOrchestrator {
     this.monitorTimers.delete(key)
   }
 
-  private async stopCancelled(groupID: string, runID: string, controller: AbortController, runtime: RunRuntime, sessionID: string): Promise<boolean> {
+  private async stopCancelled(
+    groupID: string,
+    runID: string,
+    controller: AbortController,
+    runtime: RunRuntime,
+    sessionID: string,
+  ): Promise<boolean> {
     if (this.isActive(groupID, runID, controller)) return false
     const accepted = await runtime.abort(sessionID).catch(() => false)
     this.interruptionResults.set(this.key(groupID, runID), accepted)
@@ -632,12 +920,15 @@ export class MultiRunOrchestrator {
 
   private isActive(groupID: string, runID: string, controller: AbortController): boolean {
     const run = this.run(groupID, runID)
-    return !controller.signal.aborted && run !== undefined && !run.discarded && ["pending", "preparing", "admitting"].includes(run.phase)
+    return !controller.signal.aborted && run !== undefined && !run.discarded &&
+      ["pending", "preparing", "admitting"].includes(run.phase)
   }
 
   private run(groupID: string, runID: string): RunReference | undefined {
     return this.groups.get(groupID)?.runs.find((candidate) => candidate.id === runID)
   }
 
-  private key(groupID: string, runID: string): string { return `${groupID}:${runID}` }
+  private key(groupID: string, runID: string): string {
+    return `${groupID}:${runID}`
+  }
 }

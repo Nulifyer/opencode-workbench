@@ -1,4 +1,10 @@
-import { decidePreference, effectivePreferences, forgetPreference, proposePreference, renderPreferenceData } from "../src/memory.ts"
+import {
+  decidePreference,
+  effectivePreferences,
+  forgetPreference,
+  proposePreference,
+  renderPreferenceData,
+} from "../src/memory.ts"
 import { emptyState, type PreferenceCategory, type Scope } from "../src/model.ts"
 import { assert, equal, rejects } from "./assert.ts"
 
@@ -6,7 +12,15 @@ const provenance = { sessionID: "session", messageID: "message", source: "explic
 const global: Scope = { kind: "global" }
 const project: Scope = { kind: "project", project: "/project" }
 
-function propose(scope: Scope, category: PreferenceCategory, key: string, value: string, at: number, id: string, approve = true) {
+function propose(
+  scope: Scope,
+  category: PreferenceCategory,
+  key: string,
+  value: string,
+  at: number,
+  id: string,
+  approve = true,
+) {
   return { scope, category, key, value, provenance, approve, at, id }
 }
 

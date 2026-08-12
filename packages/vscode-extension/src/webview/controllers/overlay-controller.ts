@@ -1,6 +1,15 @@
+import { ModalController } from "./modal-controller.js"
+
+/** @deprecated Prefer ModalController for new modal and overlay surfaces. */
 export class OverlayController {
-  private returnFocus?: HTMLElement
-  constructor(private readonly root: HTMLElement, private readonly toggle?: HTMLElement) {}
-  open(focus?: HTMLElement): void { this.returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : this.toggle; this.root.hidden = false; this.toggle?.setAttribute("aria-expanded", "true"); focus?.focus() }
-  close(restore = true): void { this.root.hidden = true; this.toggle?.setAttribute("aria-expanded", "false"); if (restore) (this.returnFocus ?? this.toggle)?.focus(); this.returnFocus = undefined }
+  private readonly controller: ModalController
+  constructor(root: HTMLElement, toggle?: HTMLElement) {
+    this.controller = new ModalController(root, toggle)
+  }
+  open(focus?: HTMLElement): void {
+    this.controller.show(focus)
+  }
+  close(restore = true): void {
+    this.controller.close(restore)
+  }
 }

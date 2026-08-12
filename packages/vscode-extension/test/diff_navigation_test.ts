@@ -19,9 +19,16 @@ Deno.test("diff navigation respects rename provenance and requested side", () =>
     modifiedPath: "new/name.ts",
     focusPath: "old/name.ts",
   })
-  assertEquals(diffNavigationPaths(snapshot, { file: "new/name.ts", side: "modified", startLine: 1, endLine: 1 }).focusPath, "new/name.ts")
+  assertEquals(
+    diffNavigationPaths(snapshot, { file: "new/name.ts", side: "modified", startLine: 1, endLine: 1 }).focusPath,
+    "new/name.ts",
+  )
 })
 
 Deno.test("diff navigation rejects anchors outside the captured diff", () => {
-  assertThrows(() => diffNavigationPaths(snapshot, { file: "invented.ts", side: "modified", startLine: 1, endLine: 1 }), Error, "unknown file")
+  assertThrows(
+    () => diffNavigationPaths(snapshot, { file: "invented.ts", side: "modified", startLine: 1, endLine: 1 }),
+    Error,
+    "unknown file",
+  )
 })

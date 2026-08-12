@@ -5,7 +5,8 @@ const version = "0.3.0-dev.20990101.t000000"
 const output = join(root, "dist", `opencode-workbench-vscode-${version}.vsix`)
 
 async function command(args: string[], env?: Record<string, string>): Promise<void> {
-  const result = await new Deno.Command(Deno.execPath(), { cwd: root, args, env, stdout: "piped", stderr: "piped" }).output()
+  const result = await new Deno.Command(Deno.execPath(), { cwd: root, args, env, stdout: "piped", stderr: "piped" })
+    .output()
   if (!result.success) {
     const detail = new TextDecoder().decode(result.stderr) || new TextDecoder().decode(result.stdout)
     throw new Error(`Command failed (${args.join(" ")}):\n${detail}`)
@@ -14,14 +15,21 @@ async function command(args: string[], env?: Record<string, string>): Promise<vo
 
 async function zipEntries(file: string, wanted: Set<string>): Promise<Map<string, Uint8Array>> {
   const yauzl = await import("npm:yauzl@3.4.0") as unknown as {
-    open(path: string, options: { lazyEntries: boolean }, callback: (error: Error | null, zip: {
-      readEntry(): void
-      close(): void
-      on(event: string, callback: (...args: any[]) => void): void
-      openReadStream(entry: unknown, callback: (error: Error | null, stream: {
+    open(
+      path: string,
+      options: { lazyEntries: boolean },
+      callback: (error: Error | null, zip: {
+        readEntry(): void
+        close(): void
         on(event: string, callback: (...args: any[]) => void): void
-      }) => void): void
-    }) => void): void
+        openReadStream(
+          entry: unknown,
+          callback: (error: Error | null, stream: {
+            on(event: string, callback: (...args: any[]) => void): void
+          }) => void,
+        ): void
+      }) => void,
+    ): void
   }
   return await new Promise((resolve, reject) => {
     yauzl.open(file, { lazyEntries: true }, (error, zip) => {
@@ -73,10 +81,15 @@ Deno.test("packages the override version, root README, and managed plugin", asyn
     const manifest = JSON.parse(new TextDecoder().decode(entries.get("extension/package.json"))) as { version?: string }
     if (manifest.version !== version) throw new Error(`Packaged version was ${manifest.version ?? "missing"}`)
     const readme = new TextDecoder().decode(entries.get("extension/readme.md"))
-    if (!readme.startsWith("# OpenCode Workbench") || !readme.includes("OpenCode still owns the models, agents, tools, sessions, permissions, and")) {
+    if (
+      !readme.startsWith("# OpenCode Workbench") ||
+      !readme.includes("OpenCode still owns the models, agents, tools, sessions, permissions, and")
+    ) {
       throw new Error("VSIX did not contain the repository README")
     }
-    if (!entries.get("extension/dist/opencode-plugin.js")?.length) throw new Error("VSIX did not contain the managed OpenCode plugin")
+    if (!entries.get("extension/dist/opencode-plugin.js")?.length) {
+      throw new Error("VSIX did not contain the managed OpenCode plugin")
+    }
   } finally {
     await Deno.remove(output).catch(() => undefined)
   }

@@ -42,7 +42,9 @@ export interface OpenCodeSessionListOptions {
 
 export function validateServerUrl(value: string): void {
   const url = new URL(value)
-  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("OpenCode server URL must use HTTP or HTTPS")
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("OpenCode server URL must use HTTP or HTTPS")
+  }
   if (url.username || url.password) throw new Error("OpenCode server URL must not contain credentials")
   if (url.protocol === "http:" && !["127.0.0.1", "[::1]", "::1"].includes(url.hostname)) {
     throw new Error("OpenCode HTTP server URL must use numeric loopback; use HTTPS for remote servers")
@@ -51,7 +53,19 @@ export function validateServerUrl(value: string): void {
 
 type JsonRecord = Record<string, unknown>
 
-const GOAL_CONTINUATION_PROMPT = `Continue working autonomously toward the active goal. Call get_goal first and stop if its status is not active. Make concrete progress, use the available tools, and verify the result. Before ending this turn, update the goal with an evidence-based checkpoint; mark it complete only after auditing real evidence, or unmet only when a concrete blocker prevents completion. Do not ask for more user input unless permissions, destructive actions, remote writes, purchases, or material scope expansion require it.`
+class OpenCodeHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+    this.name = "OpenCodeHttpError"
+  }
+}
+
+function unsupportedHistoryTransport(error: unknown): boolean {
+  return error instanceof OpenCodeHttpError && [404, 405, 501].includes(error.status)
+}
+
+const GOAL_CONTINUATION_PROMPT =
+  `Continue working autonomously toward the active goal. Call get_goal first and stop if its status is not active. Make concrete progress, use the available tools, and verify the result. Before ending this turn, update the goal with an evidence-based checkpoint; mark it complete only after auditing real evidence, or unmet only when a concrete blocker prevents completion. Do not ask for more user input unless permissions, destructive actions, remote writes, purchases, or material scope expansion require it.`
 
 const RESPONSE_BODY_LIMIT = 32 * 1024 * 1024
 const ERROR_BODY_LIMIT = 64 * 1024
@@ -154,11 +168,17 @@ function nonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0
 }
 
-function parsePromptAdmission(value: unknown, expected: { id: string; sessionID: string; delivery: "steer" | "queue" }): PromptAdmission {
+function parsePromptAdmission(
+  value: unknown,
+  expected: { id: string; sessionID: string; delivery: "steer" | "queue" },
+): PromptAdmission {
   const admitted = admissionRecord(value)
-  if (!admitted || admitted.id !== expected.id || admitted.sessionID !== expected.sessionID || admitted.delivery !== expected.delivery ||
+  if (
+    !admitted || admitted.id !== expected.id || admitted.sessionID !== expected.sessionID ||
+    admitted.delivery !== expected.delivery ||
     !nonNegativeSafeInteger(admitted.admittedSeq) || !nonNegativeSafeInteger(admitted.timeCreated) ||
-    (admitted.promotedSeq !== undefined && !nonNegativeSafeInteger(admitted.promotedSeq))) {
+    (admitted.promotedSeq !== undefined && !nonNegativeSafeInteger(admitted.promotedSeq))
+  ) {
     throw new Error("OpenCode returned a malformed or mismatched prompt admission receipt")
   }
   return {
@@ -173,8 +193,11 @@ function parsePromptAdmission(value: unknown, expected: { id: string; sessionID:
 
 function parseCompactionAdmission(value: unknown, expected: { id: string; sessionID: string }): CompactionAdmission {
   const admitted = admissionRecord(value)
-  if (!admitted || admitted.id !== expected.id || admitted.sessionID !== expected.sessionID || admitted.type !== "compaction" ||
-    !nonNegativeSafeInteger(admitted.admittedSeq) || !nonNegativeSafeInteger(admitted.timeCreated)) {
+  if (
+    !admitted || admitted.id !== expected.id || admitted.sessionID !== expected.sessionID ||
+    admitted.type !== "compaction" ||
+    !nonNegativeSafeInteger(admitted.admittedSeq) || !nonNegativeSafeInteger(admitted.timeCreated)
+  ) {
     throw new Error("OpenCode returned a malformed or mismatched compaction admission receipt")
   }
   return {
@@ -192,7 +215,11 @@ interface MetadataBudget {
   truncated: boolean
 }
 
-function boundedMetadata(value: unknown, depth = 0, budget: MetadataBudget = { nodes: 0, characters: 0, truncated: false }): unknown {
+function boundedMetadata(
+  value: unknown,
+  depth = 0,
+  budget: MetadataBudget = { nodes: 0, characters: 0, truncated: false },
+): unknown {
   budget.nodes += 1
   if (budget.nodes > 1_000 || depth > 8) {
     budget.truncated = true
@@ -254,7 +281,10 @@ function metadata(value: unknown): { value?: Record<string, unknown>; truncated:
   return { value: boundedMetadata(value, 0, budget) as Record<string, unknown>, truncated: budget.truncated }
 }
 
-function permissionStrings(value: unknown, budget: { characters: number }): { values: string[]; truncated: boolean } | undefined {
+function permissionStrings(
+  value: unknown,
+  budget: { characters: number },
+): { values: string[]; truncated: boolean } | undefined {
   if (!Array.isArray(value)) return undefined
   let truncated = value.length > 100
   const values: string[] = []
@@ -274,7 +304,14 @@ function boundedPermission(request: PermissionRequest): PermissionRequest | unde
 }
 
 function rejectOnlyPermission(request: PermissionRequest): PermissionRequest {
-  return { id: request.id, sessionID: request.sessionID, title: request.title, type: request.type, protocol: request.protocol, truncated: true }
+  return {
+    id: request.id,
+    sessionID: request.sessionID,
+    title: request.title,
+    type: request.type,
+    protocol: request.protocol,
+    truncated: true,
+  }
 }
 
 function parseEvent(value: unknown): OpenCodeEvent | undefined {
@@ -287,22 +324,35 @@ function timestamp(value: unknown): number | undefined {
 }
 
 function sessionTokenCount(value: unknown): number | undefined {
-  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 1_000_000_000_000 ? Number(value) : undefined
+  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 1_000_000_000_000
+    ? Number(value)
+    : undefined
 }
 
 function parseSessionInfo(value: unknown): SessionInfo | undefined {
-  if (!isRecord(value) || !boundedString(value.id, 1_024) || !value.id || !boundedString(value.title, 20_000) ||
-    !boundedString(value.directory, 8_192) || !isRecord(value.time)) return undefined
+  if (
+    !isRecord(value) || !boundedString(value.id, 1_024) || !value.id || !boundedString(value.title, 20_000) ||
+    !boundedString(value.directory, 8_192) || !isRecord(value.time)
+  ) return undefined
   const created = timestamp(value.time.created)
   const updated = timestamp(value.time.updated)
   if (created === undefined || updated === undefined) return undefined
-  const model = isRecord(value.model) && boundedString(value.model.id, 1_024) && value.model.id && boundedString(value.model.providerID, 1_024) && value.model.providerID
-    ? { id: value.model.id, providerID: value.model.providerID, variant: boundedString(value.model.variant, 1_024) ? value.model.variant : undefined }
+  const model = isRecord(value.model) && boundedString(value.model.id, 1_024) && value.model.id &&
+      boundedString(value.model.providerID, 1_024) && value.model.providerID
+    ? {
+      id: value.model.id,
+      providerID: value.model.providerID,
+      variant: boundedString(value.model.variant, 1_024) ? value.model.variant : undefined,
+    }
     : undefined
   const archived = timestamp(value.time.archived)
   const summary = isRecord(value.summary) && [value.summary.additions, value.summary.deletions, value.summary.files]
       .every((entry) => Number.isSafeInteger(entry) && Number(entry) >= 0 && Number(entry) <= 1_000_000_000)
-    ? { additions: Number(value.summary.additions), deletions: Number(value.summary.deletions), files: Number(value.summary.files) }
+    ? {
+      additions: Number(value.summary.additions),
+      deletions: Number(value.summary.deletions),
+      files: Number(value.summary.files),
+    }
     : undefined
   const tokens = (() => {
     if (!isRecord(value.tokens) || !isRecord(value.tokens.cache)) return undefined
@@ -311,21 +361,29 @@ function parseSessionInfo(value: unknown): SessionInfo | undefined {
     const reasoning = sessionTokenCount(value.tokens.reasoning)
     const read = sessionTokenCount(value.tokens.cache.read)
     const write = sessionTokenCount(value.tokens.cache.write)
-    return input === undefined || output === undefined || reasoning === undefined || read === undefined || write === undefined
+    return input === undefined || output === undefined || reasoning === undefined || read === undefined ||
+        write === undefined
       ? undefined
       : { input, output, reasoning, cache: { read, write } }
   })()
   const share = (() => {
-    if (!isRecord(value.share) || !boundedString(value.share.url, 8_192) || /[\u0000-\u001f\u007f]/.test(value.share.url)) return undefined
+    if (
+      !isRecord(value.share) || !boundedString(value.share.url, 8_192) || /[\u0000-\u001f\u007f]/.test(value.share.url)
+    ) return undefined
     try {
       const url = new URL(value.share.url)
-      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? { url: url.toString() } : undefined
+      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password
+        ? { url: url.toString() }
+        : undefined
     } catch {
       return undefined
     }
   })()
   const revert = isRecord(value.revert) && boundedString(value.revert.messageID, 1_024) && value.revert.messageID
-    ? { messageID: value.revert.messageID, partID: boundedString(value.revert.partID, 1_024) ? value.revert.partID : undefined }
+    ? {
+      messageID: value.revert.messageID,
+      partID: boundedString(value.revert.partID, 1_024) ? value.revert.partID : undefined,
+    }
     : undefined
   return {
     id: value.id,
@@ -353,7 +411,9 @@ function parseSessionStatus(value: unknown): SessionStatus | undefined {
   if (value.type !== "retry") return undefined
   return {
     type: "retry",
-    attempt: typeof value.attempt === "number" && Number.isSafeInteger(value.attempt) && value.attempt >= 0 ? value.attempt : undefined,
+    attempt: typeof value.attempt === "number" && Number.isSafeInteger(value.attempt) && value.attempt >= 0
+      ? value.attempt
+      : undefined,
     message: boundedString(value.message, 20_000) ? value.message : undefined,
     next: timestamp(value.next),
   }
@@ -371,12 +431,14 @@ function validPtyID(value: unknown): value is string {
 
 /** Strictly projects the stable metadata returned by OpenCode's native PTY API. */
 export function parseOpenCodePty(value: unknown): OpenCodePty | undefined {
-  if (!isRecord(value) || !validPtyID(value.id) || !boundedString(value.title, 2_000) || value.title.includes("\0") ||
+  if (
+    !isRecord(value) || !validPtyID(value.id) || !boundedString(value.title, 2_000) || value.title.includes("\0") ||
     !boundedString(value.command, 8_192) || !value.command || value.command.includes("\0") ||
     !boundedString(value.cwd, 8_192) || !value.cwd || value.cwd.includes("\0") ||
     !Array.isArray(value.args) || value.args.length > OPENCODE_PTY_ARGUMENT_LIMIT ||
     (value.status !== "running" && value.status !== "exited") ||
-    !Number.isSafeInteger(value.pid) || Number(value.pid) < 0 || Number(value.pid) > 2_147_483_647) return undefined
+    !Number.isSafeInteger(value.pid) || Number(value.pid) < 0 || Number(value.pid) > 2_147_483_647
+  ) return undefined
   const args: string[] = []
   let argumentCharacters = 0
   for (const argument of value.args) {
@@ -386,7 +448,10 @@ export function parseOpenCodePty(value: unknown): OpenCodePty | undefined {
     args.push(argument)
   }
   const exitCode = value.exitCode
-  if (exitCode !== undefined && (!Number.isSafeInteger(exitCode) || Number(exitCode) < -2_147_483_648 || Number(exitCode) > 2_147_483_647)) return undefined
+  if (
+    exitCode !== undefined &&
+    (!Number.isSafeInteger(exitCode) || Number(exitCode) < -2_147_483_648 || Number(exitCode) > 2_147_483_647)
+  ) return undefined
   return {
     id: value.id,
     title: value.title,
@@ -429,9 +494,15 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
       const textEntries = typeof item.text === "string"
         ? [{ text: item.text, synthetic: item.synthetic, metadata: item.metadata }]
         : Array.isArray(item.content)
-        ? item.content.flatMap((entry) => isRecord(entry) && entry.type === "text" && typeof entry.text === "string"
-          ? [{ text: entry.text, synthetic: entry.synthetic ?? item.synthetic, metadata: entry.metadata ?? item.metadata }]
-          : [])
+        ? item.content.flatMap((entry) =>
+          isRecord(entry) && entry.type === "text" && typeof entry.text === "string"
+            ? [{
+              text: entry.text,
+              synthetic: entry.synthetic ?? item.synthetic,
+              metadata: entry.metadata ?? item.metadata,
+            }]
+            : []
+        )
         : []
       for (const [index, entry] of textEntries.entries()) {
         if (!entry.text) continue
@@ -446,10 +517,20 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
           ...(parsedMetadata ? { metadata: parsedMetadata } : {}),
         })
       }
-      if (Array.isArray(item.files)) for (const [index, file] of item.files.entries()) {
-        if (!isRecord(file) || typeof file.uri !== "string" || typeof file.mime !== "string") continue
-        const filename = typeof file.name === "string" && file.name ? file.name : `Attachment ${index + 1}`
-        parts.push({ id: `${item.id}-file-${index}`, sessionID, messageID: item.id, type: "file", url: file.uri, mime: file.mime, filename })
+      if (Array.isArray(item.files)) {
+        for (const [index, file] of item.files.entries()) {
+          if (!isRecord(file) || typeof file.uri !== "string" || typeof file.mime !== "string") continue
+          const filename = typeof file.name === "string" && file.name ? file.name : `Attachment ${index + 1}`
+          parts.push({
+            id: `${item.id}-file-${index}`,
+            sessionID,
+            messageID: item.id,
+            type: "file",
+            url: file.uri,
+            mime: file.mime,
+            filename,
+          })
+        }
       }
       messages.push({ info: { id: item.id, sessionID, role: "user", time }, parts })
       continue
@@ -457,17 +538,32 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
     if (item.type === "assistant" && Array.isArray(item.content)) {
       const parts: MessagePart[] = []
       for (const content of item.content) {
-        if (!isRecord(content) || !boundedString(content.id, 1_024) || !content.id || typeof content.type !== "string") continue
+        if (
+          !isRecord(content) || !boundedString(content.id, 1_024) || !content.id || typeof content.type !== "string"
+        ) continue
         if ((content.type === "text" || content.type === "reasoning") && typeof content.text === "string") {
-          const contentTime = isRecord(content.time) ? { start: timestamp(content.time.created), end: timestamp(content.time.completed) } : undefined
-          parts.push({ id: content.id, sessionID, messageID: item.id, type: content.type, text: content.text, ...(contentTime ? { time: contentTime } : {}) })
+          const contentTime = isRecord(content.time)
+            ? { start: timestamp(content.time.created), end: timestamp(content.time.completed) }
+            : undefined
+          parts.push({
+            id: content.id,
+            sessionID,
+            messageID: item.id,
+            type: content.type,
+            text: content.text,
+            ...(contentTime ? { time: contentTime } : {}),
+          })
           continue
         }
         if (content.type !== "tool" || typeof content.name !== "string" || !isRecord(content.state)) continue
-        const stateTime = isRecord(content.time) ? { start: timestamp(content.time.created), end: timestamp(content.time.completed) } : undefined
+        const stateTime = isRecord(content.time)
+          ? { start: timestamp(content.time.created), end: timestamp(content.time.completed) }
+          : undefined
         const error = isRecord(content.state.error) && typeof content.state.error.message === "string"
           ? content.state.error.message
-          : typeof content.state.error === "string" ? content.state.error : undefined
+          : typeof content.state.error === "string"
+          ? content.state.error
+          : undefined
         parts.push({
           id: content.id,
           sessionID,
@@ -513,7 +609,11 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
           messageID: item.id,
           type: "tool",
           tool: "bash",
-          state: { status: completed === undefined ? "running" : "completed", input: { command: item.command }, output: typeof item.output === "string" ? item.output : undefined },
+          state: {
+            status: completed === undefined ? "running" : "completed",
+            input: { command: item.command },
+            output: typeof item.output === "string" ? item.output : undefined,
+          },
         }],
       })
       continue
@@ -529,12 +629,13 @@ function projectedMessages(value: unknown, sessionID: string): MessageBundle[] |
     // state, not assistant-authored chat output. Projecting them as empty
     // assistant articles corrupts turn grouping and navigation.
     if (["system", "synthetic", "agent-switched", "model-switched"].includes(String(item.type))) continue
-    const text = typeof item.text === "string" ? item.text
-      : undefined
-    if (text !== undefined) messages.push({
-      info: { id: item.id, sessionID, role: "assistant", time },
-      parts: [{ id: `${item.id}-text`, sessionID, messageID: item.id, type: "text", text, synthetic: true }],
-    })
+    const text = typeof item.text === "string" ? item.text : undefined
+    if (text !== undefined) {
+      messages.push({
+        info: { id: item.id, sessionID, role: "assistant", time },
+        parts: [{ id: `${item.id}-text`, sessionID, messageID: item.id, type: "text", text, synthetic: true }],
+      })
+    }
   }
   return messages
 }
@@ -560,7 +661,9 @@ function mergeMessageBundles(legacy: MessageBundle, current: MessageBundle): Mes
 }
 
 function positiveTokenLimit(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= Number.MAX_SAFE_INTEGER ? Math.floor(value) : undefined
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= Number.MAX_SAFE_INTEGER
+    ? Math.floor(value)
+    : undefined
 }
 
 function modelCapabilities(value: unknown): ModelOption["capabilities"] {
@@ -577,7 +680,9 @@ function modelCapabilities(value: unknown): ModelOption["capabilities"] {
   }
   const interleaved = typeof value.interleaved === "boolean"
     ? value.interleaved
-    : isRecord(value.interleaved) && boundedString(value.interleaved.field, 100) ? { field: value.interleaved.field } : undefined
+    : isRecord(value.interleaved) && boundedString(value.interleaved.field, 100)
+    ? { field: value.interleaved.field }
+    : undefined
   return {
     temperature: typeof value.temperature === "boolean" ? value.temperature : undefined,
     reasoning: typeof value.reasoning === "boolean" ? value.reasoning : undefined,
@@ -590,16 +695,22 @@ function modelCapabilities(value: unknown): ModelOption["capabilities"] {
 }
 
 export function parsePermission(event: OpenCodeEvent): PermissionRequest | undefined {
-  if (event.type !== "permission.updated" && event.type !== "permission.asked" && event.type !== "permission.v2.asked") return undefined
+  if (
+    event.type !== "permission.updated" && event.type !== "permission.asked" && event.type !== "permission.v2.asked"
+  ) return undefined
   const value = event.properties
-  if (!boundedString(value.id, 1_024) || !value.id || !boundedString(value.sessionID, 1_024) || !value.sessionID) return undefined
+  if (!boundedString(value.id, 1_024) || !value.id || !boundedString(value.sessionID, 1_024) || !value.sessionID) {
+    return undefined
+  }
   const parsedMetadata = metadata(value.metadata)
   if (!parsedMetadata) return undefined
   if (event.type === "permission.v2.asked") {
     const budget = { characters: 0 }
     const resources = permissionStrings(value.resources, budget)
     const save = value.save === undefined ? undefined : permissionStrings(value.save, budget)
-    if (!boundedString(value.action, 1_024) || !value.action || !resources || (value.save !== undefined && !save)) return undefined
+    if (!boundedString(value.action, 1_024) || !value.action || !resources || (value.save !== undefined && !save)) {
+      return undefined
+    }
     return boundedPermission({
       id: value.id,
       sessionID: value.sessionID,
@@ -654,8 +765,11 @@ export function parseTodos(value: unknown): TodoItem[] {
   const result: TodoItem[] = []
   let characters = 0
   for (const item of value.slice(0, 1_000)) {
-    if (!isRecord(item) || (item.id !== undefined && (!boundedString(item.id, 1_024) || !item.id)) || !boundedString(item.content, 20_000) ||
-      !boundedString(item.status, 100) || (item.priority !== undefined && !boundedString(item.priority, 100))) continue
+    if (
+      !isRecord(item) || (item.id !== undefined && (!boundedString(item.id, 1_024) || !item.id)) ||
+      !boundedString(item.content, 20_000) ||
+      !boundedString(item.status, 100) || (item.priority !== undefined && !boundedString(item.priority, 100))
+    ) continue
     characters += (item.id?.length ?? 0) + item.content.length + item.status.length + (item.priority?.length ?? 0)
     if (characters > 1_000_000) break
     result.push({ id: item.id, content: item.content, status: item.status, priority: item.priority })
@@ -668,10 +782,14 @@ export function parseCommands(value: unknown): CommandOption[] {
   const commands: CommandOption[] = []
   let characters = 0
   for (const item of value.slice(0, 1_000)) {
-    if (!isRecord(item) || !boundedString(item.name, 1_024) || !item.name ||
+    if (
+      !isRecord(item) || !boundedString(item.name, 1_024) || !item.name ||
       (item.description !== undefined && !boundedString(item.description, 20_000)) ||
       (item.source !== undefined && !["command", "mcp", "skill"].includes(String(item.source))) ||
-      (item.hints !== undefined && (!Array.isArray(item.hints) || item.hints.length > 100 || !item.hints.every((hint) => boundedString(hint, 2_000))))) continue
+      (item.hints !== undefined &&
+        (!Array.isArray(item.hints) || item.hints.length > 100 ||
+          !item.hints.every((hint) => boundedString(hint, 2_000))))
+    ) continue
     characters += item.name.length + (typeof item.description === "string" ? item.description.length : 0) +
       (Array.isArray(item.hints) ? item.hints.reduce<number>((total, hint) => total + String(hint).length, 0) : 0)
     if (characters > 2_000_000) break
@@ -690,11 +808,13 @@ export function parseChanges(value: unknown): FileChange[] {
   const result: FileChange[] = []
   let characters = 0
   for (const item of value.slice(0, 500)) {
-    if (!isRecord(item) || !boundedString(item.file, 8_192) || !item.file ||
+    if (
+      !isRecord(item) || !boundedString(item.file, 8_192) || !item.file ||
       !Number.isSafeInteger(item.additions) || Number(item.additions) < 0 ||
       !Number.isSafeInteger(item.deletions) || Number(item.deletions) < 0 ||
       (item.patch !== undefined && !boundedString(item.patch, 500_000)) ||
-      (item.status !== undefined && !["added", "deleted", "modified"].includes(String(item.status)))) continue
+      (item.status !== undefined && !["added", "deleted", "modified"].includes(String(item.status)))
+    ) continue
     characters += item.file.length + (typeof item.patch === "string" ? item.patch.length : 0)
     if (characters > 4_000_000) break
     result.push({
@@ -709,10 +829,12 @@ export function parseChanges(value: unknown): FileChange[] {
 }
 
 function parseQuestionInfo(value: unknown): QuestionInfo | undefined {
-  if (!isRecord(value) || !boundedString(value.question, 20_000) || !boundedString(value.header, 1_000) ||
+  if (
+    !isRecord(value) || !boundedString(value.question, 20_000) || !boundedString(value.header, 1_000) ||
     !Array.isArray(value.options) || value.options.length > 50 ||
     (value.multiple !== undefined && typeof value.multiple !== "boolean") ||
-    (value.custom !== undefined && typeof value.custom !== "boolean")) return undefined
+    (value.custom !== undefined && typeof value.custom !== "boolean")
+  ) return undefined
   const options = value.options.flatMap((option) =>
     isRecord(option) && boundedString(option.label, 2_000) && boundedString(option.description, 20_000)
       ? [{ label: option.label, description: option.description }]
@@ -734,12 +856,20 @@ export function parseQuestions(value: unknown, protocol: QuestionRequest["protoc
   const result: QuestionRequest[] = []
   let characters = 0
   for (const item of source.slice(0, 100)) {
-    if (!isRecord(item) || !boundedString(item.id, 1_024) || !item.id || !boundedString(item.sessionID, 1_024) || !item.sessionID ||
-      !Array.isArray(item.questions) || item.questions.length === 0 || item.questions.length > 20) continue
+    if (
+      !isRecord(item) || !boundedString(item.id, 1_024) || !item.id || !boundedString(item.sessionID, 1_024) ||
+      !item.sessionID ||
+      !Array.isArray(item.questions) || item.questions.length === 0 || item.questions.length > 20
+    ) continue
     const questions = item.questions.map(parseQuestionInfo)
     if (questions.some((question) => !question)) continue
-    characters += item.id.length + item.sessionID.length + questions.reduce((total, question) =>
-      total + question!.question.length + question!.header.length + question!.options.reduce((sum, option) => sum + option.label.length + option.description.length, 0), 0)
+    characters += item.id.length + item.sessionID.length +
+      questions.reduce(
+        (total, question) =>
+          total + question!.question.length + question!.header.length +
+          question!.options.reduce((sum, option) => sum + option.label.length + option.description.length, 0),
+        0,
+      )
     if (characters > 1_000_000) break
     result.push({ id: item.id, sessionID: item.sessionID, questions: questions as QuestionInfo[], protocol })
   }
@@ -761,8 +891,8 @@ export function parsePermissions(value: unknown, protocol: "current" | "v2"): Pe
     if (!isRecord(item)) continue
     const parsed = protocol === "v2"
       ? parsePermission({ type: "permission.v2.asked", properties: item })
-      : parsePermission({ type: "permission.asked", properties: item })
-        ?? parsePermission({ type: "permission.updated", properties: item })
+      : parsePermission({ type: "permission.asked", properties: item }) ??
+        parsePermission({ type: "permission.updated", properties: item })
     if (!parsed) continue
     if ((counts.get(parsed.sessionID) ?? 0) >= 100) continue
     const current = characters.get(parsed.sessionID) ?? 0
@@ -804,7 +934,9 @@ export class OpenCodeClient {
   }
 
   forDirectory(directory: string): OpenCodeClient {
-    if (!path.isAbsolute(directory) || directory.includes("\0")) throw new Error("OpenCode directory must be an absolute path")
+    if (!path.isAbsolute(directory) || directory.includes("\0")) {
+      throw new Error("OpenCode directory must be an absolute path")
+    }
     return new OpenCodeClient({ ...this.connection, directory })
   }
 
@@ -824,13 +956,21 @@ export class OpenCodeClient {
     const headers = new Headers({ Accept: "application/json" })
     if (json) headers.set("Content-Type", "application/json")
     if (this.connection.password) {
-      const credential = Buffer.from(`${this.connection.username}:${this.connection.password}`, "utf8").toString("base64")
+      const credential = Buffer.from(`${this.connection.username}:${this.connection.password}`, "utf8").toString(
+        "base64",
+      )
       headers.set("Authorization", `Basic ${credential}`)
     }
     return headers
   }
 
-  private async requestResponse<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal, timeoutMilliseconds = REQUEST_TIMEOUT_MS): Promise<{ data: T; headers: Headers }> {
+  private async requestResponse<T>(
+    method: string,
+    pathname: string,
+    body?: unknown,
+    signal?: AbortSignal,
+    timeoutMilliseconds = REQUEST_TIMEOUT_MS,
+  ): Promise<{ data: T; headers: Headers }> {
     const controller = new AbortController()
     const sources = [this.requests.signal, signal].filter((value): value is AbortSignal => Boolean(value))
     const abort = (source: AbortSignal) => controller.abort(source.reason)
@@ -838,7 +978,10 @@ export class OpenCodeClient {
       source.addEventListener("abort", () => abort(source), { once: true, signal: controller.signal })
       if (source.aborted) abort(source)
     }
-    const timeout = setTimeout(() => controller.abort(new Error(`OpenCode ${method} ${pathname} timed out`)), timeoutMilliseconds)
+    const timeout = setTimeout(
+      () => controller.abort(new Error(`OpenCode ${method} ${pathname} timed out`)),
+      timeoutMilliseconds,
+    )
     try {
       const response = await fetch(this.endpoint(pathname), {
         method,
@@ -848,7 +991,10 @@ export class OpenCodeClient {
       })
       if (!response.ok) {
         const detail = (await readLimitedText(response, ERROR_BODY_LIMIT)).slice(0, 1_000)
-        throw new Error(`OpenCode ${method} ${pathname} failed (${response.status})${detail ? `: ${detail}` : ""}`)
+        throw new OpenCodeHttpError(
+          `OpenCode ${method} ${pathname} failed (${response.status})${detail ? `: ${detail}` : ""}`,
+          response.status,
+        )
       }
       if (response.status === 204) return { data: undefined as T, headers: response.headers }
       const encoded = await readLimitedText(response, RESPONSE_BODY_LIMIT)
@@ -863,18 +1009,38 @@ export class OpenCodeClient {
     }
   }
 
-  private async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal, timeoutMilliseconds = REQUEST_TIMEOUT_MS): Promise<T> {
+  private async request<T>(
+    method: string,
+    pathname: string,
+    body?: unknown,
+    signal?: AbortSignal,
+    timeoutMilliseconds = REQUEST_TIMEOUT_MS,
+  ): Promise<T> {
     return (await this.requestResponse<T>(method, pathname, body, signal, timeoutMilliseconds)).data
   }
 
   async listSessions(options?: OpenCodeSessionListOptions): Promise<SessionInfo[]> {
     if (options) {
-      if (options.search !== undefined && (typeof options.search !== "string" || !options.search.trim() || options.search.length > 2_000)) throw new Error("OpenCode session search must contain 1-2,000 characters")
-      if (options.roots !== undefined && typeof options.roots !== "boolean") throw new Error("OpenCode session roots filter is invalid")
-      if (options.archived !== undefined && typeof options.archived !== "boolean") throw new Error("OpenCode session archive filter is invalid")
-      if (options.start !== undefined && (!Number.isSafeInteger(options.start) || options.start < 0)) throw new Error("OpenCode session start is invalid")
-      if (options.cursor !== undefined && (!Number.isSafeInteger(options.cursor) || options.cursor < 0)) throw new Error("OpenCode session cursor is invalid")
-      if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 5_000)) throw new Error("OpenCode session limit must be between 1 and 5,000")
+      if (
+        options.search !== undefined &&
+        (typeof options.search !== "string" || !options.search.trim() || options.search.length > 2_000)
+      ) throw new Error("OpenCode session search must contain 1-2,000 characters")
+      if (options.roots !== undefined && typeof options.roots !== "boolean") {
+        throw new Error("OpenCode session roots filter is invalid")
+      }
+      if (options.archived !== undefined && typeof options.archived !== "boolean") {
+        throw new Error("OpenCode session archive filter is invalid")
+      }
+      if (options.start !== undefined && (!Number.isSafeInteger(options.start) || options.start < 0)) {
+        throw new Error("OpenCode session start is invalid")
+      }
+      if (options.cursor !== undefined && (!Number.isSafeInteger(options.cursor) || options.cursor < 0)) {
+        throw new Error("OpenCode session cursor is invalid")
+      }
+      if (
+        options.limit !== undefined &&
+        (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 5_000)
+      ) throw new Error("OpenCode session limit must be between 1 and 5,000")
       const query = new URLSearchParams()
       if (options.search !== undefined) query.set("search", options.search.trim())
       if (options.roots !== undefined) query.set("roots", String(options.roots))
@@ -884,15 +1050,24 @@ export class OpenCodeClient {
       query.set("limit", String(options.limit ?? 500))
       try {
         const value = await this.request<unknown>("GET", `/experimental/session?${query}`)
-        if (!Array.isArray(value) || value.length > 5_000) throw new Error("OpenCode returned a malformed experimental session list")
+        if (!Array.isArray(value) || value.length > 5_000) {
+          throw new Error("OpenCode returned a malformed experimental session list")
+        }
         return value.map(parseSessionInfo).filter((session): session is SessionInfo => Boolean(session))
       } catch (error) {
-        if (!/^OpenCode GET \/experimental\/session(?:\?[^ ]*)? failed \((?:404|405|501)\)/.test(errorMessage(error))) throw error
-        if (options.start !== undefined || options.cursor !== undefined) throw new Error("This OpenCode version does not support paged session search")
+        if (!/^OpenCode GET \/experimental\/session(?:\?[^ ]*)? failed \((?:404|405|501)\)/.test(errorMessage(error))) {
+          throw error
+        }
+        if (options.start !== undefined || options.cursor !== undefined) {
+          throw new Error("This OpenCode version does not support paged session search")
+        }
         const legacy = await this.listSessions()
-        return legacy.filter((session) => (options.roots !== true || !session.parentID) &&
+        return legacy.filter((session) =>
+          (options.roots !== true || !session.parentID) &&
           (options.archived === true || session.time.archived === undefined) &&
-          (options.search === undefined || `${session.title}\n${session.id}`.toLocaleLowerCase().includes(options.search.trim().toLocaleLowerCase())))
+          (options.search === undefined ||
+            `${session.title}\n${session.id}`.toLocaleLowerCase().includes(options.search.trim().toLocaleLowerCase()))
+        )
           .slice(0, options.limit ?? 500)
       }
     }
@@ -903,7 +1078,9 @@ export class OpenCodeClient {
 
   async listPtys(): Promise<OpenCodePty[]> {
     const value = await this.request<unknown>("GET", "/pty")
-    if (!Array.isArray(value) || value.length > OPENCODE_PTY_LIMIT) throw new Error("OpenCode returned a malformed PTY list")
+    if (!Array.isArray(value) || value.length > OPENCODE_PTY_LIMIT) {
+      throw new Error("OpenCode returned a malformed PTY list")
+    }
     const ptys: OpenCodePty[] = []
     const ids = new Set<string>()
     for (const candidate of value) {
@@ -916,20 +1093,28 @@ export class OpenCodeClient {
   }
 
   async deletePty(ptyID: string): Promise<boolean> {
-    const value = await this.request<unknown>("DELETE", `/pty/${encodeURIComponent(requiredControlPlaneID(ptyID, "PTY"))}`)
+    const value = await this.request<unknown>(
+      "DELETE",
+      `/pty/${encodeURIComponent(requiredControlPlaneID(ptyID, "PTY"))}`,
+    )
     if (typeof value !== "boolean") throw new Error("OpenCode returned malformed PTY deletion data")
     return value
   }
 
   async backgroundChildSessions(sessionID: string): Promise<boolean> {
-    const value = await this.request<unknown>("POST", `/experimental/session/${encodeURIComponent(requiredControlPlaneID(sessionID, "session"))}/background`)
+    const value = await this.request<unknown>(
+      "POST",
+      `/experimental/session/${encodeURIComponent(requiredControlPlaneID(sessionID, "session"))}/background`,
+    )
     if (typeof value !== "boolean") throw new Error("OpenCode returned malformed background-session data")
     return value
   }
 
   async health(): Promise<{ healthy: true; version: string }> {
     const value = await this.request<unknown>("GET", "/global/health")
-    if (!isRecord(value) || value.healthy !== true || typeof value.version !== "string") throw new Error("OpenCode returned malformed health data")
+    if (!isRecord(value) || value.healthy !== true || typeof value.version !== "string") {
+      throw new Error("OpenCode returned malformed health data")
+    }
     return { healthy: true, version: value.version }
   }
 
@@ -938,7 +1123,9 @@ export class OpenCodeClient {
       this.request<unknown>("GET", "/session/status"),
       this.request<unknown>("GET", "/api/session/active"),
     ])
-    if (!isRecord(legacy) || !isRecord(active) || !isRecord(active.data)) throw new Error("OpenCode returned malformed session status data")
+    if (!isRecord(legacy) || !isRecord(active) || !isRecord(active.data)) {
+      throw new Error("OpenCode returned malformed session status data")
+    }
     const statuses: Record<string, SessionStatus> = Object.create(null)
     for (const [sessionID, value] of Object.entries(legacy)) {
       const status = parseSessionStatus(value)
@@ -959,28 +1146,53 @@ export class OpenCodeClient {
   }
 
   async renameSession(sessionID: string, title: string): Promise<SessionInfo> {
-    return requiredSessionInfo(await this.request<unknown>("PATCH", `/session/${encodeURIComponent(sessionID)}`, { title }))
+    return requiredSessionInfo(
+      await this.request<unknown>("PATCH", `/session/${encodeURIComponent(sessionID)}`, { title }),
+    )
   }
 
   async archiveSession(sessionID: string, archivedAt = Date.now()): Promise<SessionInfo> {
     if (!Number.isSafeInteger(archivedAt) || archivedAt < 0) throw new Error("OpenCode archive timestamp is invalid")
-    return requiredSessionInfo(await this.request<unknown>("PATCH", `/session/${encodeURIComponent(sessionID)}`, { time: { archived: archivedAt } }))
+    return requiredSessionInfo(
+      await this.request<unknown>("PATCH", `/session/${encodeURIComponent(sessionID)}`, {
+        time: { archived: archivedAt },
+      }),
+    )
   }
 
   async forkSession(sessionID: string, messageID?: string): Promise<SessionInfo> {
-    return requiredSessionInfo(await this.request<unknown>("POST", `/session/${encodeURIComponent(sessionID)}/fork`, messageID ? { messageID } : {}))
+    return requiredSessionInfo(
+      await this.request<unknown>(
+        "POST",
+        `/session/${encodeURIComponent(sessionID)}/fork`,
+        messageID ? { messageID } : {},
+      ),
+    )
   }
 
   async revertSession(sessionID: string, messageID: string, partID?: string): Promise<SessionInfo> {
-    return requiredSessionInfo(await this.request<unknown>("POST", `/session/${encodeURIComponent(sessionID)}/revert`, { messageID, ...(partID ? { partID } : {}) }))
+    return requiredSessionInfo(
+      await this.request<unknown>("POST", `/session/${encodeURIComponent(sessionID)}/revert`, {
+        messageID,
+        ...(partID ? { partID } : {}),
+      }),
+    )
   }
 
   async unrevertSession(sessionID: string): Promise<SessionInfo> {
-    return requiredSessionInfo(await this.request<unknown>("POST", `/session/${encodeURIComponent(sessionID)}/unrevert`))
+    return requiredSessionInfo(
+      await this.request<unknown>("POST", `/session/${encodeURIComponent(sessionID)}/unrevert`),
+    )
   }
 
   summarizeSession(sessionID: string, providerID: string, modelID: string): Promise<boolean> {
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/summarize`, { providerID, modelID }, undefined, LONG_REQUEST_TIMEOUT_MS)
+    return this.request(
+      "POST",
+      `/session/${encodeURIComponent(sessionID)}/summarize`,
+      { providerID, modelID },
+      undefined,
+      LONG_REQUEST_TIMEOUT_MS,
+    )
   }
 
   async shareSession(sessionID: string): Promise<SessionInfo> {
@@ -1004,9 +1216,13 @@ export class OpenCodeClient {
     const current = v2.status === "fulfilled" ? v2.value : undefined
     const previous = legacy.status === "fulfilled" ? legacy.value : []
     if (!current && legacy.status === "rejected") throw v2.status === "rejected" ? v2.reason : legacy.reason
-    if (current && legacy.status === "rejected") for (const message of current) {
-      if (message.info.role !== "user") continue
-      for (const part of message.parts) if (part.type === "text" && part.text === GOAL_CONTINUATION_PROMPT) part.synthetic = true
+    if (current && legacy.status === "rejected") {
+      for (const message of current) {
+        if (message.info.role !== "user") continue
+        for (const part of message.parts) {
+          if (part.type === "text" && part.text === GOAL_CONTINUATION_PROMPT) part.synthetic = true
+        }
+      }
     }
     const merged = previous.slice()
     const positions = new Map(merged.map((message, index) => [message.info?.id, index]))
@@ -1018,7 +1234,9 @@ export class OpenCodeClient {
       } else merged[position] = mergeMessageBundles(merged[position]!, message)
     }
     return {
-      messages: merged.sort((left, right) => (left.info.time?.created ?? 0) - (right.info.time?.created ?? 0) || left.info.id.localeCompare(right.info.id)),
+      messages: merged.sort((left, right) =>
+        (left.info.time?.created ?? 0) - (right.info.time?.created ?? 0) || left.info.id.localeCompare(right.info.id)
+      ),
       legacyMessageIDs: previous.map((message) => message.info.id),
       v2MessageIDs: (current ?? []).map((message) => message.info.id),
     }
@@ -1030,7 +1248,11 @@ export class OpenCodeClient {
    * cold session can become interactive without downloading its entire
    * transcript first.
    */
-  async messageHistoryPage(sessionID: string, cursor?: SessionMessageHistoryCursor, limit = 400): Promise<SessionMessageHistoryPage> {
+  async messageHistoryPage(
+    sessionID: string,
+    cursor?: SessionMessageHistoryCursor,
+    limit = 400,
+  ): Promise<SessionMessageHistoryPage> {
     const encoded = encodeURIComponent(sessionID)
     const boundedLimit = Math.max(2, Math.min(1_000, Math.floor(limit)))
     // Each transport may contain distinct records. Splitting the bound keeps
@@ -1046,9 +1268,13 @@ export class OpenCodeClient {
     if (v2.status === "rejected" && legacy.status === "rejected") throw v2.reason
     const current = v2.status === "fulfilled" ? v2.value.messages : []
     const previous = legacy.status === "fulfilled" ? legacy.value.messages : []
-    if (current.length && legacy.status === "rejected") for (const message of current) {
-      if (message.info.role !== "user") continue
-      for (const part of message.parts) if (part.type === "text" && part.text === GOAL_CONTINUATION_PROMPT) part.synthetic = true
+    if (current.length && legacy.status === "rejected") {
+      for (const message of current) {
+        if (message.info.role !== "user") continue
+        for (const part of message.parts) {
+          if (part.type === "text" && part.text === GOAL_CONTINUATION_PROMPT) part.synthetic = true
+        }
+      }
     }
     const merged = previous.slice()
     const positions = new Map(merged.map((message, index) => [message.info?.id, index]))
@@ -1060,28 +1286,46 @@ export class OpenCodeClient {
       } else merged[position] = mergeMessageBundles(merged[position]!, message)
     }
     return {
-      messages: merged.sort((left, right) => (left.info.time?.created ?? 0) - (right.info.time?.created ?? 0) || left.info.id.localeCompare(right.info.id)),
+      messages: merged.sort((left, right) =>
+        (left.info.time?.created ?? 0) - (right.info.time?.created ?? 0) || left.info.id.localeCompare(right.info.id)
+      ),
       legacyMessageIDs: previous.map((message) => message.info.id),
       v2MessageIDs: current.map((message) => message.info.id),
       cursor: {
-        legacy: legacy.status === "fulfilled" ? legacy.value.next : undefined,
-        v2: v2.status === "fulfilled" ? v2.value.next : undefined,
-        legacyComplete: cursor?.legacyComplete === true || legacy.status === "rejected" || legacy.value.next === undefined,
-        v2Complete: cursor?.v2Complete === true || v2.status === "rejected" || v2.value.next === undefined,
+        legacy: legacy.status === "fulfilled" ? legacy.value.next : cursor?.legacy,
+        v2: v2.status === "fulfilled" ? v2.value.next : cursor?.v2,
+        legacyComplete: cursor?.legacyComplete === true ||
+          (legacy.status === "rejected" ? unsupportedHistoryTransport(legacy.reason) : legacy.value.next === undefined),
+        v2Complete: cursor?.v2Complete === true ||
+          (v2.status === "rejected" ? unsupportedHistoryTransport(v2.reason) : v2.value.next === undefined),
       },
     }
   }
 
-  private async v2MessagePage(encodedSessionID: string, sessionID: string, cursor: string | undefined, limit: number): Promise<{ messages: MessageBundle[]; next?: string }> {
-    const pathname = this.locationPath(`/api/session/${encodedSessionID}/message`, cursor ? { limit: String(limit), cursor } : { limit: String(limit), order: "desc" })
+  private async v2MessagePage(
+    encodedSessionID: string,
+    sessionID: string,
+    cursor: string | undefined,
+    limit: number,
+  ): Promise<{ messages: MessageBundle[]; next?: string }> {
+    const pathname = this.locationPath(
+      `/api/session/${encodedSessionID}/message`,
+      cursor ? { limit: String(limit), cursor } : { limit: String(limit), order: "desc" },
+    )
     const value = await this.request<unknown>("GET", pathname)
     const page = projectedMessages(value, sessionID)
     if (!page) throw new Error("OpenCode returned malformed v2 session messages")
-    const next = isRecord(value) && isRecord(value.cursor) && typeof value.cursor.next === "string" ? value.cursor.next : undefined
+    const next = isRecord(value) && isRecord(value.cursor) && typeof value.cursor.next === "string"
+      ? value.cursor.next
+      : undefined
     return { messages: page.reverse(), next }
   }
 
-  private async legacyMessagePage(encodedSessionID: string, cursor: string | undefined, limit: number): Promise<{ messages: MessageBundle[]; next?: string }> {
+  private async legacyMessagePage(
+    encodedSessionID: string,
+    cursor: string | undefined,
+    limit: number,
+  ): Promise<{ messages: MessageBundle[]; next?: string }> {
     const query = new URLSearchParams({ limit: String(limit) })
     if (cursor) query.set("before", cursor)
     const response = await this.requestResponse<unknown>("GET", `/session/${encodedSessionID}/message?${query}`)
@@ -1092,15 +1336,27 @@ export class OpenCodeClient {
   async hasPromptAdmission(sessionID: string, promptID: string): Promise<boolean | undefined> {
     let after = 0
     for (let pages = 0; pages < 100; pages += 1) {
-      const value = await this.request<unknown>("GET", this.locationPath(`/api/session/${encodeURIComponent(sessionID)}/history`, { limit: "100", after: String(after) }))
-      if (!isRecord(value) || !Array.isArray(value.data) || typeof value.hasMore !== "boolean") throw new Error("OpenCode returned malformed session history")
+      const value = await this.request<unknown>(
+        "GET",
+        this.locationPath(`/api/session/${encodeURIComponent(sessionID)}/history`, {
+          limit: "100",
+          after: String(after),
+        }),
+      )
+      if (!isRecord(value) || !Array.isArray(value.data) || typeof value.hasMore !== "boolean") {
+        throw new Error("OpenCode returned malformed session history")
+      }
       for (const event of value.data) {
         if (!isRecord(event)) continue
         const data = isRecord(event.data) ? event.data : undefined
         if (event.type === "session.next.prompt.admitted" && data?.messageID === promptID) return true
       }
       if (!value.hasMore) return false
-      const sequences = value.data.flatMap((event) => isRecord(event) && isRecord(event.durable) && Number.isSafeInteger(event.durable.seq) ? [event.durable.seq as number] : [])
+      const sequences = value.data.flatMap((event) =>
+        isRecord(event) && isRecord(event.durable) && Number.isSafeInteger(event.durable.seq)
+          ? [event.durable.seq as number]
+          : []
+      )
       const next = sequences.length ? Math.max(...sequences) : after
       if (next <= after) return undefined
       after = next
@@ -1113,13 +1369,18 @@ export class OpenCodeClient {
     let messages: MessageBundle[] = []
     const seen = new Set<string>()
     while (messages.length < TRANSCRIPT_MESSAGE_LIMIT) {
-      const pathname = this.locationPath(`/api/session/${encodedSessionID}/message`, cursor ? { limit: "200", cursor } : { limit: "200", order: "desc" })
+      const pathname = this.locationPath(
+        `/api/session/${encodedSessionID}/message`,
+        cursor ? { limit: "200", cursor } : { limit: "200", order: "desc" },
+      )
       const value = await this.request<unknown>("GET", pathname)
       const page = projectedMessages(value, sessionID)
       if (!page) throw new Error("OpenCode returned malformed v2 session messages")
       if (!page.length) break
       messages = [...page.reverse(), ...messages].slice(-TRANSCRIPT_MESSAGE_LIMIT)
-      const next = isRecord(value) && isRecord(value.cursor) && typeof value.cursor.next === "string" ? value.cursor.next : undefined
+      const next = isRecord(value) && isRecord(value.cursor) && typeof value.cursor.next === "string"
+        ? value.cursor.next
+        : undefined
       if (!next || seen.has(next)) break
       seen.add(next)
       cursor = next
@@ -1161,7 +1422,8 @@ export class OpenCodeClient {
     ])
     if (v2.status === "rejected" && legacy.status === "rejected") throw v2.reason
     const v2Valid = v2.status === "fulfilled" && isRecord(v2.value) && Array.isArray(v2.value.data)
-    const legacyValid = legacy.status === "fulfilled" && (Array.isArray(legacy.value) || (isRecord(legacy.value) && Array.isArray(legacy.value.data)))
+    const legacyValid = legacy.status === "fulfilled" &&
+      (Array.isArray(legacy.value) || (isRecord(legacy.value) && Array.isArray(legacy.value.data)))
     if (!v2Valid && !legacyValid) throw new Error("OpenCode returned malformed question lists")
     const requests = [
       ...(v2Valid ? parseQuestions(v2.value, "v2") : []),
@@ -1171,13 +1433,18 @@ export class OpenCodeClient {
     let characters = 0
     return {
       requests: requests.filter((request) => {
-      const key = `${request.sessionID}\0${request.id}`
-      const size = request.id.length + request.sessionID.length + request.questions.reduce((total, question) =>
-        total + question.question.length + question.header.length + question.options.reduce((sum, option) => sum + option.label.length + option.description.length, 0), 0)
-      if (seen.has(key) || characters + size > 1_000_000) return false
-      seen.add(key)
-      characters += size
-      return true
+        const key = `${request.sessionID}\0${request.id}`
+        const size = request.id.length + request.sessionID.length +
+          request.questions.reduce(
+            (total, question) =>
+              total + question.question.length + question.header.length +
+              question.options.reduce((sum, option) => sum + option.label.length + option.description.length, 0),
+            0,
+          )
+        if (seen.has(key) || characters + size > 1_000_000) return false
+        seen.add(key)
+        characters += size
+        return true
       }).slice(0, 100),
       succeeded: [v2Valid ? "v2" as const : undefined, legacyValid ? "legacy" as const : undefined]
         .filter((protocol): protocol is "legacy" | "v2" => Boolean(protocol)),
@@ -1193,7 +1460,9 @@ export class OpenCodeClient {
     const requestID = encodeURIComponent(request.id)
     await this.request(
       "POST",
-      request.protocol === "v2" ? `/api/session/${sessionID}/question/${requestID}/reply` : `/question/${requestID}/reply`,
+      request.protocol === "v2"
+        ? `/api/session/${sessionID}/question/${requestID}/reply`
+        : `/question/${requestID}/reply`,
       { answers },
     )
   }
@@ -1203,7 +1472,9 @@ export class OpenCodeClient {
     const requestID = encodeURIComponent(request.id)
     await this.request(
       "POST",
-      request.protocol === "v2" ? `/api/session/${sessionID}/question/${requestID}/reject` : `/question/${requestID}/reject`,
+      request.protocol === "v2"
+        ? `/api/session/${sessionID}/question/${requestID}/reject`
+        : `/question/${requestID}/reject`,
     )
   }
 
@@ -1229,10 +1500,18 @@ export class OpenCodeClient {
 
   mcpAction(name: string, action: "connect" | "disconnect" | "authenticate" | "removeAuth"): Promise<unknown> {
     const encoded = encodeURIComponent(name)
-    const path = action === "authenticate" ? `/mcp/${encoded}/auth/authenticate`
-      : action === "removeAuth" ? `/mcp/${encoded}/auth`
+    const path = action === "authenticate"
+      ? `/mcp/${encoded}/auth/authenticate`
+      : action === "removeAuth"
+      ? `/mcp/${encoded}/auth`
       : `/mcp/${encoded}/${action}`
-    return this.request(action === "removeAuth" ? "DELETE" : "POST", path, undefined, undefined, action === "authenticate" ? LONG_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS)
+    return this.request(
+      action === "removeAuth" ? "DELETE" : "POST",
+      path,
+      undefined,
+      undefined,
+      action === "authenticate" ? LONG_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS,
+    )
   }
 
   async abort(sessionID: string): Promise<boolean> {
@@ -1249,7 +1528,15 @@ export class OpenCodeClient {
     return this.request("POST", "/instance/dispose")
   }
 
-  sendAsync(sessionID: string, text: string, agent?: string, model?: string, variant?: string, files: PromptFilePart[] = [], messageID?: string): Promise<void> {
+  sendAsync(
+    sessionID: string,
+    text: string,
+    agent?: string,
+    model?: string,
+    variant?: string,
+    files: PromptFilePart[] = [],
+    messageID?: string,
+  ): Promise<void> {
     const body: JsonRecord = { parts: [...(text.trim() ? [{ type: "text", text }] : []), ...files] }
     if (messageID) body.messageID = messageID
     if (agent) body.agent = agent
@@ -1297,12 +1584,24 @@ export class OpenCodeClient {
 
   async compactSessionV2(sessionID: string, compactionID: string): Promise<CompactionAdmission> {
     const encodedSessionID = encodeURIComponent(sessionID)
-    const value = await this.request<unknown>("POST", this.locationPath(`/api/session/${encodedSessionID}/compact`), { id: compactionID })
+    const value = await this.request<unknown>("POST", this.locationPath(`/api/session/${encodedSessionID}/compact`), {
+      id: compactionID,
+    })
     return parseCompactionAdmission(value, { id: compactionID, sessionID })
   }
 
-  async sendStructuredPrompt(sessionID: string, text: string, input: { agent?: string; model?: string; schema: Record<string, unknown>; retryCount?: number }, signal?: AbortSignal): Promise<string> {
-    const model = input.model && input.model.includes("/") ? { providerID: input.model.slice(0, input.model.indexOf("/")), modelID: input.model.slice(input.model.indexOf("/") + 1) } : undefined
+  async sendStructuredPrompt(
+    sessionID: string,
+    text: string,
+    input: { agent?: string; model?: string; schema: Record<string, unknown>; retryCount?: number },
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const model = input.model && input.model.includes("/")
+      ? {
+        providerID: input.model.slice(0, input.model.indexOf("/")),
+        modelID: input.model.slice(input.model.indexOf("/") + 1),
+      }
+      : undefined
     const messageID = createOpenCodeMessageID()
     // OpenCode 1.18.x exposes JSON-schema response formatting only on its V1
     // prompt contract. This dedicated verifier session therefore stays
@@ -1313,18 +1612,33 @@ export class OpenCodeClient {
       agent: input.agent,
       model,
       tools: { "*": false },
-      format: { type: "json_schema", schema: input.schema, retryCount: Math.min(3, Math.max(0, input.retryCount ?? 1)) },
+      format: {
+        type: "json_schema",
+        schema: input.schema,
+        retryCount: Math.min(3, Math.max(0, input.retryCount ?? 1)),
+      },
       parts: [{ type: "text", text }],
     }, signal)
     return messageID
   }
 
   async structuredOutput(sessionID: string): Promise<unknown> {
-    const assistant = (await this.messages(sessionID)).slice().reverse().find((message) => message.info.role === "assistant")
+    const assistant = (await this.messages(sessionID)).slice().reverse().find((message) =>
+      message.info.role === "assistant"
+    )
     return assistant?.info.structured ?? assistant?.parts.find((part) => part.type === "text" && part.text)?.text
   }
 
-  sendCommand(sessionID: string, command: string, args: string, agent?: string, model?: string, variant?: string, files: PromptFilePart[] = [], messageID?: string): Promise<unknown> {
+  sendCommand(
+    sessionID: string,
+    command: string,
+    args: string,
+    agent?: string,
+    model?: string,
+    variant?: string,
+    files: PromptFilePart[] = [],
+    messageID?: string,
+  ): Promise<unknown> {
     const body: JsonRecord = { command, arguments: args }
     if (messageID) body.messageID = messageID
     if (files.length) body.parts = files
@@ -1335,18 +1649,36 @@ export class OpenCodeClient {
       body.model = model
     }
     if (variant) body.variant = variant
-    return this.request("POST", `/session/${encodeURIComponent(sessionID)}/command`, body, undefined, LONG_REQUEST_TIMEOUT_MS)
+    return this.request(
+      "POST",
+      `/session/${encodeURIComponent(sessionID)}/command`,
+      body,
+      undefined,
+      LONG_REQUEST_TIMEOUT_MS,
+    )
   }
 
   async respondPermission(request: PermissionRequest, response: "once" | "reject", feedback?: string): Promise<void> {
     const message = response === "reject" && feedback?.trim() ? feedback.trim() : undefined
     if (request.protocol === "v2") {
-      await this.request("POST", `/api/session/${encodeURIComponent(request.sessionID)}/permission/${encodeURIComponent(request.id)}/reply`, { reply: response, ...(message ? { message } : {}) })
+      await this.request(
+        "POST",
+        `/api/session/${encodeURIComponent(request.sessionID)}/permission/${encodeURIComponent(request.id)}/reply`,
+        { reply: response, ...(message ? { message } : {}) },
+      )
       return
     }
-    const accepted = await (request.protocol === "current"
-      ? this.request("POST", `/permission/${encodeURIComponent(request.id)}/reply`, { reply: response, ...(message ? { message } : {}) })
-      : this.request("POST", `/session/${encodeURIComponent(request.sessionID)}/permissions/${encodeURIComponent(request.id)}`, { response }))
+    const accepted =
+      await (request.protocol === "current"
+        ? this.request("POST", `/permission/${encodeURIComponent(request.id)}/reply`, {
+          reply: response,
+          ...(message ? { message } : {}),
+        })
+        : this.request(
+          "POST",
+          `/session/${encodeURIComponent(request.sessionID)}/permissions/${encodeURIComponent(request.id)}`,
+          { response },
+        ))
     if (accepted !== true) throw new Error("OpenCode did not accept the permission response")
   }
 
@@ -1395,9 +1727,16 @@ export class OpenCodeClient {
       this.request<unknown>("GET", "/agent"),
       this.request<unknown>("GET", "/config/providers").catch(async () => {
         const legacy = await this.request<unknown>("GET", "/provider")
-        if (!isRecord(legacy) || !Array.isArray(legacy.all) || !Array.isArray(legacy.connected)) throw new Error("OpenCode returned a malformed provider catalog")
+        if (!isRecord(legacy) || !Array.isArray(legacy.all) || !Array.isArray(legacy.connected)) {
+          throw new Error("OpenCode returned a malformed provider catalog")
+        }
         const connected = new Set(legacy.connected.filter((id): id is string => typeof id === "string"))
-        return { providers: legacy.all.filter((provider) => isRecord(provider) && typeof provider.id === "string" && connected.has(provider.id)), default: legacy.default }
+        return {
+          providers: legacy.all.filter((provider) =>
+            isRecord(provider) && typeof provider.id === "string" && connected.has(provider.id)
+          ),
+          default: legacy.default,
+        }
       }),
       this.request<unknown>("GET", "/config").catch(() => undefined),
       this.request<unknown>("GET", "/experimental/resource").catch(() => ({})),
@@ -1406,8 +1745,10 @@ export class OpenCodeClient {
     const mentionAgents: AgentOption[] = []
     let catalogCharacters = 0
     for (const value of Array.isArray(agentData) ? agentData.slice(0, 500) : []) {
-      if (!isRecord(value) || !boundedString(value.name, 1_024) || !value.name || value.hidden === true ||
-        ![undefined, "primary", "subagent", "all"].includes(value.mode as undefined | string)) continue
+      if (
+        !isRecord(value) || !boundedString(value.name, 1_024) || !value.name || value.hidden === true ||
+        ![undefined, "primary", "subagent", "all"].includes(value.mode as undefined | string)
+      ) continue
       const description = boundedString(value.description, 20_000) ? value.description : undefined
       const model = isRecord(value.model) && boundedString(value.model.providerID, 1_024) && value.model.providerID &&
           boundedString(value.model.modelID, 1_024) && value.model.modelID
@@ -1425,15 +1766,21 @@ export class OpenCodeClient {
       if (value.mode !== "subagent") agents.push(option)
       if (value.mode !== "primary") mentionAgents.push(option)
     }
-    if (!isRecord(configProviderResult) || !Array.isArray(configProviderResult.providers)) throw new Error("OpenCode returned a malformed configured-provider catalog")
+    if (!isRecord(configProviderResult) || !Array.isArray(configProviderResult.providers)) {
+      throw new Error("OpenCode returned a malformed configured-provider catalog")
+    }
     const all = configProviderResult.providers
     const providers: ProviderOption[] = []
     const models: ModelOption[] = []
     catalogCharacters = 0
     for (const provider of all.slice(0, 500)) {
-      if (!isRecord(provider) || !boundedString(provider.id, 1_024) || !provider.id || !isRecord(provider.models)) continue
+      if (!isRecord(provider) || !boundedString(provider.id, 1_024) || !provider.id || !isRecord(provider.models)) {
+        continue
+      }
       const providerName = boundedString(provider.name, 2_000) ? provider.name : provider.id
-      const source = ["env", "config", "custom", "api"].includes(String(provider.source)) ? provider.source as ProviderOption["source"] : undefined
+      const source = ["env", "config", "custom", "api"].includes(String(provider.source))
+        ? provider.source as ProviderOption["source"]
+        : undefined
       providers.push({ id: provider.id, name: providerName, source })
       for (const [id, model] of Object.entries(provider.models)) {
         if (models.length >= 5_000 || !id || id.length > 1_024 || !isRecord(model)) continue
@@ -1445,7 +1792,8 @@ export class OpenCodeClient {
         const variants = isRecord(model.variants)
           ? Object.keys(model.variants).slice(0, 100).filter((variant) => variant.length > 0 && variant.length <= 1_024)
           : []
-        catalogCharacters += id.length + provider.id.length + name.length + variants.reduce((total, variant) => total + variant.length, 0)
+        catalogCharacters += id.length + provider.id.length + name.length +
+          variants.reduce((total, variant) => total + variant.length, 0)
         if (catalogCharacters > 2_000_000) break
         models.push({
           id,
@@ -1463,26 +1811,34 @@ export class OpenCodeClient {
     }
     const resources: ResourceOption[] = []
     catalogCharacters = 0
-    if (isRecord(resourceResult)) for (const value of Object.values(resourceResult).slice(0, 2_000)) {
-      if (!isRecord(value) || !boundedString(value.name, 2_000) || !boundedString(value.uri, 8_192) || !value.uri || !boundedString(value.client, 2_000)) continue
-      const resource = {
-        name: value.name,
-        uri: value.uri,
-        description: boundedString(value.description, 20_000) ? value.description : undefined,
-        mimeType: boundedString(value.mimeType, 100) ? value.mimeType : undefined,
-        client: value.client,
+    if (isRecord(resourceResult)) {
+      for (const value of Object.values(resourceResult).slice(0, 2_000)) {
+        if (
+          !isRecord(value) || !boundedString(value.name, 2_000) || !boundedString(value.uri, 8_192) || !value.uri ||
+          !boundedString(value.client, 2_000)
+        ) continue
+        const resource = {
+          name: value.name,
+          uri: value.uri,
+          description: boundedString(value.description, 20_000) ? value.description : undefined,
+          mimeType: boundedString(value.mimeType, 100) ? value.mimeType : undefined,
+          client: value.client,
+        }
+        catalogCharacters += resource.name.length + resource.uri.length + resource.client.length +
+          (resource.description?.length ?? 0)
+        if (catalogCharacters > 2_000_000) break
+        resources.push(resource)
       }
-      catalogCharacters += resource.name.length + resource.uri.length + resource.client.length + (resource.description?.length ?? 0)
-      if (catalogCharacters > 2_000_000) break
-      resources.push(resource)
     }
     const config = isRecord(configResult) ? configResult : undefined
-    const configuredAgent = boundedString(config?.default_agent, 1_024) && agents.some((agent) => agent.name === config.default_agent)
-      ? config.default_agent
-      : undefined
-    const configuredModel = boundedString(config?.model, 2_049) && models.some((model) => `${model.providerID}/${model.id}` === config.model)
-      ? config.model
-      : undefined
+    const configuredAgent =
+      boundedString(config?.default_agent, 1_024) && agents.some((agent) => agent.name === config.default_agent)
+        ? config.default_agent
+        : undefined
+    const configuredModel =
+      boundedString(config?.model, 2_049) && models.some((model) => `${model.providerID}/${model.id}` === config.model)
+        ? config.model
+        : undefined
     const providerDefaults = isRecord(configProviderResult.default) ? configProviderResult.default : undefined
     const providerModel = models.map((model) => {
       const value = providerDefaults?.[model.providerID]
@@ -1490,7 +1846,8 @@ export class OpenCodeClient {
     }).find((value): value is string => Boolean(value))
     const effectiveAgent = configuredAgent ?? agents[0]?.name
     const defaultAgent = agents.find((agent) => agent.name === effectiveAgent)
-    const configuredVariant = defaultAgent?.model && `${defaultAgent.model.providerID}/${defaultAgent.model.modelID}` === (configuredModel ?? providerModel)
+    const configuredVariant = defaultAgent?.model &&
+        `${defaultAgent.model.providerID}/${defaultAgent.model.modelID}` === (configuredModel ?? providerModel)
       ? defaultAgent.variant
       : undefined
     return {
@@ -1519,7 +1876,11 @@ export class OpenCodeClient {
     return [...new Set(value)]
   }
 
-  async events(signal: AbortSignal, onOpen: () => Promise<void> | void, onEvent: (event: OpenCodeEvent) => void): Promise<void> {
+  async events(
+    signal: AbortSignal,
+    onOpen: () => Promise<void> | void,
+    onEvent: (event: OpenCodeEvent) => void,
+  ): Promise<void> {
     const headers = this.headers()
     headers.set("Accept", "text/event-stream")
     const response = await fetch(this.endpoint("/event"), {
@@ -1543,8 +1904,12 @@ export class OpenCodeClient {
         while (boundary >= 0) {
           const frame = buffer.slice(0, boundary)
           buffer = buffer.slice(boundary + 2)
-          if (new TextEncoder().encode(frame).byteLength > SSE_FRAME_LIMIT) throw new Error("OpenCode event stream frame exceeds 8 MiB")
-          const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n")
+          if (new TextEncoder().encode(frame).byteLength > SSE_FRAME_LIMIT) {
+            throw new Error("OpenCode event stream frame exceeds 8 MiB")
+          }
+          const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) =>
+            line.slice(5).trimStart()
+          ).join("\n")
           if (data) {
             try {
               const event = parseEvent(JSON.parse(data))
@@ -1558,7 +1923,9 @@ export class OpenCodeClient {
           }
           boundary = buffer.indexOf("\n\n")
         }
-        if (new TextEncoder().encode(buffer).byteLength > SSE_FRAME_LIMIT) throw new Error("OpenCode event stream frame exceeds 8 MiB")
+        if (new TextEncoder().encode(buffer).byteLength > SSE_FRAME_LIMIT) {
+          throw new Error("OpenCode event stream frame exceeds 8 MiB")
+        }
       }
     } finally {
       await reader.cancel().catch(() => undefined)

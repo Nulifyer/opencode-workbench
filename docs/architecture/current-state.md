@@ -4,13 +4,13 @@ This is the implementation map for the OpenCode Workbench `v0.4.7` release.
 
 ## Compatibility
 
-| Component | Current contract |
-| --- | --- |
-| VS Code | Extension engine `^1.106.0`; stable code uses no proposed API |
-| OpenCode managed mode | `>=1.18.11` and `<1.19.0` |
-| OpenCode used for ACP fixture | `1.18.15`, ACP SDK `0.21.0`, protocol version `1` |
-| Extension | `0.4.7` |
-| Runtime | Extension bundle targets Node 20; webview targets ES2022 |
+| Component                     | Current contract                                              |
+| ----------------------------- | ------------------------------------------------------------- |
+| VS Code                       | Extension engine `^1.106.0`; stable code uses no proposed API |
+| OpenCode managed mode         | `>=1.18.11` and `<1.19.0`                                     |
+| OpenCode used for ACP fixture | `1.18.15`, ACP SDK `0.21.0`, protocol version `1`             |
+| Extension                     | `0.4.7`                                                       |
+| Runtime                       | Extension bundle targets Node 20; webview targets ES2022      |
 
 Managed compatibility is enforced by `managed-server.ts` and
 `managed-server_test.ts`. The provider-free HTTP/SSE real test is
@@ -39,20 +39,20 @@ server; external mode connects to a separately managed endpoint.
 All paths below are OpenCode-owned. Every request includes the selected
 directory; v2 `/api` routes use `location[directory]` where shown in code.
 
-| Domain | Methods currently called |
-| --- | --- |
-| Health and instance | `GET /global/health`, `POST /instance/dispose` |
-| Sessions | `GET/POST /session`, `PATCH/DELETE /session/:id`, `GET /session/status`, `GET /api/session/active` |
-| Session history/actions | `POST /session/:id/fork`, `/revert`, `/unrevert`, `/summarize`, `/share`; `DELETE /session/:id/share` |
-| Transcripts | legacy `GET /session/:id/message`; v2 `GET /api/session/:id/message` and `/history` |
-| Prompt admission | v2 `POST /api/session/:id/agent`, `/model`, `/prompt`; legacy `POST /session/:id/prompt_async` and `/command` |
-| Interruption | `POST /api/session/:id/interrupt` and legacy `/session/:id/abort` |
-| Permissions | `GET /api/permission/request`, `GET /permission`; v2 `/api/session/:sid/permission/:rid/reply`, current `/permission/:rid/reply`, legacy `/session/:sid/permissions/:rid` |
-| Questions | `GET /api/question/request`, `GET /question`; v2 session-scoped reply/reject and legacy `/question/:rid/reply|reject` |
-| Session projections | `GET /session/:id/todo`, `/diff` |
-| Catalogs | `GET /agent`, `/config/providers` with `/provider` fallback, `/config`, `/experimental/resource`, `/command`, `/experimental/tool/ids` |
-| Runtime services | `GET /path`, `/vcs`, `/lsp`, `/formatter`, `/mcp`; typed MCP connect/disconnect/auth/remove-auth routes |
-| Events | `GET /event` with `Accept: text/event-stream` |
+| Domain                  | Methods currently called                                                                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Health and instance     | `GET /global/health`, `POST /instance/dispose`                                                                                                                            |
+| Sessions                | `GET/POST /session`, `PATCH/DELETE /session/:id`, `GET /session/status`, `GET /api/session/active`                                                                        |
+| Session history/actions | `POST /session/:id/fork`, `/revert`, `/unrevert`, `/summarize`, `/share`; `DELETE /session/:id/share`                                                                     |
+| Transcripts             | legacy `GET /session/:id/message`; v2 `GET /api/session/:id/message` and `/history`                                                                                       |
+| Prompt admission        | v2 `POST /api/session/:id/agent`, `/model`, `/prompt`; legacy `POST /session/:id/prompt_async` and `/command`                                                             |
+| Interruption            | `POST /api/session/:id/interrupt` and legacy `/session/:id/abort`                                                                                                         |
+| Permissions             | `GET /api/permission/request`, `GET /permission`; v2 `/api/session/:sid/permission/:rid/reply`, current `/permission/:rid/reply`, legacy `/session/:sid/permissions/:rid` |
+| Questions               | `GET /api/question/request`, `GET /question`; v2 session-scoped reply/reject and legacy `/question/:rid/reply                                                             |
+| Session projections     | `GET /session/:id/todo`, `/diff`                                                                                                                                          |
+| Catalogs                | `GET /agent`, `/config/providers` with `/provider` fallback, `/config`, `/experimental/resource`, `/command`, `/experimental/tool/ids`                                    |
+| Runtime services        | `GET /path`, `/vcs`, `/lsp`, `/formatter`, `/mcp`; typed MCP connect/disconnect/auth/remove-auth routes                                                                   |
+| Events                  | `GET /event` with `Accept: text/event-stream`                                                                                                                             |
 
 Request bodies are JSON, ordinary requests time out after 30 seconds, long
 operations after ten minutes, response bodies after 32 MiB, error bodies after
@@ -191,15 +191,15 @@ global.disposed
 `SessionController.send()` creates a session if needed and delegates to
 `sendToSession()`.
 
-| User choice | Current behavior |
-| --- | --- |
+| User choice                         | Current behavior                                                                                             |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Ordinary send to idle/error session | Add a bounded local entry, then v2 `delivery: steer` (immediate admission) or compatible legacy async prompt |
-| Add to Queue while busy | Keep the prompt and private file payload in the extension host; deliver when terminal |
-| Steer with Message while busy | Mark the entry as steering and ask OpenCode to yield at its next opportunity |
-| Stop and Send | Abort active OpenCode work, retain queue integrity, then deliver immediately |
-| Edit/reorder/remove queued | Mutate only not-yet-admitted local queue entries |
-| Send queued now | Abort when required, move the selected entry first, then drain |
-| Abort | Call both current and legacy interruption routes; accepted abort projects idle |
+| Add to Queue while busy             | Keep the prompt and private file payload in the extension host; deliver when terminal                        |
+| Steer with Message while busy       | Mark the entry as steering and ask OpenCode to yield at its next opportunity                                 |
+| Stop and Send                       | Abort active OpenCode work, retain queue integrity, then deliver immediately                                 |
+| Edit/reorder/remove queued          | Mutate only not-yet-admitted local queue entries                                                             |
+| Send queued now                     | Abort when required, move the selected entry first, then drain                                               |
+| Abort                               | Call both current and legacy interruption routes; accepted abort projects idle                               |
 
 Queue count, text, attachment count, and aggregate character limits are defined
 in shared state. Attachment bytes are held in `promptFiles` only until admission
@@ -297,21 +297,21 @@ The two surfaces synchronize through the host, never directly.
 
 ## Test map
 
-| Contract | Deterministic evidence |
-| --- | --- |
-| Shared protocol validation and privacy | `packages/shared/test/protocol_test.ts` |
-| Session reducer identity/order | `packages/shared/test/session-state_test.ts` |
-| HTTP parsers/routes/admission | `packages/vscode-extension/test/client_test.ts` |
-| Controller queue/reconnect/permission/question/diff behavior | `packages/vscode-extension/test/session-controller_test.ts` |
-| Authenticated HTTP/SSE full path | `communication_test.ts` |
-| 20,000-frame ordering and final projection | `event_pipeline_stress_test.ts`, `ordered-event-bus_test.ts` |
-| Managed process/version/plugin/auth | `managed-server_test.ts`, `opencode_integration_test.ts` |
-| Bridge containment and affinity | `workspace-root_test.ts`, plugin `security_test.ts` |
-| Goal continuation and persistence | plugin `goal_integration_test.ts`, `goals_test.ts` |
-| Preferences and skill candidates | plugin `memory_test.ts`, `skills_test.ts`, `security_test.ts` |
-| Webview CSP/assets/presentation | `webview-assets_test.ts`, `presentation_test.ts`, `markdown_test.ts` |
-| Packaging | `package_test.ts` and `deno task package` |
-| ACP provider-free contract | `acp_contract_test.ts` and `fixtures/acp/opencode-1.18.15.json` |
+| Contract                                                     | Deterministic evidence                                               |
+| ------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Shared protocol validation and privacy                       | `packages/shared/test/protocol_test.ts`                              |
+| Session reducer identity/order                               | `packages/shared/test/session-state_test.ts`                         |
+| HTTP parsers/routes/admission                                | `packages/vscode-extension/test/client_test.ts`                      |
+| Controller queue/reconnect/permission/question/diff behavior | `packages/vscode-extension/test/session-controller_test.ts`          |
+| Authenticated HTTP/SSE full path                             | `communication_test.ts`                                              |
+| 20,000-frame ordering and final projection                   | `event_pipeline_stress_test.ts`, `ordered-event-bus_test.ts`         |
+| Managed process/version/plugin/auth                          | `managed-server_test.ts`, `opencode_integration_test.ts`             |
+| Bridge containment and affinity                              | `workspace-root_test.ts`, plugin `security_test.ts`                  |
+| Goal continuation and persistence                            | plugin `goal_integration_test.ts`, `goals_test.ts`                   |
+| Preferences and skill candidates                             | plugin `memory_test.ts`, `skills_test.ts`, `security_test.ts`        |
+| Webview CSP/assets/presentation                              | `webview-assets_test.ts`, `presentation_test.ts`, `markdown_test.ts` |
+| Packaging                                                    | `package_test.ts` and `deno task package`                            |
+| ACP provider-free contract                                   | `acp_contract_test.ts` and `fixtures/acp/opencode-1.18.15.json`      |
 
 ## Unknowns frozen at discovery
 

@@ -219,13 +219,13 @@ server does not advertise them.
 
 ## Useful settings
 
-| Setting | Default | What it changes |
-| --- | --- | --- |
-| `opencodeWorkbench.serverMode` | `managed` | Use Workbench's private server or your external server. |
-| `opencodeWorkbench.executablePath` | Empty | Use a specific OpenCode executable instead of searching `PATH`. |
-| `opencodeWorkbench.managedServerStartupTimeout` | `120` | Allow more startup time on slower systems. |
-| `opencodeWorkbench.serverUrl` | `http://127.0.0.1:4096` | Address of an external OpenCode server. |
-| `opencodeWorkbench.enterBehavior` | `send` | Make Enter send or insert a new line. Ctrl/Cmd+Enter always sends. |
+| Setting                                         | Default                 | What it changes                                                    |
+| ----------------------------------------------- | ----------------------- | ------------------------------------------------------------------ |
+| `opencodeWorkbench.serverMode`                  | `managed`               | Use Workbench's private server or your external server.            |
+| `opencodeWorkbench.executablePath`              | Empty                   | Use a specific OpenCode executable instead of searching `PATH`.    |
+| `opencodeWorkbench.managedServerStartupTimeout` | `120`                   | Allow more startup time on slower systems.                         |
+| `opencodeWorkbench.serverUrl`                   | `http://127.0.0.1:4096` | Address of an external OpenCode server.                            |
+| `opencodeWorkbench.enterBehavior`               | `send`                  | Make Enter send or insert a new line. Ctrl/Cmd+Enter always sends. |
 
 ## Privacy and safety
 

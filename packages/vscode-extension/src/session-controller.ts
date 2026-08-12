@@ -1,7 +1,11 @@
-import { createOpenCodeMessageID, isNativeCompactionContinuationMessage, isOpenCodeMessageID } from "@opencode-workbench/shared"
+import {
+  createOpenCodeMessageID,
+  isNativeCompactionContinuationMessage,
+  isOpenCodeMessageID,
+} from "@opencode-workbench/shared"
 import type {
-  AttentionItem,
   AgentOption,
+  AttentionItem,
   ChatSnapshot,
   CommandOption,
   ContextSummary,
@@ -28,16 +32,28 @@ import type {
 } from "@opencode-workbench/shared"
 import {
   PERMISSION_AGGREGATE_CHARACTER_LIMIT,
+  permissionPatternMatches,
+  permissionRequestCharacters,
   PROMPT_ATTACHMENT_CHARACTER_LIMIT,
   PROMPT_ATTACHMENT_COUNT_LIMIT,
   PROMPT_QUEUE_CHARACTER_LIMIT,
   PROMPT_QUEUE_COUNT_LIMIT,
   PROMPT_TEXT_CHARACTER_LIMIT,
-  permissionPatternMatches,
-  permissionRequestCharacters,
   reusablePermissionScopes,
 } from "@opencode-workbench/shared"
-import { OPENCODE_PTY_LIMIT, OpenCodeClient, TRANSCRIPT_MESSAGE_LIMIT, parseChanges, parseOpenCodePty, parsePermission, parseQuestion, parseTodos, type PromptFilePart, type SessionMessageHistory, type SessionMessageHistoryCursor } from "./opencode-client.js"
+import {
+  OPENCODE_PTY_LIMIT,
+  OpenCodeClient,
+  parseChanges,
+  parseOpenCodePty,
+  parsePermission,
+  parseQuestion,
+  parseTodos,
+  type PromptFilePart,
+  type SessionMessageHistory,
+  type SessionMessageHistoryCursor,
+  TRANSCRIPT_MESSAGE_LIMIT,
+} from "./opencode-client.js"
 import { OrderedEventBus } from "./ordered-event-bus.js"
 import { ConnectionCoordinator } from "./session/connection-coordinator.js"
 import { SessionRepository } from "./application/session-repository.js"
@@ -47,7 +63,18 @@ import { PromptDispatcher } from "./application/prompt-dispatcher.js"
 import { QuestionCoordinator } from "./application/question-coordinator.js"
 import { SettlementCoordinator } from "./application/settlement-coordinator.js"
 import { mergeTranscripts, TranscriptReconciler } from "./application/transcript-reconciler.js"
-import { boundedRuntimeString, boundedText, deriveContext, deriveGoal, deriveGoalHistory, GOAL_TOOLS, normalizeRuntime, snapshotMessage, snapshotPartCharacters, snapshotTranscript } from "./application/snapshot-projector.js"
+import {
+  boundedRuntimeString,
+  boundedText,
+  deriveContext,
+  deriveGoal,
+  deriveGoalHistory,
+  GOAL_TOOLS,
+  normalizeRuntime,
+  snapshotMessage,
+  snapshotPartCharacters,
+  snapshotTranscript,
+} from "./application/snapshot-projector.js"
 
 export interface ControllerCallbacks {
   error(message: string): void
@@ -102,7 +129,9 @@ function automaticSessionTitle(session: WorkbenchState["sessions"][string]): str
   if (!text) return undefined
   const normalized = text.replace(/\s+/g, " ").trim().replace(/^\/goal\s+/i, "Goal: ")
   if (!normalized) return undefined
-  const clipped = normalized.length <= 80 ? normalized : `${normalized.slice(0, 77).replace(/\s+\S*$/, "").trimEnd() || normalized.slice(0, 77)}…`
+  const clipped = normalized.length <= 80
+    ? normalized
+    : `${normalized.slice(0, 77).replace(/\s+\S*$/, "").trimEnd() || normalized.slice(0, 77)}…`
   return /^[a-z]/.test(clipped) ? clipped[0]!.toUpperCase() + clipped.slice(1) : clipped
 }
 
@@ -120,8 +149,10 @@ function sessionAgeSeconds(info: SessionInfo, now = Date.now()): number {
 }
 
 function sessionTurnTotal(messages: WorkbenchState["sessions"][string]["messages"]): number {
-  return messages.filter((message) => message.info.role === "assistant" &&
-    (message.info.time?.completed !== undefined || message.parts.some((part) => part.type === "step-finish"))).length
+  return messages.filter((message) =>
+    message.info.role === "assistant" &&
+    (message.info.time?.completed !== undefined || message.parts.some((part) => part.type === "step-finish"))
+  ).length
 }
 
 function mergeAuthoritativeRecentTranscript(
@@ -138,7 +169,9 @@ function mergeAuthoritativeRecentTranscript(
 function errorDetail(value: unknown): string | undefined {
   if (!record(value)) return undefined
   if (typeof value.message === "string" && value.message.trim()) return value.message.slice(0, 20_000)
-  if (record(value.data) && typeof value.data.message === "string" && value.data.message.trim()) return value.data.message.slice(0, 20_000)
+  if (record(value.data) && typeof value.data.message === "string" && value.data.message.trim()) {
+    return value.data.message.slice(0, 20_000)
+  }
   return undefined
 }
 
@@ -157,44 +190,141 @@ function clonePty(pty: OpenCodePty): OpenCodePty {
 }
 
 function samePty(left: OpenCodePty, right: OpenCodePty): boolean {
-  return left.id === right.id && left.title === right.title && left.command === right.command && left.cwd === right.cwd &&
+  return left.id === right.id && left.title === right.title && left.command === right.command &&
+    left.cwd === right.cwd &&
     left.status === right.status && left.pid === right.pid && left.exitCode === right.exitCode &&
     left.args.length === right.args.length && left.args.every((argument, index) => argument === right.args[index])
 }
 
 function ptyEventID(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 && value.length <= 1_024 && !/[\u0000-\u001f\u007f]/.test(value) ? value : undefined
+  return typeof value === "string" && value.length > 0 && value.length <= 1_024 && !/[\u0000-\u001f\u007f]/.test(value)
+    ? value
+    : undefined
 }
 
 function ptyEventExitCode(value: unknown): number | undefined {
-  return Number.isSafeInteger(value) && Number(value) >= -2_147_483_648 && Number(value) <= 2_147_483_647 ? Number(value) : undefined
+  return Number.isSafeInteger(value) && Number(value) >= -2_147_483_648 && Number(value) <= 2_147_483_647
+    ? Number(value)
+    : undefined
 }
 
 export { permissionPatternMatches } from "@opencode-workbench/shared"
 
 const KNOWN_OPENCODE_EVENTS = new Set([
-  "server.connected", "server.heartbeat", "server.instance.disposed",
-  "session.created", "session.updated", "session.deleted", "session.status", "session.idle", "session.error", "session.diff", "session.compacted",
-  "message.updated", "message.removed", "message.part.updated", "message.part.removed", "message.part.delta",
-  "session.next.agent.switched", "session.next.model.switched", "session.next.moved", "session.next.prompted", "session.next.prompt.admitted", "session.next.context.updated", "session.next.synthetic",
-  "session.next.shell.started", "session.next.shell.ended", "session.next.step.started", "session.next.step.ended", "session.next.step.failed",
-  "session.next.text.started", "session.next.text.delta", "session.next.text.ended", "session.next.reasoning.started", "session.next.reasoning.delta", "session.next.reasoning.ended",
-  "session.next.tool.input.started", "session.next.tool.input.delta", "session.next.tool.input.ended", "session.next.tool.called", "session.next.tool.progress", "session.next.tool.success", "session.next.tool.failed",
-  "session.next.retried", "session.next.compaction.started", "session.next.compaction.delta", "session.next.compaction.ended", "session.next.revert.staged", "session.next.revert.cleared", "session.next.revert.committed",
-  "permission.updated", "permission.asked", "permission.replied", "permission.v2.asked", "permission.v2.replied",
-  "question.asked", "question.replied", "question.rejected", "question.v2.asked", "question.v2.replied", "question.v2.rejected",
-  "todo.updated", "file.edited", "file.watcher.updated", "lsp.updated", "vcs.branch.updated", "mcp.tools.changed", "mcp.browser.open.failed", "command.executed",
-  "pty.created", "pty.updated", "pty.exited", "pty.deleted", "models-dev.refreshed", "catalog.updated", "integration.updated", "integration.connection.updated", "reference.updated", "plugin.added", "project.directories.updated",
-  "installation.updated", "installation.update-available", "project.updated", "tui.prompt.append", "tui.command.execute", "tui.toast.show", "tui.session.select",
-  "workspace.ready", "workspace.failed", "workspace.status", "worktree.ready", "worktree.failed", "global.disposed",
+  "server.connected",
+  "server.heartbeat",
+  "server.instance.disposed",
+  "session.created",
+  "session.updated",
+  "session.deleted",
+  "session.status",
+  "session.idle",
+  "session.error",
+  "session.diff",
+  "session.compacted",
+  "message.updated",
+  "message.removed",
+  "message.part.updated",
+  "message.part.removed",
+  "message.part.delta",
+  "session.next.agent.switched",
+  "session.next.model.switched",
+  "session.next.moved",
+  "session.next.prompted",
+  "session.next.prompt.admitted",
+  "session.next.context.updated",
+  "session.next.synthetic",
+  "session.next.shell.started",
+  "session.next.shell.ended",
+  "session.next.step.started",
+  "session.next.step.ended",
+  "session.next.step.failed",
+  "session.next.text.started",
+  "session.next.text.delta",
+  "session.next.text.ended",
+  "session.next.reasoning.started",
+  "session.next.reasoning.delta",
+  "session.next.reasoning.ended",
+  "session.next.tool.input.started",
+  "session.next.tool.input.delta",
+  "session.next.tool.input.ended",
+  "session.next.tool.called",
+  "session.next.tool.progress",
+  "session.next.tool.success",
+  "session.next.tool.failed",
+  "session.next.retried",
+  "session.next.compaction.started",
+  "session.next.compaction.delta",
+  "session.next.compaction.ended",
+  "session.next.revert.staged",
+  "session.next.revert.cleared",
+  "session.next.revert.committed",
+  "permission.updated",
+  "permission.asked",
+  "permission.replied",
+  "permission.v2.asked",
+  "permission.v2.replied",
+  "question.asked",
+  "question.replied",
+  "question.rejected",
+  "question.v2.asked",
+  "question.v2.replied",
+  "question.v2.rejected",
+  "todo.updated",
+  "file.edited",
+  "file.watcher.updated",
+  "lsp.updated",
+  "vcs.branch.updated",
+  "mcp.tools.changed",
+  "mcp.browser.open.failed",
+  "command.executed",
+  "pty.created",
+  "pty.updated",
+  "pty.exited",
+  "pty.deleted",
+  "models-dev.refreshed",
+  "catalog.updated",
+  "integration.updated",
+  "integration.connection.updated",
+  "reference.updated",
+  "plugin.added",
+  "project.directories.updated",
+  "installation.updated",
+  "installation.update-available",
+  "project.updated",
+  "tui.prompt.append",
+  "tui.command.execute",
+  "tui.toast.show",
+  "tui.session.select",
+  "workspace.ready",
+  "workspace.failed",
+  "workspace.status",
+  "worktree.ready",
+  "worktree.failed",
+  "global.disposed",
 ])
 
 const NEXT_EVENTS_REQUIRING_TRANSCRIPT_REFRESH = new Set([
-  "session.next.moved", "session.next.prompted", "session.next.prompt.admitted", "session.next.context.updated", "session.next.synthetic",
-  "session.next.shell.started", "session.next.shell.ended", "session.next.step.ended", "session.next.step.failed",
-  "session.next.tool.called", "session.next.tool.progress", "session.next.tool.success", "session.next.tool.failed", "session.next.retried",
-  "session.next.compaction.started", "session.next.compaction.delta", "session.next.compaction.ended",
-  "session.next.revert.staged", "session.next.revert.cleared", "session.next.revert.committed",
+  "session.next.moved",
+  "session.next.prompted",
+  "session.next.prompt.admitted",
+  "session.next.context.updated",
+  "session.next.synthetic",
+  "session.next.shell.started",
+  "session.next.shell.ended",
+  "session.next.step.ended",
+  "session.next.step.failed",
+  "session.next.tool.called",
+  "session.next.tool.progress",
+  "session.next.tool.success",
+  "session.next.tool.failed",
+  "session.next.retried",
+  "session.next.compaction.started",
+  "session.next.compaction.delta",
+  "session.next.compaction.ended",
+  "session.next.revert.staged",
+  "session.next.revert.cleared",
+  "session.next.revert.committed",
 ])
 
 function delegationSessionID(part: MessagePart): string | undefined {
@@ -261,55 +391,146 @@ export class SessionController {
   private readonly changeRevisions = new Map<string, number>()
   private readonly automaticTitleAttempts = new Set<string>()
   private readonly historyCursors = new Map<string, SessionMessageHistoryCursor>()
+  private readonly historyLimitReached = new Set<string>()
   private selectionIntent = 0
   private readonly catalogService: CatalogService
   private restoreSelectionID?: string
 
-  private get agents(): AgentOption[] { return this.catalogService.agents }
-  private get models(): ModelOption[] { return this.catalogService.models }
-  private get commands(): CommandOption[] { return this.catalogService.commands }
-  private get defaultAgent(): string | undefined { return this.catalogService.defaultAgent }
-  private get defaultModel(): string | undefined { return this.catalogService.defaultModel }
-  private get defaultVariant(): string | undefined { return this.catalogService.defaultVariant }
-  private get currentAgent(): string | undefined { return this.catalogService.currentAgent }
-  private get lastModel(): string | undefined { return this.catalogService.lastModel }
-  private get modelVariants(): Map<string, string | undefined> { return this.catalogService.modelVariants }
-  private get mentionAgents(): AgentOption[] { return this.catalogService.mentionAgents }
-  private get providers(): ProviderOption[] { return this.catalogService.providers }
-  private get resources(): ResourceOption[] { return this.catalogService.resources }
-  private get catalog(): NonNullable<ChatSnapshot["catalog"]> { return this.catalogService.status }
-  private get respondingPermissions(): Set<string> { return this.permissions.responding }
-  private get automaticallyRespondingPermissions(): Set<string> { return this.permissions.automaticallyResponding }
-  private get permissionGrants() { return this.permissions.grants }
-  private get permissionRevision(): number { return this.permissions.revision }
-  private set permissionRevision(value: number) { this.permissions.revision = value }
-  private get permissionGeneration(): number { return this.permissions.generation }
-  private set permissionGeneration(value: number) { this.permissions.generation = value }
-  private get respondingQuestions(): Set<string> { return this.questions.responding }
-  private get questionRevision(): number { return this.questions.revision }
-  private set questionRevision(value: number) { this.questions.revision = value }
-  private get questionGeneration(): number { return this.questions.generation }
-  private set questionGeneration(value: number) { this.questions.generation = value }
-  private get transcriptRevisions() { return this.transcripts.revisions }
-  private get transcriptGenerations() { return this.transcripts.generations }
-  private get transcriptRefreshTimers() { return this.transcripts.refreshTimers }
-  private get removedMessages() { return this.transcripts.removedMessages }
-  private get removedParts() { return this.transcripts.removedParts }
-  private get messageHistories() { return this.transcripts.messageHistories }
-  private get messageRevisions() { return this.transcripts.messageRevisions }
-  private get sendGenerations() { return this.prompts.sendGenerations }
-  private get drainingQueues() { return this.prompts.drainingQueues }
-  private get sendingPrompts() { return this.prompts.sendingPrompts }
-  private get retryingSessions() { return this.prompts.retryingSessions }
-  private get steeringPrompts() { return this.prompts.steeringPrompts }
-  private get promptFiles() { return this.prompts.promptFiles }
-  private get promptAgents() { return this.prompts.promptAgents }
-  private get pendingPromptSessions() { return this.settlements.pendingPromptSessions }
-  private get pendingPromptTexts() { return this.settlements.pendingPromptTexts }
-  private get pendingPromptFileCounts() { return this.settlements.pendingPromptFileCounts }
-  private get sessionFailures() { return this.settlements.sessionFailures }
-  private get promptAdmissionPaused(): boolean { return this.settlements.promptAdmissionPaused }
-  private set promptAdmissionPaused(value: boolean) { this.settlements.promptAdmissionPaused = value }
+  private get agents(): AgentOption[] {
+    return this.catalogService.agents
+  }
+  private get models(): ModelOption[] {
+    return this.catalogService.models
+  }
+  private get commands(): CommandOption[] {
+    return this.catalogService.commands
+  }
+  private get defaultAgent(): string | undefined {
+    return this.catalogService.defaultAgent
+  }
+  private get defaultModel(): string | undefined {
+    return this.catalogService.defaultModel
+  }
+  private get defaultVariant(): string | undefined {
+    return this.catalogService.defaultVariant
+  }
+  private get currentAgent(): string | undefined {
+    return this.catalogService.currentAgent
+  }
+  private get lastModel(): string | undefined {
+    return this.catalogService.lastModel
+  }
+  private get modelVariants(): Map<string, string | undefined> {
+    return this.catalogService.modelVariants
+  }
+  private get mentionAgents(): AgentOption[] {
+    return this.catalogService.mentionAgents
+  }
+  private get providers(): ProviderOption[] {
+    return this.catalogService.providers
+  }
+  private get resources(): ResourceOption[] {
+    return this.catalogService.resources
+  }
+  private get catalog(): NonNullable<ChatSnapshot["catalog"]> {
+    return this.catalogService.status
+  }
+  private get respondingPermissions(): Set<string> {
+    return this.permissions.responding
+  }
+  private get automaticallyRespondingPermissions(): Set<string> {
+    return this.permissions.automaticallyResponding
+  }
+  private get permissionGrants() {
+    return this.permissions.grants
+  }
+  private get permissionRevision(): number {
+    return this.permissions.revision
+  }
+  private set permissionRevision(value: number) {
+    this.permissions.revision = value
+  }
+  private get permissionGeneration(): number {
+    return this.permissions.generation
+  }
+  private set permissionGeneration(value: number) {
+    this.permissions.generation = value
+  }
+  private get respondingQuestions(): Set<string> {
+    return this.questions.responding
+  }
+  private get questionRevision(): number {
+    return this.questions.revision
+  }
+  private set questionRevision(value: number) {
+    this.questions.revision = value
+  }
+  private get questionGeneration(): number {
+    return this.questions.generation
+  }
+  private set questionGeneration(value: number) {
+    this.questions.generation = value
+  }
+  private get transcriptRevisions() {
+    return this.transcripts.revisions
+  }
+  private get transcriptGenerations() {
+    return this.transcripts.generations
+  }
+  private get transcriptRefreshTimers() {
+    return this.transcripts.refreshTimers
+  }
+  private get removedMessages() {
+    return this.transcripts.removedMessages
+  }
+  private get removedParts() {
+    return this.transcripts.removedParts
+  }
+  private get messageHistories() {
+    return this.transcripts.messageHistories
+  }
+  private get messageRevisions() {
+    return this.transcripts.messageRevisions
+  }
+  private get sendGenerations() {
+    return this.prompts.sendGenerations
+  }
+  private get drainingQueues() {
+    return this.prompts.drainingQueues
+  }
+  private get sendingPrompts() {
+    return this.prompts.sendingPrompts
+  }
+  private get retryingSessions() {
+    return this.prompts.retryingSessions
+  }
+  private get steeringPrompts() {
+    return this.prompts.steeringPrompts
+  }
+  private get promptFiles() {
+    return this.prompts.promptFiles
+  }
+  private get promptAgents() {
+    return this.prompts.promptAgents
+  }
+  private get pendingPromptSessions() {
+    return this.settlements.pendingPromptSessions
+  }
+  private get pendingPromptTexts() {
+    return this.settlements.pendingPromptTexts
+  }
+  private get pendingPromptFileCounts() {
+    return this.settlements.pendingPromptFileCounts
+  }
+  private get sessionFailures() {
+    return this.settlements.sessionFailures
+  }
+  private get promptAdmissionPaused(): boolean {
+    return this.settlements.promptAdmissionPaused
+  }
+  private set promptAdmissionPaused(value: boolean) {
+    this.settlements.promptAdmissionPaused = value
+  }
 
   constructor(
     private readonly client: OpenCodeClient,
@@ -330,8 +551,12 @@ export class SessionController {
         if (signal.aborted) return
         await this.reconcile()
         if (signal.aborted) return
-        await this.reconcilePermissions().catch((error) => this.callbacks.error(`Could not reconcile permission requests: ${message(error)}`))
-        await this.reconcileQuestions().catch((error) => this.callbacks.error(`Could not reconcile questions: ${message(error)}`))
+        await this.reconcilePermissions().catch((error) =>
+          this.callbacks.error(`Could not reconcile permission requests: ${message(error)}`)
+        )
+        await this.reconcileQuestions().catch((error) =>
+          this.callbacks.error(`Could not reconcile questions: ${message(error)}`)
+        )
         if (!signal.aborted) this.dispatch({ type: "connected", connected: true, connectionState: "connected" })
       },
       event: (event) => this.eventBus.emit(event),
@@ -340,7 +565,9 @@ export class SessionController {
     })
     if (selectedSessionID) this.restoreSelectionID = selectedSessionID
     for (const [source, recovered] of Object.entries(recoveredSessions ?? {}).slice(0, 100)) {
-      if (source && recovered && source.length <= 1_024 && recovered.length <= 1_024) this.recoveredSessions.set(source, recovered)
+      if (source && recovered && source.length <= 1_024 && recovered.length <= 1_024) {
+        this.recoveredSessions.set(source, recovered)
+      }
     }
   }
 
@@ -353,7 +580,9 @@ export class SessionController {
     return [...this.ptyState.values()].map(clonePty)
   }
 
-  private get state(): WorkbenchState { return this.repository.snapshot }
+  private get state(): WorkbenchState {
+    return this.repository.snapshot
+  }
 
   canAttachWorkspaceFiles(): boolean {
     return this.client.canReadLocalFiles()
@@ -361,7 +590,14 @@ export class SessionController {
 
   resourceAttachment(uri: string): PromptFilePart | undefined {
     const resource = this.resources.find((candidate) => candidate.uri === uri)
-    return resource ? { type: "file", mime: resource.mimeType ?? "text/plain", url: resource.uri, filename: resource.name.slice(0, 255) } : undefined
+    return resource
+      ? {
+        type: "file",
+        mime: resource.mimeType ?? "text/plain",
+        url: resource.uri,
+        filename: resource.name.slice(0, 255),
+      }
+      : undefined
   }
 
   planFileName(sessionID: string): string | undefined {
@@ -458,26 +694,38 @@ export class SessionController {
       if (previous) clearTimeout(previous)
       this.settlementProbeGenerations.set(sessionID, currentGeneration)
     }
-    this.settlementProbeTimers.set(sessionID, setTimeout(() => {
-      this.settlementProbeTimers.delete(sessionID)
-      void this.probeSettlement(sessionID, currentGeneration, delayMilliseconds).catch((error) => {
-        if (this.disposed || this.settlementProbeGenerations.get(sessionID) !== currentGeneration) return
-        if (!this.settlementProbeFailures.has(sessionID)) {
-          this.settlementProbeFailures.add(sessionID)
-          this.callbacks.error(`Could not confirm OpenCode session settlement: ${message(error)}`)
-        }
-        this.scheduleSettlementProbe(sessionID, Math.min(1_000, Math.max(100, delayMilliseconds * 2)), currentGeneration)
-      })
-    }, delayMilliseconds))
+    this.settlementProbeTimers.set(
+      sessionID,
+      setTimeout(() => {
+        this.settlementProbeTimers.delete(sessionID)
+        void this.probeSettlement(sessionID, currentGeneration, delayMilliseconds).catch((error) => {
+          if (this.disposed || this.settlementProbeGenerations.get(sessionID) !== currentGeneration) return
+          if (!this.settlementProbeFailures.has(sessionID)) {
+            this.settlementProbeFailures.add(sessionID)
+            this.callbacks.error(`Could not confirm OpenCode session settlement: ${message(error)}`)
+          }
+          this.scheduleSettlementProbe(
+            sessionID,
+            Math.min(1_000, Math.max(100, delayMilliseconds * 2)),
+            currentGeneration,
+          )
+        })
+      }, delayMilliseconds),
+    )
   }
 
   private async probeSettlement(sessionID: string, generation: number, previousDelay: number): Promise<void> {
     const statuses = await this.client.sessionStatuses()
-    if (this.disposed || this.settlementProbeGenerations.get(sessionID) !== generation || !Object.hasOwn(this.state.sessions, sessionID)) return
+    if (
+      this.disposed || this.settlementProbeGenerations.get(sessionID) !== generation ||
+      !Object.hasOwn(this.state.sessions, sessionID)
+    ) return
     this.settlementProbeFailures.delete(sessionID)
     const authoritative = statuses[sessionID] ?? { type: "idle" as const }
     const failure = this.sessionFailures.get(sessionID)
-    const status: SessionStatus = authoritative.type === "idle" && failure ? { type: "error", message: failure } : authoritative
+    const status: SessionStatus = authoritative.type === "idle" && failure
+      ? { type: "error", message: failure }
+      : authoritative
     this.statusRevision += 1
     this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status } } })
     if (status.type === "busy" || status.type === "retry") {
@@ -486,15 +734,23 @@ export class SessionController {
     }
     this.settlementProbeGenerations.delete(sessionID)
     this.scheduleSessionListRefresh(sessionID)
-    void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
+    void this.drainQueue(sessionID).catch((error) =>
+      this.callbacks.error(`Could not send queued prompt: ${message(error)}`)
+    )
   }
 
   private confirmPromptAdmission(messageID: string, admittedAt: number): void {
     const sessionID = this.pendingPromptSessions.get(messageID)
     if (!sessionID || this.reportedPromptAdmissions.has(messageID)) return
     this.reportedPromptAdmissions.add(messageID)
-    while (this.reportedPromptAdmissions.size > 2_000) this.reportedPromptAdmissions.delete(this.reportedPromptAdmissions.values().next().value!)
-    this.callbacks.promptAdmitted?.(sessionID, messageID, Number.isSafeInteger(admittedAt) && admittedAt >= 0 ? admittedAt : Date.now())
+    while (this.reportedPromptAdmissions.size > 2_000) {
+      this.reportedPromptAdmissions.delete(this.reportedPromptAdmissions.values().next().value!)
+    }
+    this.callbacks.promptAdmitted?.(
+      sessionID,
+      messageID,
+      Number.isSafeInteger(admittedAt) && admittedAt >= 0 ? admittedAt : Date.now(),
+    )
   }
 
   private async ensureAutomaticTitle(sessionID: string): Promise<void> {
@@ -536,7 +792,9 @@ export class SessionController {
     const values = await this.client.listPtys()
     if (this.disposed || generation !== this.ptyGeneration) return
     if (revision !== this.ptyRevision) {
-      void this.reconcilePtys().catch((error) => this.callbacks.error(`Could not reconcile OpenCode PTYs: ${message(error)}`))
+      void this.reconcilePtys().catch((error) =>
+        this.callbacks.error(`Could not reconcile OpenCode PTYs: ${message(error)}`)
+      )
       return
     }
     const next = new Map<string, OpenCodePty>()
@@ -556,7 +814,8 @@ export class SessionController {
     const previous = this.ptyState.get(pty.id)
     if (previous && samePty(previous, pty)) return false
     if (!previous && this.ptyState.size >= OPENCODE_PTY_LIMIT) {
-      const removable = [...this.ptyState.values()].find((candidate) => candidate.status === "exited") ?? this.ptyState.values().next().value
+      const removable = [...this.ptyState.values()].find((candidate) => candidate.status === "exited") ??
+        this.ptyState.values().next().value
       if (removable) this.ptyState.delete(removable.id)
     }
     this.ptyState.set(pty.id, clonePty(pty))
@@ -584,29 +843,46 @@ export class SessionController {
     }
     if (changed) this.repository.notify({ type: "connected", connected: this.state.connected })
     if (hydrationRequired && typeof this.client.listPtys === "function") {
-      void this.reconcilePtys().catch((error) => this.callbacks.error(`Could not reconcile OpenCode PTYs: ${message(error)}`))
+      void this.reconcilePtys().catch((error) =>
+        this.callbacks.error(`Could not reconcile OpenCode PTYs: ${message(error)}`)
+      )
     }
   }
 
   messageUpdateKey(update: ControllerUpdate): { sessionID: string; messageID: string } | undefined {
-    if (update.type !== "event" || !["message.updated", "message.part.updated", "message.part.delta"].includes(update.event.type)) return undefined
+    if (
+      update.type !== "event" ||
+      !["message.updated", "message.part.updated", "message.part.delta"].includes(update.event.type)
+    ) return undefined
     const info = update.event.properties.info
     const part = update.event.properties.part
-    if (record(part) && part.type === "tool" && typeof part.tool === "string" && GOAL_TOOLS.has(part.tool) && record(part.state) &&
-      (part.state.status === "completed" || part.state.status === "complete")) return undefined
-    const sessionID = typeof update.event.properties.sessionID === "string" ? update.event.properties.sessionID
+    if (
+      record(part) && part.type === "tool" && typeof part.tool === "string" && GOAL_TOOLS.has(part.tool) &&
+      record(part.state) &&
+      (part.state.status === "completed" || part.state.status === "complete")
+    ) return undefined
+    const sessionID = typeof update.event.properties.sessionID === "string"
+      ? update.event.properties.sessionID
       : record(info) && typeof info.sessionID === "string"
       ? info.sessionID
-      : record(part) && typeof part.sessionID === "string" ? part.sessionID : undefined
-    const messageID = typeof update.event.properties.messageID === "string" ? update.event.properties.messageID
+      : record(part) && typeof part.sessionID === "string"
+      ? part.sessionID
+      : undefined
+    const messageID = typeof update.event.properties.messageID === "string"
+      ? update.event.properties.messageID
       : record(info) && typeof info.id === "string"
       ? info.id
-      : record(part) && typeof part.messageID === "string" ? part.messageID : undefined
+      : record(part) && typeof part.messageID === "string"
+      ? part.messageID
+      : undefined
     return sessionID && messageID && sessionID === this.state.selectedID ? { sessionID, messageID } : undefined
   }
 
   private pendingPromptTextFor(messageID: string): string | undefined {
-    return this.settlements.pendingText(messageID, (sessionID) => this.state.sessions[sessionID]?.queue.find((prompt) => prompt.id === messageID)?.text)
+    return this.settlements.pendingText(
+      messageID,
+      (sessionID) => this.state.sessions[sessionID]?.queue.find((prompt) => prompt.id === messageID)?.text,
+    )
   }
 
   messagePatches(keys: Array<{ sessionID: string; messageID: string }>): MessagePatch[] | undefined {
@@ -619,7 +895,8 @@ export class SessionController {
       const index = session.messages.findIndex((entry) => entry.info.id === messageID)
       const message = index < 0 ? undefined : session.messages[index]
       const safe = message ? snapshotMessage(message, this.pendingPromptTextFor(messageID)) : undefined
-      const nextCharacters = characters + (safe?.parts.reduce((total, part) => total + snapshotPartCharacters(part), 0) ?? 0)
+      const nextCharacters = characters +
+        (safe?.parts.reduce((total, part) => total + snapshotPartCharacters(part), 0) ?? 0)
       if (nextCharacters > 3_800_000) return undefined
       characters = nextCharacters
       patches.push({
@@ -695,18 +972,40 @@ export class SessionController {
     return Boolean(ids?.size && [...ids].some((id) => !isOpenCodeMessageID(id)))
   }
 
-  private async recoverUnsafeLegacySession(sessionID: string, agent?: string, model?: string): Promise<string> {
-    if (!this.requiresLegacyPromptTransport(sessionID, agent, model) || !this.hasUnsafeLegacyMessageIDs(sessionID)) return sessionID
+  private async ensureLegacyMessageSafety(sessionID: string): Promise<void> {
+    const cursor = this.historyCursors.get(sessionID)
+    if (cursor && !cursor.legacyComplete) await this.readMessageHistory(sessionID)
+  }
+
+  private legacyMessageSafetyUnknown(sessionID: string): boolean {
+    return (this.messageHistories.get(sessionID)?.legacyMessageIDs.size ?? 0) >= TRANSCRIPT_MESSAGE_LIMIT
+  }
+
+  private async recoverUnsafeLegacySession(
+    sessionID: string,
+    agent?: string,
+    model?: string,
+    force = false,
+  ): Promise<string> {
+    if (
+      !this.requiresLegacyPromptTransport(sessionID, agent, model) ||
+      (!force && !this.hasUnsafeLegacyMessageIDs(sessionID))
+    ) return sessionID
     const existing = this.recoveredSessions.get(sessionID)
     if (existing && Object.hasOwn(this.state.sessions, existing)) {
       await this.selectKnown(existing)
       return existing
     }
-    if (this.recoveringSessions.has(sessionID)) throw new Error("This legacy session is already being recovered; wait for the recovered conversation to open")
+    if (this.recoveringSessions.has(sessionID)) {
+      throw new Error("This legacy session is already being recovered; wait for the recovered conversation to open")
+    }
     const previousStatus = this.state.sessions[sessionID]?.status ?? { type: "idle" as const }
     this.recoveringSessions.add(sessionID)
     this.statusRevision += 1
-    this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } } })
+    this.dispatch({
+      type: "event",
+      event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } },
+    })
     try {
       const recovered = await this.forkSession(sessionID)
       this.recoveredSessions.set(sessionID, recovered)
@@ -717,7 +1016,10 @@ export class SessionController {
       this.recoveringSessions.delete(sessionID)
       if (Object.hasOwn(this.state.sessions, sessionID)) {
         this.statusRevision += 1
-        this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: previousStatus } } })
+        this.dispatch({
+          type: "event",
+          event: { type: "session.status", properties: { sessionID, status: previousStatus } },
+        })
       }
     }
   }
@@ -737,9 +1039,11 @@ export class SessionController {
         return id !== recoveredID && candidate && forkPattern.test(candidate.info.title) &&
           Math.abs(candidate.info.time.created - recovered.info.time.created) <= RECOVERY_DUPLICATE_WINDOW_MS
       })
-      if (duplicates.length) for (const duplicateID of duplicates) {
-        hidden.add(duplicateID)
-        representative.set(duplicateID, recoveredID)
+      if (duplicates.length) {
+        for (const duplicateID of duplicates) {
+          hidden.add(duplicateID)
+          representative.set(duplicateID, recoveredID)
+        }
       }
     }
     return { hidden, representative }
@@ -799,11 +1103,20 @@ export class SessionController {
       this.client.sessionStatuses(),
       this.client.catalogs().catch((error) => {
         catalogError = message(error)
-        return { agents: this.agents, mentionAgents: this.mentionAgents, providers: this.providers, models: this.models, resources: this.resources, defaults: { agent: this.defaultAgent, model: this.defaultModel, variant: this.defaultVariant } }
+        return {
+          agents: this.agents,
+          mentionAgents: this.mentionAgents,
+          providers: this.providers,
+          models: this.models,
+          resources: this.resources,
+          defaults: { agent: this.defaultAgent, model: this.defaultModel, variant: this.defaultVariant },
+        }
       }),
       this.client.commands?.().catch(() => this.commands) ?? Promise.resolve(this.commands),
       this.readRuntime(),
-      this.reconcilePtys().catch((error) => this.callbacks.error(`Could not reconcile OpenCode PTYs: ${message(error)}`)),
+      this.reconcilePtys().catch((error) =>
+        this.callbacks.error(`Could not reconcile OpenCode PTYs: ${message(error)}`)
+      ),
     ])
     if (this.disposed || generation !== this.reconcileGeneration) return
     if (sessionRevision !== this.sessionRevision) {
@@ -834,12 +1147,16 @@ export class SessionController {
       this.dispatch({ type: "select", sessionID: recoveredID })
       this.callbacks.selectionChanged?.(recoveredID)
     }
-    for (const id of this.state.order) if (this.state.sessions[id]?.status.type === "idle" && this.state.sessions[id]!.queue.length) void this.drainQueue(id)
+    for (const id of this.state.order) {
+      if (this.state.sessions[id]?.status.type === "idle" && this.state.sessions[id]!.queue.length) {
+        void this.drainQueue(id)
+      }
+    }
     const refreshIDs = this.state.order.filter((id) =>
       id === this.state.selectedID ||
       this.state.sessions[id]?.loaded ||
       effectiveStatuses[id]?.type === "busy" ||
-      effectiveStatuses[id]?.type === "retry",
+      effectiveStatuses[id]?.type === "retry"
     )
     await Promise.allSettled([
       ...refreshIDs.map((id) => this.loadTranscript(id)),
@@ -850,20 +1167,30 @@ export class SessionController {
   }
 
   async refresh(): Promise<void> {
-    if (this.hasActiveSessions()) throw new Error("Stop all active OpenCode sessions before refreshing the workspace instance")
+    if (this.hasActiveSessions()) {
+      throw new Error("Stop all active OpenCode sessions before refreshing the workspace instance")
+    }
     if (await this.client.disposeInstance() !== true) throw new Error("OpenCode did not refresh the workspace instance")
     this.reconnect()
   }
 
   hasActiveSessions(): boolean {
-    return Object.values(this.state.sessions).some((session) => session.status.type === "busy" || session.status.type === "retry")
+    return Object.values(this.state.sessions).some((session) =>
+      session.status.type === "busy" || session.status.type === "retry"
+    )
   }
 
-  async manageMcp(sessionID: string, name: string, action: "connect" | "disconnect" | "authenticate" | "removeAuth"): Promise<void> {
+  async manageMcp(
+    sessionID: string,
+    name: string,
+    action: "connect" | "disconnect" | "authenticate" | "removeAuth",
+  ): Promise<void> {
     this.requireSession(sessionID)
     if (!this.runtime?.mcp.some((service) => service.id === name)) throw new Error("MCP server is no longer available")
     const accepted = await this.client.mcpAction(name, action)
-    if ((action === "connect" || action === "disconnect") && accepted !== true) throw new Error(`OpenCode did not ${action} the MCP server`)
+    if ((action === "connect" || action === "disconnect") && accepted !== true) {
+      throw new Error(`OpenCode did not ${action} the MCP server`)
+    }
     await this.refreshRuntime()
   }
 
@@ -884,7 +1211,9 @@ export class SessionController {
     }
     if (this.disposed || generation !== this.permissionGeneration) return
     if (revision !== this.permissionRevision) {
-      void this.reconcilePermissions().catch((error) => this.callbacks.error(`Could not reconcile permission requests: ${message(error)}`))
+      void this.reconcilePermissions().catch((error) =>
+        this.callbacks.error(`Could not reconcile permission requests: ${message(error)}`)
+      )
       return
     }
     const grouped = new Map<string, PermissionRequest[]>()
@@ -894,15 +1223,24 @@ export class SessionController {
         request.protocol === "legacy" || !succeeded.includes(request.protocol)
       ) ?? []
       grouped.set(sessionID, retained)
-      characters.set(sessionID, retained.reduce((total, request) => total + permissionRequestCharacters(request), 0))
+      characters.set(
+        sessionID,
+        retained.reduce((total, request) =>
+          total + permissionRequestCharacters(request), 0),
+      )
     }
     for (const request of requests.slice(0, 10_000)) {
       if (!Object.hasOwn(this.state.sessions, request.sessionID)) continue
       const values = grouped.get(request.sessionID) ?? []
       const requestCharacters = permissionRequestCharacters(request)
       const nextCharacters = (characters.get(request.sessionID) ?? 0) + requestCharacters
-      if (values.length < 100 && !values.some((candidate) => candidate.id === request.id && candidate.protocol === request.protocol)) {
-        const safe = nextCharacters <= PERMISSION_AGGREGATE_CHARACTER_LIMIT ? request : this.permissions.rejectOnly(request)
+      if (
+        values.length < 100 &&
+        !values.some((candidate) => candidate.id === request.id && candidate.protocol === request.protocol)
+      ) {
+        const safe = nextCharacters <= PERMISSION_AGGREGATE_CHARACTER_LIMIT
+          ? request
+          : this.permissions.rejectOnly(request)
         const safeCharacters = (characters.get(request.sessionID) ?? 0) + permissionRequestCharacters(safe)
         if (safeCharacters <= PERMISSION_AGGREGATE_CHARACTER_LIMIT) {
           values.push(safe)
@@ -912,7 +1250,9 @@ export class SessionController {
       grouped.set(request.sessionID, values)
     }
     for (const requests of grouped.values()) for (const request of requests) this.maybeAutoRespond(request, true)
-    for (const sessionID of this.state.order) this.dispatch({ type: "permissions", sessionID, permissions: grouped.get(sessionID) ?? [] })
+    for (const sessionID of this.state.order) {
+      this.dispatch({ type: "permissions", sessionID, permissions: grouped.get(sessionID) ?? [] })
+    }
     for (const requests of grouped.values()) for (const request of requests) this.maybeAutoRespond(request)
   }
 
@@ -925,12 +1265,18 @@ export class SessionController {
       : { requests: await this.client.pendingQuestions(), succeeded: ["legacy" as const, "v2" as const] }
     if (this.disposed || generation !== this.questionGeneration) return
     if (revision !== this.questionRevision) {
-      void this.reconcileQuestions().catch((error) => this.callbacks.error(`Could not reconcile questions: ${message(error)}`))
+      void this.reconcileQuestions().catch((error) =>
+        this.callbacks.error(`Could not reconcile questions: ${message(error)}`)
+      )
       return
     }
     const grouped = new Map<string, QuestionRequest[]>()
     for (const sessionID of this.state.order) {
-      grouped.set(sessionID, this.state.sessions[sessionID]?.questions.filter((request) => !result.succeeded.includes(request.protocol)) ?? [])
+      grouped.set(
+        sessionID,
+        this.state.sessions[sessionID]?.questions.filter((request) => !result.succeeded.includes(request.protocol)) ??
+          [],
+      )
     }
     for (const request of result.requests) {
       if (!Object.hasOwn(this.state.sessions, request.sessionID)) continue
@@ -938,7 +1284,9 @@ export class SessionController {
       if (values.length < 100 && !values.some((candidate) => candidate.id === request.id)) values.push(request)
       grouped.set(request.sessionID, values)
     }
-    for (const sessionID of this.state.order) this.dispatch({ type: "questions", sessionID, questions: grouped.get(sessionID) ?? [] })
+    for (const sessionID of this.state.order) {
+      this.dispatch({ type: "questions", sessionID, questions: grouped.get(sessionID) ?? [] })
+    }
   }
 
   async createSession(title?: string, draft?: string): Promise<string> {
@@ -954,7 +1302,9 @@ export class SessionController {
   async createSessionWithPrompt(text: string): Promise<string> {
     if (!text.trim() || text.length > PROMPT_TEXT_CHARACTER_LIMIT) throw new Error("Prompt must contain text")
     const sessionID = await this.createSession(undefined, text)
-    if (this.state.selectedID !== sessionID) throw new Error("Session selection changed while creating the conversation")
+    if (this.state.selectedID !== sessionID) {
+      throw new Error("Session selection changed while creating the conversation")
+    }
     const composer = this.chatSnapshot().session
     await this.send(text, composer?.agent, composer?.model, composer?.variant)
     return sessionID
@@ -986,7 +1336,9 @@ export class SessionController {
 
   async forkSession(sessionID: string, messageID?: string): Promise<string> {
     const session = this.requireSession(sessionID)
-    if (messageID && !session.messages.some((message) => message.info.id === messageID)) throw new Error("Cannot fork from an unknown message")
+    if (messageID && !session.messages.some((message) => message.info.id === messageID)) {
+      throw new Error("Cannot fork from an unknown message")
+    }
     const info = await this.client.forkSession(sessionID, messageID)
     this.sessionRevision += 1
     this.dispatch({ type: "event", event: { type: "session.created", properties: { info } } })
@@ -996,8 +1348,12 @@ export class SessionController {
 
   async undoSession(sessionID: string, selectedMessageID?: string): Promise<void> {
     const session = this.requireSession(sessionID)
-    const messageID = selectedMessageID ?? session.messages.slice().reverse().find((entry) => entry.info.role === "user")?.info.id
-    if (selectedMessageID && !session.messages.some((entry) => entry.info.id === selectedMessageID && entry.info.role === "user")) {
+    const messageID = selectedMessageID ??
+      session.messages.slice().reverse().find((entry) => entry.info.role === "user")?.info.id
+    if (
+      selectedMessageID &&
+      !session.messages.some((entry) => entry.info.id === selectedMessageID && entry.info.role === "user")
+    ) {
       throw new Error("Cannot undo from an unknown user message")
     }
     if (!messageID) throw new Error("This session has no user message to undo")
@@ -1010,15 +1366,28 @@ export class SessionController {
   async retrySession(sessionID: string, messageID?: string): Promise<void> {
     const session = this.requireSession(sessionID)
     if (this.retryingSessions.has(sessionID)) throw new Error("A retry is already in progress for this session")
-    if (session.status.type === "busy" || session.status.type === "retry") throw new Error("Wait for the active response to finish before retrying")
-    const anchor = messageID === undefined ? session.messages.length : session.messages.findIndex((entry) => entry.info.id === messageID) + 1
+    if (session.status.type === "busy" || session.status.type === "retry") {
+      throw new Error("Wait for the active response to finish before retrying")
+    }
+    const anchor = messageID === undefined
+      ? session.messages.length
+      : session.messages.findIndex((entry) => entry.info.id === messageID) + 1
     if (messageID !== undefined && anchor === 0) throw new Error("Cannot retry from an unknown message")
     const promptMessage = session.messages.slice(0, anchor).reverse().find((entry) => entry.info.role === "user")
     if (!promptMessage) throw new Error("This session has no user message to retry")
-    const text = promptMessage.parts.filter((part) => !part.synthetic && part.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n")
-    const files = promptMessage.parts.flatMap((part) => part.type === "file" && typeof part.url === "string"
-      ? [{ type: "file" as const, mime: typeof part.mime === "string" ? part.mime : "application/octet-stream", url: part.url, filename: typeof part.filename === "string" ? part.filename : "attachment" }]
-      : [])
+    const text = promptMessage.parts.filter((part) =>
+      !part.synthetic && part.type === "text" && typeof part.text === "string"
+    ).map((part) => part.text).join("\n")
+    const files = promptMessage.parts.flatMap((part) =>
+      part.type === "file" && typeof part.url === "string"
+        ? [{
+          type: "file" as const,
+          mime: typeof part.mime === "string" ? part.mime : "application/octet-stream",
+          url: part.url,
+          filename: typeof part.filename === "string" ? part.filename : "attachment",
+        }]
+        : []
+    )
     if (!text.trim() && !files.length) throw new Error("The previous prompt has no retryable content")
     const agent = session.agent
     const model = session.model
@@ -1040,15 +1409,22 @@ export class SessionController {
         const admission = await this.retryPromptAdmission(sessionID, promptID, legacy)
         if (admission === "accepted") {
           rollbackRequired = false
-          if (this.state.sessions[sessionID]?.queue.some((prompt) => prompt.id === promptID)) this.removeQueued(sessionID, promptID)
+          if (this.state.sessions[sessionID]?.queue.some((prompt) => prompt.id === promptID)) {
+            this.removeQueued(sessionID, promptID)
+          }
           await this.reloadSession(sessionID)
           return
         }
         if (admission === "unknown") {
           rollbackRequired = false
-          throw new Error("Retry delivery could not be confirmed; the original turn remains reverted to avoid duplicating an accepted prompt", { cause: error })
+          throw new Error(
+            "Retry delivery could not be confirmed; the original turn remains reverted to avoid duplicating an accepted prompt",
+            { cause: error },
+          )
         }
-        if (this.state.sessions[sessionID]?.queue.some((prompt) => prompt.id === promptID)) this.removeQueued(sessionID, promptID)
+        if (this.state.sessions[sessionID]?.queue.some((prompt) => prompt.id === promptID)) {
+          this.removeQueued(sessionID, promptID)
+        }
         throw error
       }
     } catch (error) {
@@ -1056,7 +1432,10 @@ export class SessionController {
         try {
           await this.redoSession(sessionID)
         } catch (rollbackError) {
-          throw new AggregateError([error, rollbackError], `Retry failed and the reverted turn could not be restored: ${message(rollbackError)}`)
+          throw new AggregateError(
+            [error, rollbackError],
+            `Retry failed and the reverted turn could not be restored: ${message(rollbackError)}`,
+          )
         }
       }
       throw error
@@ -1065,7 +1444,11 @@ export class SessionController {
     }
   }
 
-  private async retryPromptAdmission(sessionID: string, promptID: string, legacy: boolean): Promise<"accepted" | "absent" | "unknown"> {
+  private async retryPromptAdmission(
+    sessionID: string,
+    promptID: string,
+    legacy: boolean,
+  ): Promise<"accepted" | "absent" | "unknown"> {
     try {
       if (!legacy && typeof this.client.hasPromptAdmission === "function") {
         const admitted = await this.client.hasPromptAdmission(sessionID, promptID)
@@ -1091,24 +1474,34 @@ export class SessionController {
   async compactSession(sessionID: string): Promise<void> {
     const session = this.requireSession(sessionID)
     if (!this.requiresLegacyPromptTransport(sessionID, session.agent, session.model)) {
-      if (typeof this.client.compactSessionV2 !== "function") throw new Error("This OpenCode client does not expose native session compaction")
+      if (typeof this.client.compactSessionV2 !== "function") {
+        throw new Error("This OpenCode client does not expose native session compaction")
+      }
       const compactionID = createOpenCodeMessageID()
       try {
         await this.client.compactSessionV2(sessionID, compactionID)
       } catch (error) {
         if (nativeCompactionUnavailable(error)) {
-          throw new Error("This OpenCode version does not support native manual compaction for this v2 session. Automatic compaction remains OpenCode-managed.", { cause: error })
+          throw new Error(
+            "This OpenCode version does not support native manual compaction for this v2 session. Automatic compaction remains OpenCode-managed.",
+            { cause: error },
+          )
         }
         throw error
       }
       this.statusRevision += 1
-      this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } } })
+      this.dispatch({
+        type: "event",
+        event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } },
+      })
       this.scheduleSettlementProbe(sessionID, 250)
       return
     }
     const model = session.model
     const separator = model?.indexOf("/") ?? -1
-    if (!model || separator <= 0 || separator === model.length - 1) throw new Error("Select a model before compacting this session")
+    if (!model || separator <= 0 || separator === model.length - 1) {
+      throw new Error("Select a model before compacting this session")
+    }
     if (await this.client.summarizeSession(sessionID, model.slice(0, separator), model.slice(separator + 1)) !== true) {
       throw new Error("OpenCode did not compact the session")
     }
@@ -1149,7 +1542,9 @@ export class SessionController {
 
   async backgroundChildSessions(sessionID: string): Promise<boolean> {
     this.requireSession(sessionID)
-    if (typeof this.client.backgroundChildSessions !== "function") throw new Error("This OpenCode server does not support background child sessions")
+    if (typeof this.client.backgroundChildSessions !== "function") {
+      throw new Error("This OpenCode server does not support background child sessions")
+    }
     return await this.client.backgroundChildSessions(sessionID)
   }
 
@@ -1162,6 +1557,7 @@ export class SessionController {
     const previous = this.state.sessions[sessionID]!.messages
     const messages = this.refreshMessageRevisions(sessionID, history.messages, previous)
     this.historyCursors.delete(sessionID)
+    this.historyLimitReached.delete(sessionID)
     this.dispatch({ type: "transcript", sessionID, messages })
     this.dispatch({ type: "changes", sessionID, changes })
   }
@@ -1196,7 +1592,9 @@ export class SessionController {
   private async loadDelegationTranscripts(parentID: string): Promise<void> {
     const parent = this.state.sessions[parentID]
     if (!parent) return
-    const sessionIDs = parent.messages.flatMap((message) => message.parts.map(delegationSessionID)).filter((value): value is string => Boolean(value))
+    const sessionIDs = parent.messages.flatMap((message) => message.parts.map(delegationSessionID)).filter((
+      value,
+    ): value is string => Boolean(value))
     const unique = [...new Set(sessionIDs)].slice(-20)
     await Promise.allSettled(unique.map((sessionID) => {
       const child = this.state.sessions[sessionID]
@@ -1214,7 +1612,10 @@ export class SessionController {
     try {
       history = await this.readRecentMessageHistory(sessionID, !previouslyLoaded)
     } catch (error) {
-      if (markLoading && this.transcriptGenerations.get(sessionID) === generation && Object.hasOwn(this.state.sessions, sessionID)) {
+      if (
+        markLoading && this.transcriptGenerations.get(sessionID) === generation &&
+        Object.hasOwn(this.state.sessions, sessionID)
+      ) {
         this.dispatch({ type: "transcriptError", sessionID })
       }
       throw error
@@ -1229,12 +1630,21 @@ export class SessionController {
       const serverIndex = projected.findIndex((entry) => entry.info.id === promptID)
       const serverMessage = serverIndex < 0 ? undefined : projected[serverIndex]
       const localMessage = current.messages.find((entry) => entry.info.id === promptID)
-      const expectedText = localMessage?.parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text)) ?? false
+      const expectedText = localMessage?.parts.some((part) =>
+        part.type === "text" && !part.synthetic && Boolean(part.text)
+      ) ?? false
       const retainedText = this.pendingPromptTextFor(promptID)
-      const expectedFiles = Math.max(localMessage?.parts.filter((part) => part.type === "file").length ?? 0, this.pendingPromptFileCounts.get(promptID) ?? 0)
-      const serverHasText = serverMessage?.parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text)) ?? false
+      const expectedFiles = Math.max(
+        localMessage?.parts.filter((part) => part.type === "file").length ?? 0,
+        this.pendingPromptFileCounts.get(promptID) ?? 0,
+      )
+      const serverHasText =
+        serverMessage?.parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text)) ?? false
       const serverFiles = serverMessage?.parts.filter((part) => part.type === "file").length ?? 0
-      if (serverMessage && (((!expectedText && retainedText === undefined) || serverHasText) && serverFiles >= expectedFiles)) {
+      if (
+        serverMessage &&
+        (((!expectedText && retainedText === undefined) || serverHasText) && serverFiles >= expectedFiles)
+      ) {
         this.confirmPromptAdmission(promptID, serverMessage.info.time?.created ?? Date.now())
         this.pendingPromptSessions.delete(promptID)
         this.pendingPromptTexts.delete(promptID)
@@ -1265,13 +1675,33 @@ export class SessionController {
     const persistedFailure = persistedAssistantFailure(lastMessage)
     if (current.status.type === "idle" && persistedFailure) {
       this.statusRevision += 1
-      this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "error", message: persistedFailure } } } })
-    } else if (current.status.type === "idle" && lastMessage?.info.role === "user" && !isNativeCompactionContinuationMessage(lastMessage) &&
-      !current.queue.length && !this.sendingPrompts.has(sessionID) && !this.pendingPromptSessions.has(lastMessage.info.id)) {
+      this.dispatch({
+        type: "event",
+        event: {
+          type: "session.status",
+          properties: { sessionID, status: { type: "error", message: persistedFailure } },
+        },
+      })
+    } else if (
+      current.status.type === "idle" && lastMessage?.info.role === "user" &&
+      !isNativeCompactionContinuationMessage(lastMessage) &&
+      !current.queue.length && !this.sendingPrompts.has(sessionID) &&
+      !this.pendingPromptSessions.has(lastMessage.info.id)
+    ) {
       this.statusRevision += 1
       this.dispatch({
         type: "event",
-        event: { type: "session.status", properties: { sessionID, status: { type: "error", message: "The previous response was interrupted or did not start. Send a new message or retry the unanswered turn." } } },
+        event: {
+          type: "session.status",
+          properties: {
+            sessionID,
+            status: {
+              type: "error",
+              message:
+                "The previous response was interrupted or did not start. Send a new message or retry the unanswered turn.",
+            },
+          },
+        },
       })
     }
     for (const [id, removedAt] of removedMessages ?? []) if (removedAt <= revision) removedMessages?.delete(id)
@@ -1279,12 +1709,15 @@ export class SessionController {
     const lastUser = messages.slice().reverse().find((entry) => entry.info.role === "user")?.info
     const model = lastUser?.model
     const modelRecord = model && typeof model === "object" ? model as Record<string, unknown> : undefined
-    const inferredModel = modelRecord && typeof modelRecord.providerID === "string" && typeof modelRecord.modelID === "string"
-      ? `${modelRecord.providerID}/${modelRecord.modelID}`
-      : undefined
+    const inferredModel =
+      modelRecord && typeof modelRecord.providerID === "string" && typeof modelRecord.modelID === "string"
+        ? `${modelRecord.providerID}/${modelRecord.modelID}`
+        : undefined
     const inferredVariant = modelRecord && typeof modelRecord.variant === "string" ? modelRecord.variant : undefined
     const inferredAgent = typeof lastUser?.agent === "string" ? lastUser.agent : undefined
-    if ((!current.agent && inferredAgent) || (!current.model && inferredModel) || (!current.variant && inferredVariant)) {
+    if (
+      (!current.agent && inferredAgent) || (!current.model && inferredModel) || (!current.variant && inferredVariant)
+    ) {
       this.dispatch({
         type: "preference",
         sessionID,
@@ -1297,10 +1730,15 @@ export class SessionController {
 
   private scheduleTranscriptRefresh(sessionID: string): void {
     if (this.transcriptRefreshTimers.has(sessionID)) return
-    this.transcriptRefreshTimers.set(sessionID, setTimeout(() => {
-      this.transcriptRefreshTimers.delete(sessionID)
-      void this.loadTranscript(sessionID, false).catch((error) => this.callbacks.error(`Could not refresh OpenCode transcript: ${message(error)}`))
-    }, 25))
+    this.transcriptRefreshTimers.set(
+      sessionID,
+      setTimeout(() => {
+        this.transcriptRefreshTimers.delete(sessionID)
+        void this.loadTranscript(sessionID, false).catch((error) =>
+          this.callbacks.error(`Could not refresh OpenCode transcript: ${message(error)}`)
+        )
+      }, 25),
+    )
   }
 
   private async loadTodos(sessionID: string): Promise<void> {
@@ -1309,8 +1747,10 @@ export class SessionController {
     this.todoGenerations.set(sessionID, generation)
     const revision = this.todoRevisions.get(sessionID) ?? 0
     const todos = await this.client.todos(sessionID)
-    if (this.todoGenerations.get(sessionID) !== generation || (this.todoRevisions.get(sessionID) ?? 0) !== revision ||
-      !Object.hasOwn(this.state.sessions, sessionID)) return
+    if (
+      this.todoGenerations.get(sessionID) !== generation || (this.todoRevisions.get(sessionID) ?? 0) !== revision ||
+      !Object.hasOwn(this.state.sessions, sessionID)
+    ) return
     this.dispatch({ type: "todos", sessionID, todos })
   }
 
@@ -1320,8 +1760,10 @@ export class SessionController {
     this.changeGenerations.set(sessionID, generation)
     const revision = this.changeRevisions.get(sessionID) ?? 0
     const changes = await this.client.changes(sessionID)
-    if (this.changeGenerations.get(sessionID) !== generation || (this.changeRevisions.get(sessionID) ?? 0) !== revision ||
-      !Object.hasOwn(this.state.sessions, sessionID)) return
+    if (
+      this.changeGenerations.get(sessionID) !== generation || (this.changeRevisions.get(sessionID) ?? 0) !== revision ||
+      !Object.hasOwn(this.state.sessions, sessionID)
+    ) return
     this.dispatch({ type: "changes", sessionID, changes })
   }
 
@@ -1337,7 +1779,9 @@ export class SessionController {
     for (const sessionID of this.state.order) {
       const session = this.state.sessions[sessionID]
       if (session?.queue.length && (session.status.type === "idle" || session.status.type === "error")) {
-        void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
+        void this.drainQueue(sessionID).catch((error) =>
+          this.callbacks.error(`Could not send queued prompt: ${message(error)}`)
+        )
       }
     }
   }
@@ -1352,42 +1796,102 @@ export class SessionController {
     if (!sessionID) return
     this.validatePreference(agent, model, variant)
     this.rememberPreference(agent, model, variant, variant !== undefined)
-    this.dispatch({ type: "preference", sessionID, agent, model, variant: model && variant === undefined ? "" : variant })
+    this.dispatch({
+      type: "preference",
+      sessionID,
+      agent,
+      model,
+      variant: model && variant === undefined ? "" : variant,
+    })
   }
 
-  async send(text: string, agent?: string, model?: string, variant?: string, files: PromptFilePart[] = [], mentionedAgents: string[] = [], promptID?: string, delivery: "queue" | "steer" | "replace" = "queue"): Promise<void> {
+  async send(
+    text: string,
+    agent?: string,
+    model?: string,
+    variant?: string,
+    files: PromptFilePart[] = [],
+    mentionedAgents: string[] = [],
+    promptID?: string,
+    delivery: "queue" | "steer" | "replace" = "queue",
+  ): Promise<void> {
     let sessionID = this.state.selectedID
     if (!sessionID) throw new Error("Create or select a session first")
-    if (this.requiresLegacyPromptTransport(sessionID, agent, model) && this.hasUnsafeLegacyMessageIDs(sessionID)) {
-      sessionID = await this.recoverUnsafeLegacySession(sessionID, agent, model)
+    if (this.requiresLegacyPromptTransport(sessionID, agent, model)) {
+      await this.ensureLegacyMessageSafety(sessionID)
+      if (this.hasUnsafeLegacyMessageIDs(sessionID) || this.legacyMessageSafetyUnknown(sessionID)) {
+        sessionID = await this.recoverUnsafeLegacySession(sessionID, agent, model, true)
+      }
     }
     await this.sendToSession(sessionID, text, agent, model, variant, files, mentionedAgents, promptID, true, delivery)
   }
 
-  private async sendToSession(sessionID: string, text: string, agent?: string, model?: string, variant?: string, files: PromptFilePart[] = [], mentionedAgents: string[] = [], promptID = createOpenCodeMessageID(), clearDraft = true, delivery: "queue" | "steer" | "replace" = "queue"): Promise<void> {
-    if (this.promptAdmissionPaused) throw new Error("OpenCode is waiting to reload; send another prompt after reconnecting")
+  private async sendToSession(
+    sessionID: string,
+    text: string,
+    agent?: string,
+    model?: string,
+    variant?: string,
+    files: PromptFilePart[] = [],
+    mentionedAgents: string[] = [],
+    promptID = createOpenCodeMessageID(),
+    clearDraft = true,
+    delivery: "queue" | "steer" | "replace" = "queue",
+  ): Promise<void> {
+    if (this.promptAdmissionPaused) {
+      throw new Error("OpenCode is waiting to reload; send another prompt after reconnecting")
+    }
     const session = this.state.sessions[sessionID]
     if (!session) throw new Error("Unknown OpenCode session")
-    if (!isOpenCodeMessageID(promptID) || session.queue.some((prompt) => prompt.id === promptID) || session.messages.some((entry) => entry.info.id === promptID)) {
+    if (
+      !isOpenCodeMessageID(promptID) || session.queue.some((prompt) => prompt.id === promptID) ||
+      session.messages.some((entry) => entry.info.id === promptID)
+    ) {
       throw new Error("Prompt ID is invalid or already in use")
     }
-    if ((!text.trim() && !files.length) || text.length > PROMPT_TEXT_CHARACTER_LIMIT) throw new Error("Prompt must contain text or an attachment")
-    const attachmentCharacters = files.reduce((total, file) => total + file.filename.length + file.mime.length + file.url.length, 0)
-    if (files.length > PROMPT_ATTACHMENT_COUNT_LIMIT || attachmentCharacters > PROMPT_ATTACHMENT_CHARACTER_LIMIT ||
-      files.some((file) => file.type !== "file" || !file.filename || file.filename.length > 255 || file.mime.length > 100 || file.url.length > PROMPT_ATTACHMENT_CHARACTER_LIMIT)) {
+    if ((!text.trim() && !files.length) || text.length > PROMPT_TEXT_CHARACTER_LIMIT) {
+      throw new Error("Prompt must contain text or an attachment")
+    }
+    const attachmentCharacters = files.reduce(
+      (total, file) => total + file.filename.length + file.mime.length + file.url.length,
+      0,
+    )
+    if (
+      files.length > PROMPT_ATTACHMENT_COUNT_LIMIT || attachmentCharacters > PROMPT_ATTACHMENT_CHARACTER_LIMIT ||
+      files.some((file) =>
+        file.type !== "file" || !file.filename || file.filename.length > 255 || file.mime.length > 100 ||
+        file.url.length > PROMPT_ATTACHMENT_CHARACTER_LIMIT
+      )
+    ) {
       throw new Error("Prompt attachments exceed Workbench limits")
     }
-    if ((agent?.length ?? 0) > 1_024 || (model?.length ?? 0) > 1_024 || (variant?.length ?? 0) > 1_024) throw new Error("Agent, model, and reasoning identifiers must not exceed 1,024 characters")
-    if (mentionedAgents.length > 20 || mentionedAgents.some((name) => !this.mentionAgents.some((candidate) => candidate.name === name))) throw new Error("Prompt contains an unknown OpenCode agent mention")
+    if ((agent?.length ?? 0) > 1_024 || (model?.length ?? 0) > 1_024 || (variant?.length ?? 0) > 1_024) {
+      throw new Error("Agent, model, and reasoning identifiers must not exceed 1,024 characters")
+    }
+    if (
+      mentionedAgents.length > 20 ||
+      mentionedAgents.some((name) => !this.mentionAgents.some((candidate) => candidate.name === name))
+    ) throw new Error("Prompt contains an unknown OpenCode agent mention")
     this.validatePreference(agent, model, variant)
-    if (session.queue.length >= PROMPT_QUEUE_COUNT_LIMIT) throw new Error(`This session already has ${PROMPT_QUEUE_COUNT_LIMIT} queued prompts`)
-    const queuedCharacters = session.queue.reduce((total, prompt) =>
-      total + prompt.id.length + prompt.text.length + (prompt.agent?.length ?? 0) + (prompt.model?.length ?? 0) + (prompt.variant?.length ?? 0), 0)
-    if (queuedCharacters + text.length + (agent?.length ?? 0) + (model?.length ?? 0) + (variant?.length ?? 0) > PROMPT_QUEUE_CHARACTER_LIMIT) {
+    if (session.queue.length >= PROMPT_QUEUE_COUNT_LIMIT) {
+      throw new Error(`This session already has ${PROMPT_QUEUE_COUNT_LIMIT} queued prompts`)
+    }
+    const queuedCharacters = session.queue.reduce(
+      (total, prompt) =>
+        total + prompt.id.length + prompt.text.length + (prompt.agent?.length ?? 0) + (prompt.model?.length ?? 0) +
+        (prompt.variant?.length ?? 0),
+      0,
+    )
+    if (
+      queuedCharacters + text.length + (agent?.length ?? 0) + (model?.length ?? 0) + (variant?.length ?? 0) >
+        PROMPT_QUEUE_CHARACTER_LIMIT
+    ) {
       throw new Error("Queued prompts exceed Workbench's aggregate text limit")
     }
     const active = session.status.type === "busy" || session.status.type === "retry"
-    if (active && delivery === "steer" && /^\/[A-Za-z0-9._-]+(?:\s|$)/.test(text.trimStart())) throw new Error("Slash commands cannot steer a busy OpenCode session")
+    if (active && delivery === "steer" && /^\/[A-Za-z0-9._-]+(?:\s|$)/.test(text.trimStart())) {
+      throw new Error("Slash commands cannot steer a busy OpenCode session")
+    }
     if (active && delivery === "replace") await this.abortSession(sessionID)
     const originalDraft = session.draft
     this.dispatch({ type: "preference", sessionID, agent, model, variant })
@@ -1397,7 +1901,16 @@ export class SessionController {
     this.dispatch({
       type: "queue",
       sessionID,
-      prompt: { id: promptID, text, delivery: delivery === "queue" ? "follow-up" : delivery, agent, model, variant, attachments: files.length ? files.map((file) => ({ name: file.filename, mime: file.mime })) : undefined, createdAt: Date.now() },
+      prompt: {
+        id: promptID,
+        text,
+        delivery: delivery === "queue" ? "follow-up" : delivery,
+        agent,
+        model,
+        variant,
+        attachments: files.length ? files.map((file) => ({ name: file.filename, mime: file.mime })) : undefined,
+        createdAt: Date.now(),
+      },
     })
     if (delivery === "steer" || delivery === "replace") this.steeringPrompts.add(promptID)
     try {
@@ -1425,7 +1938,9 @@ export class SessionController {
     if (this.sendingPrompts.get(sessionID) === promptID) throw new Error("The queued prompt is already being sent")
     const prompt = session.queue.find((candidate) => candidate.id === promptID)
     if (!prompt) throw new Error("Unknown queued prompt")
-    if (text.length > PROMPT_TEXT_CHARACTER_LIMIT || (!text.trim() && !this.promptFiles.get(promptID)?.length)) throw new Error("Prompt must contain text or an attachment")
+    if (text.length > PROMPT_TEXT_CHARACTER_LIMIT || (!text.trim() && !this.promptFiles.get(promptID)?.length)) {
+      throw new Error("Prompt must contain text or an attachment")
+    }
     this.dispatch({ type: "editQueued", sessionID, promptID, text })
   }
 
@@ -1434,8 +1949,10 @@ export class SessionController {
     if (this.sendingPrompts.has(sessionID) && promptIDs[0] !== this.sendingPrompts.get(sessionID)) {
       throw new Error("The prompt being sent must remain first")
     }
-    if (promptIDs.length !== session.queue.length || new Set(promptIDs).size !== promptIDs.length ||
-      promptIDs.some((id) => typeof id !== "string" || id.length === 0 || id.length > 1_024)) throw new Error("Queue order does not match the session queue")
+    if (
+      promptIDs.length !== session.queue.length || new Set(promptIDs).size !== promptIDs.length ||
+      promptIDs.some((id) => typeof id !== "string" || id.length === 0 || id.length > 1_024)
+    ) throw new Error("Queue order does not match the session queue")
     this.dispatch({ type: "reorderQueue", sessionID, promptIDs })
   }
 
@@ -1444,7 +1961,11 @@ export class SessionController {
     const index = session.queue.findIndex((prompt) => prompt.id === promptID)
     if (index < 0) throw new Error("Unknown queued prompt")
     if (this.sendingPrompts.has(sessionID)) throw new Error("A queued prompt is already being sent")
-    this.dispatch({ type: "reorderQueue", sessionID, promptIDs: [promptID, ...session.queue.filter((prompt) => prompt.id !== promptID).map((prompt) => prompt.id)] })
+    this.dispatch({
+      type: "reorderQueue",
+      sessionID,
+      promptIDs: [promptID, ...session.queue.filter((prompt) => prompt.id !== promptID).map((prompt) => prompt.id)],
+    })
     if (session.status.type === "busy" || session.status.type === "retry") await this.abortSession(sessionID)
     await this.drainQueue(sessionID)
   }
@@ -1479,6 +2000,7 @@ export class SessionController {
     this.sessionFailures.delete(sessionID)
     this.messageHistories.delete(sessionID)
     this.historyCursors.delete(sessionID)
+    this.historyLimitReached.delete(sessionID)
     this.transcriptRevisions.delete(sessionID)
     this.transcriptGenerations.delete(sessionID)
     this.removedMessages.delete(sessionID)
@@ -1504,8 +2026,14 @@ export class SessionController {
     const command = /^\/([A-Za-z0-9._-]+)(?:\s+([\s\S]*))?$/.exec(trimmed)
     if (command && session.status.type !== "idle" && session.status.type !== "error") return
     const legacy = !command && this.requiresLegacyPromptTransport(sessionID, prompt.agent, prompt.model)
-    if (legacy && (session.status.type === "busy" || session.status.type === "retry") && !this.steeringPrompts.has(prompt.id)) return
-    const delivery = this.steeringPrompts.has(prompt.id) || session.status.type === "idle" || session.status.type === "error" ? "steer" : "queue"
+    if (
+      legacy && (session.status.type === "busy" || session.status.type === "retry") &&
+      !this.steeringPrompts.has(prompt.id)
+    ) return
+    const delivery =
+      this.steeringPrompts.has(prompt.id) || session.status.type === "idle" || session.status.type === "error"
+        ? "steer"
+        : "queue"
     this.drainingQueues.add(sessionID)
     this.sendingPrompts.set(sessionID, prompt.id)
     const generation = (this.sendGenerations.get(sessionID) ?? 0) + 1
@@ -1514,11 +2042,24 @@ export class SessionController {
     if (delivery === "steer") {
       this.sessionFailures.delete(sessionID)
       this.statusRevision += 1
-      this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } } })
+      this.dispatch({
+        type: "event",
+        event: { type: "session.status", properties: { sessionID, status: { type: "busy" } } },
+      })
     }
     try {
-      if (command) await this.client.sendCommand(sessionID, command[1]!, command[2] ?? "", prompt.agent, prompt.model, prompt.variant, this.promptFiles.get(prompt.id) ?? [], prompt.id)
-      else {
+      if (command) {
+        await this.client.sendCommand(
+          sessionID,
+          command[1]!,
+          command[2] ?? "",
+          prompt.agent,
+          prompt.model,
+          prompt.variant,
+          this.promptFiles.get(prompt.id) ?? [],
+          prompt.id,
+        )
+      } else {
         const files = this.promptFiles.get(prompt.id) ?? []
         // Keep one stable ID from composer through OpenCode persistence. V2
         // returns an exact durable receipt; V1 is confirmed later by the
@@ -1534,9 +2075,28 @@ export class SessionController {
           this.pendingPromptFileCounts.delete(oldest)
         }
         try {
-          if (legacy) await this.client.sendAsync(sessionID, prompt.text, prompt.agent, prompt.model, prompt.variant, files, admittedMessageID)
-          else {
-            const admission = await this.client.sendPrompt(sessionID, prompt.id, prompt.text, delivery, prompt.agent, prompt.model, prompt.variant, files, this.promptAgents.get(prompt.id) ?? [])
+          if (legacy) {
+            await this.client.sendAsync(
+              sessionID,
+              prompt.text,
+              prompt.agent,
+              prompt.model,
+              prompt.variant,
+              files,
+              admittedMessageID,
+            )
+          } else {
+            const admission = await this.client.sendPrompt(
+              sessionID,
+              prompt.id,
+              prompt.text,
+              delivery,
+              prompt.agent,
+              prompt.model,
+              prompt.variant,
+              files,
+              this.promptAgents.get(prompt.id) ?? [],
+            )
             // Test doubles predating admission receipts may return undefined;
             // the real OpenCodeClient rejects any missing or mismatched receipt.
             if (admission) this.confirmPromptAdmission(admission.id, admission.timeCreated)
@@ -1547,7 +2107,10 @@ export class SessionController {
             : await this.retryPromptAdmission(sessionID, prompt.id, legacy)
           if (admission !== "accepted") {
             if (admission === "unknown") {
-              throw new Error("Prompt delivery could not be confirmed; the prompt remains queued with its original ID so it can be retried safely", { cause: error })
+              throw new Error(
+                "Prompt delivery could not be confirmed; the prompt remains queued with its original ID so it can be retried safely",
+                { cause: error },
+              )
             }
             throw error
           }
@@ -1564,18 +2127,40 @@ export class SessionController {
                 role: "user",
                 time: { created: prompt.createdAt },
                 agent: prompt.agent,
-                model: slash > 0 ? { providerID: prompt.model!.slice(0, slash), modelID: prompt.model!.slice(slash + 1), variant: prompt.variant } : undefined,
+                model: slash > 0
+                  ? {
+                    providerID: prompt.model!.slice(0, slash),
+                    modelID: prompt.model!.slice(slash + 1),
+                    variant: prompt.variant,
+                  }
+                  : undefined,
               },
             },
           })
-          if (prompt.text) this.eventBus.emit({
-            type: "message.part.updated",
-            properties: { part: { id: `${prompt.id}-text`, sessionID, messageID: prompt.id, type: "text", text: prompt.text } },
-          })
-          for (const [index, file] of files.entries()) this.eventBus.emit({
-            type: "message.part.updated",
-            properties: { part: { id: `${prompt.id}-file-${index}`, sessionID, messageID: prompt.id, type: "file", mime: file.mime, filename: file.filename, url: file.url } },
-          })
+          if (prompt.text) {
+            this.eventBus.emit({
+              type: "message.part.updated",
+              properties: {
+                part: { id: `${prompt.id}-text`, sessionID, messageID: prompt.id, type: "text", text: prompt.text },
+              },
+            })
+          }
+          for (const [index, file] of files.entries()) {
+            this.eventBus.emit({
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: `${prompt.id}-file-${index}`,
+                  sessionID,
+                  messageID: prompt.id,
+                  type: "file",
+                  mime: file.mime,
+                  filename: file.filename,
+                  url: file.url,
+                },
+              },
+            })
+          }
           this.eventBus.flush()
         }
         this.scheduleTranscriptRefresh(sessionID)
@@ -1590,7 +2175,13 @@ export class SessionController {
     } catch (error) {
       if (delivery === "steer" && this.sendGenerations.get(sessionID) === generation) {
         this.statusRevision += 1
-        this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "error", message: message(error) } } } })
+        this.dispatch({
+          type: "event",
+          event: {
+            type: "session.status",
+            properties: { sessionID, status: { type: "error", message: message(error) } },
+          },
+        })
       }
       throw error
     } finally {
@@ -1612,26 +2203,40 @@ export class SessionController {
     if (!accepted) throw new Error("OpenCode did not accept the stop request")
     this.cancelSettlementProbe(sessionID)
     this.statusRevision += 1
-    this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "idle" } } } })
+    this.dispatch({
+      type: "event",
+      event: { type: "session.status", properties: { sessionID, status: { type: "idle" } } },
+    })
   }
 
   private delegationProgress(session: WorkbenchState["sessions"][string]): DelegationProgress[] {
-    const parts = session.messages.flatMap((message) => message.parts.filter((part) => delegationSessionID(part))).slice(-20)
+    const parts = session.messages.flatMap((message) => message.parts.filter((part) => delegationSessionID(part)))
+      .slice(-20)
     const output: DelegationProgress[] = []
     let aggregateCharacters = 0
     let aggregateParts = 0
     for (const part of parts.reverse()) {
       const sessionID = delegationSessionID(part)!
       const child = this.state.sessions[sessionID]
-      const transcript = snapshotTranscript(child?.messages ?? [], this.messageRevisions.get(sessionID) ?? new Map(), 500_000, 1_000, 500)
+      const transcript = snapshotTranscript(
+        child?.messages ?? [],
+        this.messageRevisions.get(sessionID) ?? new Map(),
+        500_000,
+        1_000,
+        500,
+      )
       let characters = 0
       let childParts = 0
-      for (const message of transcript.messages) for (const childPart of message.parts) {
-        childParts += 1
-        characters += (childPart.text?.length ?? 0) + (childPart.state?.title?.length ?? 0) +
-          (childPart.state?.output?.length ?? 0) + (childPart.state?.error?.length ?? 0)
+      for (const message of transcript.messages) {
+        for (const childPart of message.parts) {
+          childParts += 1
+          characters += (childPart.text?.length ?? 0) + (childPart.state?.title?.length ?? 0) +
+            (childPart.state?.output?.length ?? 0) + (childPart.state?.error?.length ?? 0)
+        }
       }
-      const messages = aggregateCharacters + characters <= 2_000_000 && aggregateParts + childParts <= 10_000 ? transcript.messages : []
+      const messages = aggregateCharacters + characters <= 2_000_000 && aggregateParts + childParts <= 10_000
+        ? transcript.messages
+        : []
       if (messages.length) {
         aggregateCharacters += characters
         aggregateParts += childParts
@@ -1639,11 +2244,12 @@ export class SessionController {
       const input = record(part.state?.input) ? part.state.input : undefined
       const title = boundedText(part.state?.title, 2_000) ?? boundedText(input?.description, 2_000) ?? "Delegated task"
       const partStatus = String(part.state?.status ?? "").toLowerCase()
-      const status = child?.status ?? (partStatus === "error" || partStatus === "failed"
-        ? { type: "error" as const, message: boundedText(part.state?.error, 20_000) }
-        : partStatus === "running" || partStatus === "pending"
-        ? { type: "busy" as const }
-        : { type: "idle" as const })
+      const status = child?.status ??
+        (partStatus === "error" || partStatus === "failed"
+          ? { type: "error" as const, message: boundedText(part.state?.error, 20_000) }
+          : partStatus === "running" || partStatus === "pending"
+          ? { type: "busy" as const }
+          : { type: "idle" as const })
       output.push({
         partID: part.id,
         sessionID,
@@ -1657,6 +2263,7 @@ export class SessionController {
   }
 
   private serverHistoryHasOlder(sessionID: string): boolean {
+    if (this.historyLimitReached.has(sessionID)) return false
     const cursor = this.historyCursors.get(sessionID)
     return Boolean(cursor && (!cursor.legacyComplete || !cursor.v2Complete))
   }
@@ -1666,7 +2273,14 @@ export class SessionController {
     const beforeIndex = session.messages.findIndex((message) => message.info.id === beforeMessageID)
     if (beforeIndex < 0) throw new Error("Cannot load history before an unknown message")
     const cursor = this.historyCursors.get(sessionID)
-    if (beforeIndex > 0 || !cursor || (cursor.legacyComplete && cursor.v2Complete) || typeof this.client.messageHistoryPage !== "function") {
+    if (session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT) {
+      this.historyLimitReached.add(sessionID)
+      return this.historyPage(sessionID, beforeMessageID)
+    }
+    if (
+      beforeIndex > 0 || !cursor || (cursor.legacyComplete && cursor.v2Complete) ||
+      typeof this.client.messageHistoryPage !== "function"
+    ) {
       return this.historyPage(sessionID, beforeMessageID)
     }
     const page = await this.client.messageHistoryPage(sessionID, cursor, HISTORY_PAGE_MESSAGE_LIMIT)
@@ -1677,7 +2291,13 @@ export class SessionController {
       v2MessageIDs: new Set([...(previousHistory?.v2MessageIDs ?? []), ...page.v2MessageIDs]),
     })
     const current = this.requireSession(sessionID)
-    const merged = this.refreshMessageRevisions(sessionID, mergeTranscripts(page.messages, current.messages), current.messages)
+    const allMessages = mergeTranscripts(page.messages, current.messages)
+    if (allMessages.length > TRANSCRIPT_MESSAGE_LIMIT) this.historyLimitReached.add(sessionID)
+    const merged = this.refreshMessageRevisions(
+      sessionID,
+      allMessages.slice(-TRANSCRIPT_MESSAGE_LIMIT),
+      current.messages,
+    )
     this.dispatch({ type: "transcript", sessionID, messages: merged })
     return this.historyPage(sessionID, beforeMessageID)
   }
@@ -1686,13 +2306,16 @@ export class SessionController {
     const session = this.requireSession(sessionID)
     const beforeIndex = session.messages.findIndex((message) => message.info.id === beforeMessageID)
     if (beforeIndex < 0) throw new Error("Cannot load history before an unknown message")
-    if (beforeIndex === 0) return {
-      sessionID,
-      messages: [],
-      messageRevisions: {},
-      hasOlder: this.serverHistoryHasOlder(sessionID),
-      totalMessages: session.messages.length,
-      sourceMayBeTruncated: this.serverHistoryHasOlder(sessionID) || session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+    if (beforeIndex === 0) {
+      return {
+        sessionID,
+        messages: [],
+        messageRevisions: {},
+        hasOlder: this.serverHistoryHasOlder(sessionID),
+        totalMessages: session.messages.length,
+        sourceMayBeTruncated: this.historyLimitReached.has(sessionID) || this.serverHistoryHasOlder(sessionID) ||
+          session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+      }
     }
     const transcript = snapshotTranscript(
       session.messages.slice(0, beforeIndex),
@@ -1708,16 +2331,21 @@ export class SessionController {
       messageRevisions: transcript.revisions,
       hasOlder: transcript.history.hasOlder || this.serverHistoryHasOlder(sessionID),
       totalMessages: session.messages.length,
-      sourceMayBeTruncated: this.serverHistoryHasOlder(sessionID) || session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+      sourceMayBeTruncated: this.historyLimitReached.has(sessionID) || this.serverHistoryHasOlder(sessionID) ||
+        session.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
     }
   }
 
   chatSnapshot(): ChatSnapshot {
     const current = this.state.selectedID ? this.state.sessions[this.state.selectedID] : undefined
-    const visiblePermissions = new Map<string, PermissionRequest[]>(Object.values(this.state.sessions).map((session) => [
-      session.info.id,
-      session.permissions.filter((request) => !this.automaticallyRespondingPermissions.has(`${request.protocol}\0${request.sessionID}\0${request.id}`)),
-    ]))
+    const visiblePermissions = new Map<string, PermissionRequest[]>(
+      Object.values(this.state.sessions).map((session) => [
+        session.info.id,
+        session.permissions.filter((request) =>
+          !this.automaticallyRespondingPermissions.has(`${request.protocol}\0${request.sessionID}\0${request.id}`)
+        ),
+      ]),
+    )
     const transcript = current
       ? snapshotTranscript(
         current.messages,
@@ -1763,7 +2391,9 @@ export class SessionController {
       childAttention.set(root, counts)
     }
     const recovery = this.recoveryPresentation()
-    const allRootIDs = this.state.order.filter((id) => !this.state.sessions[id]?.info.parentID && !recovery.hidden.has(id))
+    const allRootIDs = this.state.order.filter((id) =>
+      !this.state.sessions[id]?.info.parentID && !recovery.hidden.has(id)
+    )
     const visibleRootIDs = allRootIDs.slice(0, 5_000)
     const selectedRoot = current ? rootID(current.info.id) : undefined
     const selectedRootID = selectedRoot ? recovery.representative.get(selectedRoot) ?? selectedRoot : undefined
@@ -1797,8 +2427,14 @@ export class SessionController {
         const rightState = this.state.sessions[right]!
         const leftSelected = selectedRootID && rootID(left) === selectedRootID ? 0 : 1
         const rightSelected = selectedRootID && rootID(right) === selectedRootID ? 0 : 1
-        const leftAttention = (visiblePermissions.get(left)?.length ?? 0) + leftState.questions.length || ["busy", "retry", "error"].includes(leftState.status.type) ? 0 : 1
-        const rightAttention = (visiblePermissions.get(right)?.length ?? 0) + rightState.questions.length || ["busy", "retry", "error"].includes(rightState.status.type) ? 0 : 1
+        const leftAttention = (visiblePermissions.get(left)?.length ?? 0) + leftState.questions.length ||
+            ["busy", "retry", "error"].includes(leftState.status.type)
+          ? 0
+          : 1
+        const rightAttention = (visiblePermissions.get(right)?.length ?? 0) + rightState.questions.length ||
+            ["busy", "retry", "error"].includes(rightState.status.type)
+          ? 0
+          : 1
         return leftSelected - rightSelected || leftAttention - rightAttention || depthFor(left) - depthFor(right) ||
           rightState.info.time.updated - leftState.info.time.updated || left.localeCompare(right)
       })
@@ -1809,7 +2445,9 @@ export class SessionController {
     }
     const lineage = lineageIDs.map((id) => {
       const session = this.state.sessions[id]!
-      const parentID = session.info.parentID && this.state.sessions[session.info.parentID] ? session.info.parentID : undefined
+      const parentID = session.info.parentID && this.state.sessions[session.info.parentID]
+        ? session.info.parentID
+        : undefined
       return {
         sessionID: id,
         parentID,
@@ -1818,9 +2456,12 @@ export class SessionController {
         relation: recoveredSessionIDs.has(id) ? "recovery" as const : parentID ? "child" as const : "root" as const,
         title: session.info.title || "Untitled session",
         status: session.status,
-        updatedAt: Number.isSafeInteger(session.info.time.updated) && session.info.time.updated >= 0 ? session.info.time.updated : 0,
+        updatedAt: Number.isSafeInteger(session.info.time.updated) && session.info.time.updated >= 0
+          ? session.info.time.updated
+          : 0,
         directory: session.info.directory.slice(0, 8_192),
-        model: session.model ?? (session.info.model ? `${session.info.model.providerID}/${session.info.model.id}` : undefined),
+        model: session.model ??
+          (session.info.model ? `${session.info.model.providerID}/${session.info.model.id}` : undefined),
         agent: session.agent ?? session.info.agent,
         tokens: sessionTokenTotal(session.info.tokens),
         cost: session.info.cost,
@@ -1837,58 +2478,77 @@ export class SessionController {
       ? this.models.find((model) => `${model.providerID}/${model.id}` === effectiveModel)
       : undefined
     const configuredAgent = this.agents.find((agent) => agent.name === effectiveAgent)
-    const configuredAgentModel = configuredAgent?.model ? `${configuredAgent.model.providerID}/${configuredAgent.model.modelID}` : undefined
-    const agentVariant = configuredAgentModel === effectiveModel && selectedModel?.variants?.includes(configuredAgent?.variant ?? "") ? configuredAgent?.variant : undefined
-    const fallbackVariant = agentVariant ?? (selectedModel?.variants?.includes(this.defaultVariant ?? "") ? this.defaultVariant : undefined)
-    const effectiveVariant = current?.variant ?? (effectiveModel && this.modelVariants.has(effectiveModel) ? this.modelVariants.get(effectiveModel) : fallbackVariant)
+    const configuredAgentModel = configuredAgent?.model
+      ? `${configuredAgent.model.providerID}/${configuredAgent.model.modelID}`
+      : undefined
+    const agentVariant =
+      configuredAgentModel === effectiveModel && selectedModel?.variants?.includes(configuredAgent?.variant ?? "")
+        ? configuredAgent?.variant
+        : undefined
+    const fallbackVariant = agentVariant ??
+      (selectedModel?.variants?.includes(this.defaultVariant ?? "") ? this.defaultVariant : undefined)
+    const effectiveVariant = current?.variant ??
+      (effectiveModel && this.modelVariants.has(effectiveModel)
+        ? this.modelVariants.get(effectiveModel)
+        : fallbackVariant)
     const goal = current ? deriveGoal(current.messages) : undefined
     const goalHistory = current ? deriveGoalHistory(current.messages) : []
     const attentionItems: AttentionItem[] = []
     for (const session of Object.values(this.state.sessions)) {
-      for (const request of visiblePermissions.get(session.info.id) ?? []) attentionItems.push({
-        id: `permission:${request.protocol}:${request.sessionID}:${request.id}`,
-        kind: "permission",
-        sessionID: rootID(request.sessionID),
-        title: request.title || "Permission required",
-        detail: request.type,
-        createdAt: session.info.time.updated,
-        target: { surface: "conversation", itemID: request.id },
-      })
-      for (const request of session.questions) attentionItems.push({
-        id: `question:${request.sessionID}:${request.id}`,
-        kind: "question",
-        sessionID: rootID(request.sessionID),
-        title: request.questions[0]?.header || request.questions[0]?.question || "Question from OpenCode",
-        createdAt: session.info.time.updated,
-        target: { surface: "conversation", itemID: request.id },
-      })
+      for (const request of visiblePermissions.get(session.info.id) ?? []) {
+        attentionItems.push({
+          id: `permission:${request.protocol}:${request.sessionID}:${request.id}`,
+          kind: "permission",
+          sessionID: rootID(request.sessionID),
+          title: request.title || "Permission required",
+          detail: request.type,
+          createdAt: session.info.time.updated,
+          target: { surface: "conversation", itemID: request.id },
+        })
+      }
+      for (const request of session.questions) {
+        attentionItems.push({
+          id: `question:${request.sessionID}:${request.id}`,
+          kind: "question",
+          sessionID: rootID(request.sessionID),
+          title: request.questions[0]?.header || request.questions[0]?.question || "Question from OpenCode",
+          createdAt: session.info.time.updated,
+          target: { surface: "conversation", itemID: request.id },
+        })
+      }
       const sessionGoal = deriveGoal(session.messages)
-      if (sessionGoal?.blocker || ["unmet", "blocked", "needs-user"].includes(sessionGoal?.status ?? "")) attentionItems.push({
-        id: `goal:${session.info.id}:${sessionGoal?.id ?? sessionGoal?.sequence ?? "active"}`,
-        kind: "blocked-goal",
-        sessionID: session.info.id,
-        title: "Goal needs attention",
-        detail: sessionGoal?.blocker || sessionGoal?.stopReason || sessionGoal?.status,
-        createdAt: session.info.time.updated,
-        target: { surface: "goal" },
-      })
-      if (session.status.type === "error") attentionItems.push({
-        id: `failure:${session.info.id}`,
-        kind: "prompt-failure",
-        sessionID: session.info.id,
-        title: "OpenCode session failed",
-        detail: session.status.message,
-        createdAt: session.info.time.updated,
-        target: { surface: "conversation" },
-      })
-      if (!this.state.connected && (session.status.type === "busy" || session.status.type === "retry")) attentionItems.push({
-        id: `disconnected:${session.info.id}`,
-        kind: "disconnected-session",
-        sessionID: session.info.id,
-        title: "Active session disconnected",
-        createdAt: Date.now(),
-        target: { surface: "health" },
-      })
+      if (sessionGoal?.blocker || ["unmet", "blocked", "needs-user"].includes(sessionGoal?.status ?? "")) {
+        attentionItems.push({
+          id: `goal:${session.info.id}:${sessionGoal?.id ?? sessionGoal?.sequence ?? "active"}`,
+          kind: "blocked-goal",
+          sessionID: session.info.id,
+          title: "Goal needs attention",
+          detail: sessionGoal?.blocker || sessionGoal?.stopReason || sessionGoal?.status,
+          createdAt: session.info.time.updated,
+          target: { surface: "goal" },
+        })
+      }
+      if (session.status.type === "error") {
+        attentionItems.push({
+          id: `failure:${session.info.id}`,
+          kind: "prompt-failure",
+          sessionID: session.info.id,
+          title: "OpenCode session failed",
+          detail: session.status.message,
+          createdAt: session.info.time.updated,
+          target: { surface: "conversation" },
+        })
+      }
+      if (!this.state.connected && (session.status.type === "busy" || session.status.type === "retry")) {
+        attentionItems.push({
+          id: `disconnected:${session.info.id}`,
+          kind: "disconnected-session",
+          sessionID: session.info.id,
+          title: "Active session disconnected",
+          createdAt: Date.now(),
+          target: { surface: "health" },
+        })
+      }
     }
     return {
       connected: this.state.connected,
@@ -1897,34 +2557,40 @@ export class SessionController {
         const session = this.state.sessions[id]
         const childPermissions = childAttention.get(id)?.permissions ?? 0
         const childQuestions = childAttention.get(id)?.questions ?? 0
-        return session && !session.info.parentID ? [{
-          id,
-          title: session.info.title || "Untitled session",
-          status: session.status,
-          unread: session.unread,
-          directory: session.info.directory.slice(0, 8_192),
-          parentID: session.info.parentID?.slice(0, 1_024),
-          updatedAt: Number.isSafeInteger(session.info.time.updated) && session.info.time.updated >= 0 ? session.info.time.updated : 0,
-          attention: (visiblePermissions.get(id)?.length ?? 0) + session.questions.length + childPermissions + childQuestions,
-          questionCount: session.questions.length + childQuestions,
-          permissionCount: (visiblePermissions.get(id)?.length ?? 0) + childPermissions,
-          queued: session.queue.filter((prompt) => prompt.id !== this.sendingPrompts.get(session.info.id)).length,
-          todo: {
-            completed: session.todos.filter((todo) => todo.status === "completed").length,
-            total: session.todos.length,
-          },
-          changeCount: session.changes.length,
-          archived: session.info.time.archived !== undefined,
-          shared: Boolean(session.info.share?.url),
-          shareUrl: session.info.share?.url,
-          model: session.model ?? (session.info.model ? `${session.info.model.providerID}/${session.info.model.id}` : undefined),
-          agent: session.agent ?? session.info.agent,
-          tokens: sessionTokenTotal(session.info.tokens),
-          cost: session.info.cost,
-          summary: session.info.summary,
-          rootID: id,
-          depth: 0,
-        }] : []
+        return session && !session.info.parentID
+          ? [{
+            id,
+            title: session.info.title || "Untitled session",
+            status: session.status,
+            unread: session.unread,
+            directory: session.info.directory.slice(0, 8_192),
+            parentID: session.info.parentID?.slice(0, 1_024),
+            updatedAt: Number.isSafeInteger(session.info.time.updated) && session.info.time.updated >= 0
+              ? session.info.time.updated
+              : 0,
+            attention: (visiblePermissions.get(id)?.length ?? 0) + session.questions.length + childPermissions +
+              childQuestions,
+            questionCount: session.questions.length + childQuestions,
+            permissionCount: (visiblePermissions.get(id)?.length ?? 0) + childPermissions,
+            queued: session.queue.filter((prompt) => prompt.id !== this.sendingPrompts.get(session.info.id)).length,
+            todo: {
+              completed: session.todos.filter((todo) => todo.status === "completed").length,
+              total: session.todos.length,
+            },
+            changeCount: session.changes.length,
+            archived: session.info.time.archived !== undefined,
+            shared: Boolean(session.info.share?.url),
+            shareUrl: session.info.share?.url,
+            model: session.model ??
+              (session.info.model ? `${session.info.model.providerID}/${session.info.model.id}` : undefined),
+            agent: session.agent ?? session.info.agent,
+            tokens: sessionTokenTotal(session.info.tokens),
+            cost: session.info.cost,
+            summary: session.info.summary,
+            rootID: id,
+            depth: 0,
+          }]
+          : []
       }),
       lineage,
       agents: this.agents,
@@ -1937,59 +2603,69 @@ export class SessionController {
       autoApproval: current ? this.autoApprovalFor(current.info.id) : false,
       runtime: this.runtime,
       attentionItems: attentionItems.sort((left, right) => right.createdAt - left.createdAt).slice(0, 500),
-      session: current ? {
-        id: current.info.id,
-        parentID: current.info.parentID,
-        directory: current.info.directory,
-        title: current.info.title,
-        draft: current.draft,
-        status: current.status,
-        loaded: current.loaded,
-        loadState: current.loadState,
-        messages: transcript!.messages,
-        messageRevisions: transcript!.revisions,
-        history: {
-          ...transcript!.history,
-          hasOlder: transcript!.history.hasOlder || selectedServerHistoryHasOlder,
-          sourceMayBeTruncated: selectedServerHistoryHasOlder || current.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
-        },
-        agent: effectiveAgent,
-        model: effectiveModel,
-        variant: effectiveVariant,
-        queue: current.queue,
-        inFlightPromptID: this.sendingPrompts.get(current.info.id),
-        permissions: current.info.parentID ? [] : this.permissions.bounded([
-          ...(visiblePermissions.get(current.info.id) ?? []),
-          ...delegatedSessions.flatMap((session) => visiblePermissions.get(session.info.id) ?? []),
-        ]),
-        questions: current.info.parentID ? [] : [...current.questions, ...delegatedSessions.flatMap((session) => session.questions)].slice(0, 100),
-        todos: current.todos,
-        changes: current.changes,
-        context: deriveContext(current.messages, this.models, selectedModel, current.info.cost),
-        metrics: {
-          tokensUsed: sessionTokenTotal(current.info.tokens),
-          timeUsedSeconds: sessionAgeSeconds(current.info),
-          turnsUsed: sessionTurnTotal(current.messages),
-          turnsTruncated: selectedServerHistoryHasOlder || current.messages.length >= TRANSCRIPT_MESSAGE_LIMIT || undefined,
-          sampledAt: Math.floor(Date.now() / 1_000),
-        },
-        goal,
-        goalHistory: goal?.archivedGoals ?? goalHistory,
-        delegations,
-        archived: current.info.time.archived !== undefined,
-        shared: Boolean(current.info.share?.url),
-        shareUrl: current.info.share?.url,
-        revertMessageID: current.info.revert?.messageID,
-      } : undefined,
+      session: current
+        ? {
+          id: current.info.id,
+          parentID: current.info.parentID,
+          directory: current.info.directory,
+          title: current.info.title,
+          draft: current.draft,
+          status: current.status,
+          loaded: current.loaded,
+          loadState: current.loadState,
+          messages: transcript!.messages,
+          messageRevisions: transcript!.revisions,
+          history: {
+            ...transcript!.history,
+            hasOlder: transcript!.history.hasOlder || selectedServerHistoryHasOlder,
+            sourceMayBeTruncated: selectedServerHistoryHasOlder || current.messages.length >= TRANSCRIPT_MESSAGE_LIMIT,
+          },
+          agent: effectiveAgent,
+          model: effectiveModel,
+          variant: effectiveVariant,
+          queue: current.queue,
+          inFlightPromptID: this.sendingPrompts.get(current.info.id),
+          permissions: current.info.parentID ? [] : this.permissions.bounded([
+            ...(visiblePermissions.get(current.info.id) ?? []),
+            ...delegatedSessions.flatMap((session) => visiblePermissions.get(session.info.id) ?? []),
+          ]),
+          questions: current.info.parentID
+            ? []
+            : [...current.questions, ...delegatedSessions.flatMap((session) => session.questions)].slice(0, 100),
+          todos: current.todos,
+          changes: current.changes,
+          context: deriveContext(current.messages, this.models, selectedModel, current.info.cost),
+          metrics: {
+            tokensUsed: sessionTokenTotal(current.info.tokens),
+            timeUsedSeconds: sessionAgeSeconds(current.info),
+            turnsUsed: sessionTurnTotal(current.messages),
+            turnsTruncated: selectedServerHistoryHasOlder || current.messages.length >= TRANSCRIPT_MESSAGE_LIMIT ||
+              undefined,
+            sampledAt: Math.floor(Date.now() / 1_000),
+          },
+          goal,
+          goalHistory: goal?.archivedGoals ?? goalHistory,
+          delegations,
+          archived: current.info.time.archived !== undefined,
+          shared: Boolean(current.info.share?.url),
+          shareUrl: current.info.share?.url,
+          revertMessageID: current.info.revert?.messageID,
+        }
+        : undefined,
     }
   }
 
   private handleEvent(event: OpenCodeEvent): void {
-    if (event.type === "pty.created" || event.type === "pty.updated" || event.type === "pty.exited" || event.type === "pty.deleted") {
+    if (
+      event.type === "pty.created" || event.type === "pty.updated" || event.type === "pty.exited" ||
+      event.type === "pty.deleted"
+    ) {
       this.consumePtyEvent(event)
     }
     if (["session.created", "session.updated", "session.deleted"].includes(event.type)) this.sessionRevision += 1
-    if (["session.status", "session.idle", "session.error"].includes(event.type) || event.type.startsWith("session.next.")) this.statusRevision += 1
+    if (
+      ["session.status", "session.idle", "session.error"].includes(event.type) || event.type.startsWith("session.next.")
+    ) this.statusRevision += 1
     const info = event.properties.info
     const part = event.properties.part
     const sessionID = typeof event.properties.sessionID === "string"
@@ -2000,14 +2676,22 @@ export class SessionController {
       ? part.sessionID
       : undefined
     if (sessionID && event.type === "session.next.prompt.admitted" && typeof event.properties.messageID === "string") {
-      this.confirmPromptAdmission(event.properties.messageID, typeof event.properties.timestamp === "number" ? event.properties.timestamp : Date.now())
+      this.confirmPromptAdmission(
+        event.properties.messageID,
+        typeof event.properties.timestamp === "number" ? event.properties.timestamp : Date.now(),
+      )
     }
-    if (sessionID && event.type === "message.updated" && record(info) && info.role === "user" && typeof info.id === "string") {
+    if (
+      sessionID && event.type === "message.updated" && record(info) && info.role === "user" &&
+      typeof info.id === "string"
+    ) {
       const created = record(info.time) && typeof info.time.created === "number" ? info.time.created : Date.now()
       this.confirmPromptAdmission(info.id, created)
     }
-    if (sessionID && event.type === "session.status" && record(event.properties.status) &&
-      ["busy", "retry"].includes(String(event.properties.status.type))) this.cancelSettlementProbe(sessionID)
+    if (
+      sessionID && event.type === "session.status" && record(event.properties.status) &&
+      ["busy", "retry"].includes(String(event.properties.status.type))
+    ) this.cancelSettlementProbe(sessionID)
     if (sessionID && event.type === "session.error") {
       this.sessionFailures.set(sessionID, errorDetail(event.properties.error) ?? "Session failed")
     } else if (sessionID && event.type === "session.next.step.failed") {
@@ -2016,8 +2700,13 @@ export class SessionController {
       const detail = errorDetail(info.error)
       const status = this.state.sessions[sessionID]?.status.type
       if (detail && status !== "busy" && status !== "retry") this.sessionFailures.set(sessionID, detail)
-    } else if (sessionID && ((event.type === "session.status" && record(event.properties.status) && ["busy", "retry"].includes(String(event.properties.status.type))) ||
-      ["session.next.prompt.admitted", "session.next.prompted", "session.next.step.started", "session.next.retried"].includes(event.type))) {
+    } else if (
+      sessionID &&
+      ((event.type === "session.status" && record(event.properties.status) &&
+        ["busy", "retry"].includes(String(event.properties.status.type))) ||
+        ["session.next.prompt.admitted", "session.next.prompted", "session.next.step.started", "session.next.retried"]
+          .includes(event.type))
+    ) {
       this.sessionFailures.delete(sessionID)
     }
     if (sessionID && event.type.startsWith("message.")) {
@@ -2031,7 +2720,10 @@ export class SessionController {
         removed.set(event.properties.messageID, revision)
         this.removedMessages.set(sessionID, removed)
       }
-      if (event.type === "message.part.removed" && typeof event.properties.messageID === "string" && typeof event.properties.partID === "string") {
+      if (
+        event.type === "message.part.removed" && typeof event.properties.messageID === "string" &&
+        typeof event.properties.partID === "string"
+      ) {
         const removed = this.removedParts.get(sessionID) ?? new Map<string, number>()
         removed.set(`${event.properties.messageID}:${event.properties.partID}`, revision)
         this.removedParts.set(sessionID, removed)
@@ -2047,65 +2739,157 @@ export class SessionController {
       else if (messageID) this.bumpMessageRevision(sessionID, messageID)
     }
     let normalizedEvent = event
-    if (sessionID && this.sessionFailures.has(sessionID) && (event.type === "session.idle" ||
-      (event.type === "session.status" && record(event.properties.status) && event.properties.status.type === "idle"))) {
-      normalizedEvent = { type: "session.status", properties: { sessionID, status: { type: "error", message: this.sessionFailures.get(sessionID) } } }
+    if (
+      sessionID && this.sessionFailures.has(sessionID) && (event.type === "session.idle" ||
+        (event.type === "session.status" && record(event.properties.status) && event.properties.status.type === "idle"))
+    ) {
+      normalizedEvent = {
+        type: "session.status",
+        properties: { sessionID, status: { type: "error", message: this.sessionFailures.get(sessionID) } },
+      }
     }
-    if (sessionID && event.type === "session.next.step.started" && typeof event.properties.assistantMessageID === "string") {
-      const model = record(event.properties.model) && typeof event.properties.model.providerID === "string" && typeof event.properties.model.id === "string"
+    if (
+      sessionID && event.type === "session.next.step.started" && typeof event.properties.assistantMessageID === "string"
+    ) {
+      const model = record(event.properties.model) && typeof event.properties.model.providerID === "string" &&
+          typeof event.properties.model.id === "string"
         ? { providerID: event.properties.model.providerID, modelID: event.properties.model.id }
         : undefined
-      this.dispatch({ type: "event", event: { type: "message.updated", properties: { info: {
-        id: event.properties.assistantMessageID,
-        sessionID,
-        role: "assistant",
-        time: { created: typeof event.properties.timestamp === "number" ? event.properties.timestamp : Date.now() },
-        agent: typeof event.properties.agent === "string" ? event.properties.agent : undefined,
-        ...model,
-      } } } })
+      this.dispatch({
+        type: "event",
+        event: {
+          type: "message.updated",
+          properties: {
+            info: {
+              id: event.properties.assistantMessageID,
+              sessionID,
+              role: "assistant",
+              time: {
+                created: typeof event.properties.timestamp === "number" ? event.properties.timestamp : Date.now(),
+              },
+              agent: typeof event.properties.agent === "string" ? event.properties.agent : undefined,
+              ...model,
+            },
+          },
+        },
+      })
     }
-    if (sessionID && (event.type === "session.next.text.started" || event.type === "session.next.reasoning.started" || event.type === "session.next.tool.input.started") &&
-      typeof event.properties.assistantMessageID === "string") {
+    if (
+      sessionID &&
+      (event.type === "session.next.text.started" || event.type === "session.next.reasoning.started" ||
+        event.type === "session.next.tool.input.started") &&
+      typeof event.properties.assistantMessageID === "string"
+    ) {
       const partID = event.type === "session.next.text.started" && typeof event.properties.textID === "string"
         ? event.properties.textID
         : event.type === "session.next.reasoning.started" && typeof event.properties.reasoningID === "string"
         ? event.properties.reasoningID
-        : typeof event.properties.callID === "string" ? event.properties.callID : undefined
-      if (partID) this.dispatch({ type: "event", event: { type: "message.part.updated", properties: { part: event.type === "session.next.tool.input.started"
-        ? { id: partID, sessionID, messageID: event.properties.assistantMessageID, type: "tool", tool: typeof event.properties.name === "string" ? event.properties.name : "tool", state: { status: "pending", input: "" } }
-        : { id: partID, sessionID, messageID: event.properties.assistantMessageID, type: event.type === "session.next.text.started" ? "text" : "reasoning", text: "" } } } })
+        : typeof event.properties.callID === "string"
+        ? event.properties.callID
+        : undefined
+      if (partID) {
+        this.dispatch({
+          type: "event",
+          event: {
+            type: "message.part.updated",
+            properties: {
+              part: event.type === "session.next.tool.input.started"
+                ? {
+                  id: partID,
+                  sessionID,
+                  messageID: event.properties.assistantMessageID,
+                  type: "tool",
+                  tool: typeof event.properties.name === "string" ? event.properties.name : "tool",
+                  state: { status: "pending", input: "" },
+                }
+                : {
+                  id: partID,
+                  sessionID,
+                  messageID: event.properties.assistantMessageID,
+                  type: event.type === "session.next.text.started" ? "text" : "reasoning",
+                  text: "",
+                },
+            },
+          },
+        })
+      }
     }
-    if (sessionID && (event.type === "session.next.text.ended" || event.type === "session.next.reasoning.ended") &&
-      typeof event.properties.assistantMessageID === "string" && typeof event.properties.text === "string") {
+    if (
+      sessionID && (event.type === "session.next.text.ended" || event.type === "session.next.reasoning.ended") &&
+      typeof event.properties.assistantMessageID === "string" && typeof event.properties.text === "string"
+    ) {
       const partID = event.type === "session.next.text.ended" ? event.properties.textID : event.properties.reasoningID
-      if (typeof partID === "string") this.dispatch({ type: "event", event: { type: "message.part.updated", properties: { part: {
-        id: partID,
-        sessionID,
-        messageID: event.properties.assistantMessageID,
-        type: event.type === "session.next.text.ended" ? "text" : "reasoning",
-        text: event.properties.text,
-      } } } })
+      if (typeof partID === "string") {
+        this.dispatch({
+          type: "event",
+          event: {
+            type: "message.part.updated",
+            properties: {
+              part: {
+                id: partID,
+                sessionID,
+                messageID: event.properties.assistantMessageID,
+                type: event.type === "session.next.text.ended" ? "text" : "reasoning",
+                text: event.properties.text,
+              },
+            },
+          },
+        })
+      }
     }
-    if (sessionID && event.type === "session.next.tool.input.ended" && typeof event.properties.assistantMessageID === "string" &&
-      typeof event.properties.callID === "string" && typeof event.properties.text === "string") {
-      const current = this.state.sessions[sessionID]?.messages.find((message) => message.info.id === event.properties.assistantMessageID)
+    if (
+      sessionID && event.type === "session.next.tool.input.ended" &&
+      typeof event.properties.assistantMessageID === "string" &&
+      typeof event.properties.callID === "string" && typeof event.properties.text === "string"
+    ) {
+      const current = this.state.sessions[sessionID]?.messages.find((message) =>
+        message.info.id === event.properties.assistantMessageID
+      )
         ?.parts.find((candidate) => candidate.id === event.properties.callID)
-      if (current?.type === "tool") this.dispatch({ type: "event", event: { type: "message.part.updated", properties: { part: {
-        ...current,
-        state: { ...current.state, input: event.properties.text },
-      } } } })
+      if (current?.type === "tool") {
+        this.dispatch({
+          type: "event",
+          event: {
+            type: "message.part.updated",
+            properties: {
+              part: {
+                ...current,
+                state: { ...current.state, input: event.properties.text },
+              },
+            },
+          },
+        })
+      }
     }
-    if (event.type === "session.next.text.delta" || event.type === "session.next.reasoning.delta" || event.type === "session.next.tool.input.delta") {
-      const messageID = typeof event.properties.assistantMessageID === "string" ? event.properties.assistantMessageID : undefined
+    if (
+      event.type === "session.next.text.delta" || event.type === "session.next.reasoning.delta" ||
+      event.type === "session.next.tool.input.delta"
+    ) {
+      const messageID = typeof event.properties.assistantMessageID === "string"
+        ? event.properties.assistantMessageID
+        : undefined
       const partID = event.type === "session.next.text.delta" && typeof event.properties.textID === "string"
         ? event.properties.textID
         : event.type === "session.next.reasoning.delta" && typeof event.properties.reasoningID === "string"
         ? event.properties.reasoningID
-        : typeof event.properties.callID === "string" ? event.properties.callID : undefined
-      if (sessionID && messageID && partID && typeof event.properties.delta === "string") this.dispatch({
-        type: "event",
-        event: { type: "message.part.delta", properties: { sessionID, messageID, partID, field: event.type === "session.next.tool.input.delta" ? "input" : "text", delta: event.properties.delta } },
-      })
+        : typeof event.properties.callID === "string"
+        ? event.properties.callID
+        : undefined
+      if (sessionID && messageID && partID && typeof event.properties.delta === "string") {
+        this.dispatch({
+          type: "event",
+          event: {
+            type: "message.part.delta",
+            properties: {
+              sessionID,
+              messageID,
+              partID,
+              field: event.type === "session.next.tool.input.delta" ? "input" : "text",
+              delta: event.properties.delta,
+            },
+          },
+        })
+      }
     }
     if (event.type === "todo.updated") {
       this.todoRevisions.set(sessionID ?? "", (this.todoRevisions.get(sessionID ?? "") ?? 0) + 1)
@@ -2115,9 +2899,10 @@ export class SessionController {
       const changes = parseChanges(event.properties.diff)
       this.dispatch({ type: "changes", sessionID, changes })
     }
-    const deletedSessionID = event.type === "session.deleted" && record(event.properties.info) && typeof event.properties.info.id === "string"
-      ? event.properties.info.id
-      : undefined
+    const deletedSessionID =
+      event.type === "session.deleted" && record(event.properties.info) && typeof event.properties.info.id === "string"
+        ? event.properties.info.id
+        : undefined
     const deletedSelection = deletedSessionID !== undefined && this.state.selectedID === deletedSessionID
     if (deletedSessionID) {
       this.cleanupSession(deletedSessionID)
@@ -2127,27 +2912,56 @@ export class SessionController {
       this.selectionIntent += 1
       this.callbacks.selectionChanged?.(undefined)
     }
-    if (sessionID && event.type === "message.updated" && record(info) && info.role === "assistant" && this.sessionFailures.has(sessionID)) {
-      this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status: { type: "error", message: this.sessionFailures.get(sessionID) } } } })
+    if (
+      sessionID && event.type === "message.updated" && record(info) && info.role === "assistant" &&
+      this.sessionFailures.has(sessionID)
+    ) {
+      this.dispatch({
+        type: "event",
+        event: {
+          type: "session.status",
+          properties: { sessionID, status: { type: "error", message: this.sessionFailures.get(sessionID) } },
+        },
+      })
     }
-    if (sessionID && event.type === "session.next.agent.switched" && typeof event.properties.agent === "string" && event.properties.agent.length <= 1_024) {
+    if (
+      sessionID && event.type === "session.next.agent.switched" && typeof event.properties.agent === "string" &&
+      event.properties.agent.length <= 1_024
+    ) {
       this.dispatch({ type: "preference", sessionID, agent: event.properties.agent })
     }
-    if (sessionID && event.type === "session.next.model.switched" && record(event.properties.model) &&
+    if (
+      sessionID && event.type === "session.next.model.switched" && record(event.properties.model) &&
       typeof event.properties.model.providerID === "string" && typeof event.properties.model.id === "string" &&
-      event.properties.model.providerID.length <= 1_024 && event.properties.model.id.length <= 1_024) {
-      this.dispatch({ type: "preference", sessionID, model: `${event.properties.model.providerID}/${event.properties.model.id}`, variant: typeof event.properties.model.variant === "string" ? event.properties.model.variant.slice(0, 1_024) : "" })
+      event.properties.model.providerID.length <= 1_024 && event.properties.model.id.length <= 1_024
+    ) {
+      this.dispatch({
+        type: "preference",
+        sessionID,
+        model: `${event.properties.model.providerID}/${event.properties.model.id}`,
+        variant: typeof event.properties.model.variant === "string"
+          ? event.properties.model.variant.slice(0, 1_024)
+          : "",
+      })
     }
     if (sessionID && event.type.startsWith("session.next.")) {
       if (NEXT_EVENTS_REQUIRING_TRANSCRIPT_REFRESH.has(event.type)) this.scheduleTranscriptRefresh(sessionID)
       let status: SessionStatus | undefined
       if (event.type === "session.next.retried") {
         this.cancelSettlementProbe(sessionID)
-        const error = record(event.properties.error) && typeof event.properties.error.message === "string" ? event.properties.error.message : undefined
-        status = { type: "retry", attempt: typeof event.properties.attempt === "number" ? event.properties.attempt : undefined, message: error }
+        const error = record(event.properties.error) && typeof event.properties.error.message === "string"
+          ? event.properties.error.message
+          : undefined
+        status = {
+          type: "retry",
+          attempt: typeof event.properties.attempt === "number" ? event.properties.attempt : undefined,
+          message: error,
+        }
       } else if (event.type === "session.next.step.failed") {
         this.cancelSettlementProbe(sessionID)
-        const error = record(event.properties.error) && typeof event.properties.error.message === "string" ? event.properties.error.message : "OpenCode response failed"
+        const error = record(event.properties.error) && typeof event.properties.error.message === "string"
+          ? event.properties.error.message
+          : "OpenCode response failed"
         status = { type: "error", message: error }
       } else if (event.type === "session.next.step.ended") {
         // A provider step ending is not the same as the OpenCode runner
@@ -2158,19 +2972,32 @@ export class SessionController {
       } else if (event.type === "session.next.compaction.ended") {
         status = { type: "busy" }
         this.scheduleSettlementProbe(sessionID)
-      } else if (["session.next.prompt.admitted", "session.next.prompted", "session.next.step.started", "session.next.compaction.started"].includes(event.type)) {
+      } else if (
+        [
+          "session.next.prompt.admitted",
+          "session.next.prompted",
+          "session.next.step.started",
+          "session.next.compaction.started",
+        ].includes(event.type)
+      ) {
         this.cancelSettlementProbe(sessionID)
         status = { type: "busy" }
       }
       if (status) this.dispatch({ type: "event", event: { type: "session.status", properties: { sessionID, status } } })
       if (status?.type === "error") {
         this.scheduleSessionListRefresh(sessionID)
-        void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
+        void this.drainQueue(sessionID).catch((error) =>
+          this.callbacks.error(`Could not send queued prompt: ${message(error)}`)
+        )
       }
     }
     if (event.type === "vcs.branch.updated") {
       const branch = boundedRuntimeString(event.properties.branch, 2_000)
-      this.runtime = { ...(this.runtime ?? { lsp: [], formatters: [], mcp: [], updatedAt: Date.now() }), vcs: { branch }, updatedAt: Date.now() }
+      this.runtime = {
+        ...(this.runtime ?? { lsp: [], formatters: [], mcp: [], updatedAt: Date.now() }),
+        vcs: { branch },
+        updatedAt: Date.now(),
+      }
       this.repository.notify({ type: "connected", connected: this.state.connected })
     } else if (event.type === "file.watcher.updated") {
       if (this.runtimeRefreshTimer) clearTimeout(this.runtimeRefreshTimer)
@@ -2179,32 +3006,64 @@ export class SessionController {
         void this.refreshRuntime()
       }, 500)
     } else if (event.type === "lsp.updated" || event.type.startsWith("mcp.")) void this.refreshRuntime()
-    if (["models-dev.refreshed", "catalog.updated", "integration.updated", "integration.connection.updated", "reference.updated", "plugin.added", "project.updated", "project.directories.updated", "workspace.status", "worktree.ready", "worktree.failed", "mcp.tools.changed", "session.next.moved"].includes(event.type)) {
+    if (
+      [
+        "models-dev.refreshed",
+        "catalog.updated",
+        "integration.updated",
+        "integration.connection.updated",
+        "reference.updated",
+        "plugin.added",
+        "project.updated",
+        "project.directories.updated",
+        "workspace.status",
+        "worktree.ready",
+        "worktree.failed",
+        "mcp.tools.changed",
+        "session.next.moved",
+      ].includes(event.type)
+    ) {
       if (this.catalogRefreshTimer) clearTimeout(this.catalogRefreshTimer)
       this.catalogRefreshTimer = setTimeout(() => {
         this.catalogRefreshTimer = undefined
-        void this.reconcile().catch((error) => this.callbacks.error(`Could not refresh OpenCode catalogs: ${message(error)}`))
+        void this.reconcile().catch((error) =>
+          this.callbacks.error(`Could not refresh OpenCode catalogs: ${message(error)}`)
+        )
       }, 100)
     }
-    if (event.type === "mcp.browser.open.failed" && typeof event.properties.url === "string" && event.properties.url.length <= 8_192 && /^https?:\/\//.test(event.properties.url)) {
-      void Promise.resolve(this.callbacks.openExternal?.(event.properties.url)).catch(() => this.callbacks.error("Could not open the MCP authentication page"))
+    if (
+      event.type === "mcp.browser.open.failed" && typeof event.properties.url === "string" &&
+      event.properties.url.length <= 8_192 && /^https?:\/\//.test(event.properties.url)
+    ) {
+      void Promise.resolve(this.callbacks.openExternal?.(event.properties.url)).catch(() =>
+        this.callbacks.error("Could not open the MCP authentication page")
+      )
     }
     if (sessionID && event.type === "session.compacted") this.scheduleTranscriptRefresh(sessionID)
     if (part && typeof part === "object") {
       const childID = delegationSessionID(part as MessagePart)
-      if (childID && this.state.sessions[childID] && !this.state.sessions[childID]!.loaded) void this.loadTranscript(childID).catch(() => undefined)
+      if (childID && this.state.sessions[childID] && !this.state.sessions[childID]!.loaded) {
+        void this.loadTranscript(childID).catch(() => undefined)
+      }
     }
-    if (sessionID && (event.type === "session.idle" ||
-      (event.type === "session.status" && record(event.properties.status) && event.properties.status.type === "idle"))) {
+    if (
+      sessionID && (event.type === "session.idle" ||
+        (event.type === "session.status" && record(event.properties.status) && event.properties.status.type === "idle"))
+    ) {
       this.cancelSettlementProbe(sessionID)
       // OpenCode can generate a session title without publishing a matching
       // session.updated event. Refresh its authoritative session list once the
       // turn settles so title, summary, cost, share, and archive state converge.
       this.scheduleSessionListRefresh(sessionID)
-      void this.drainQueue(sessionID).catch((error) => this.callbacks.error(`Could not send queued prompt: ${message(error)}`))
+      void this.drainQueue(sessionID).catch((error) =>
+        this.callbacks.error(`Could not send queued prompt: ${message(error)}`)
+      )
     }
-    if (sessionID && (event.type === "session.error" ||
-      (event.type === "session.status" && record(event.properties.status) && event.properties.status.type === "error"))) {
+    if (
+      sessionID && (event.type === "session.error" ||
+        (event.type === "session.status" && record(event.properties.status) &&
+          event.properties.status.type === "error"))
+    ) {
       this.cancelSettlementProbe(sessionID)
     }
     const permission = parsePermission(event)
@@ -2215,11 +3074,20 @@ export class SessionController {
         : typeof event.properties.id === "string"
         ? event.properties.id
         : undefined
-      if (requestID) this.removePermission(sessionID, requestID, event.type === "permission.v2.replied" ? ["v2"] : ["legacy", "current"])
+      if (requestID) {
+        this.removePermission(
+          sessionID,
+          requestID,
+          event.type === "permission.v2.replied" ? ["v2"] : ["legacy", "current"],
+        )
+      }
     }
     const question = parseQuestion(event)
     if (question) this.storeQuestion(question)
-    if (["question.replied", "question.rejected", "question.v2.replied", "question.v2.rejected"].includes(event.type) && sessionID) {
+    if (
+      ["question.replied", "question.rejected", "question.v2.replied", "question.v2.rejected"].includes(event.type) &&
+      sessionID
+    ) {
       const requestID = typeof event.properties.requestID === "string"
         ? event.properties.requestID
         : typeof event.properties.id === "string"
@@ -2252,16 +3120,26 @@ export class SessionController {
     const patterns = typeof request.pattern === "string" ? [request.pattern] : request.pattern ?? []
     if (!patterns.length) return false
     const grants = this.permissionGrants.get(this.rootSessionID(request.sessionID)) ?? []
-    return patterns.every((pattern) => grants.some((grant) => grant.protocol === request.protocol && grant.type === request.type && permissionPatternMatches(pattern, grant.pattern)))
+    return patterns.every((pattern) =>
+      grants.some((grant) =>
+        grant.protocol === request.protocol && grant.type === request.type &&
+        permissionPatternMatches(pattern, grant.pattern)
+      )
+    )
   }
 
   private rememberPermissionGrant(request: PermissionRequest, selectedPatterns?: string[]): void {
-    const patterns = selectedPatterns ?? (typeof request.pattern === "string" ? [request.pattern] : request.pattern ?? [])
+    const patterns = selectedPatterns ??
+      (typeof request.pattern === "string" ? [request.pattern] : request.pattern ?? [])
     if (!patterns.length) return
     const rootID = this.rootSessionID(request.sessionID)
     const grants = this.permissionGrants.get(rootID) ?? []
     for (const pattern of patterns) {
-      if (!grants.some((grant) => grant.protocol === request.protocol && grant.type === request.type && grant.pattern === pattern)) {
+      if (
+        !grants.some((grant) =>
+          grant.protocol === request.protocol && grant.type === request.type && grant.pattern === pattern
+        )
+      ) {
         grants.push({ protocol: request.protocol, type: request.type, pattern })
       }
     }
@@ -2274,21 +3152,34 @@ export class SessionController {
     const requests = Object.values(this.state.sessions)
       .filter((session) => this.rootSessionID(session.info.id) === rootID)
       .flatMap((session) => session.permissions)
-    if (enabled) for (const request of requests) this.maybeAutoRespond(request, true, true)
+    if (enabled) { for (const request of requests) this.maybeAutoRespond(request, true, true) }
     this.dispatch({ type: "autoApproval", sessionID: rootID, enabled })
     if (!enabled) return
     for (const request of requests) this.maybeAutoRespond(request)
   }
 
-  async respondPermission(requestID: string, response: "once" | "exact" | "scope" | "reject", sessionID = this.state.selectedID, protocol?: PermissionRequest["protocol"], feedback?: string, scope?: string): Promise<void> {
+  async respondPermission(
+    requestID: string,
+    response: "once" | "exact" | "scope" | "reject",
+    sessionID = this.state.selectedID,
+    protocol?: PermissionRequest["protocol"],
+    feedback?: string,
+    scope?: string,
+  ): Promise<void> {
     if (!sessionID) throw new Error("Select the session that owns the permission request")
     const session = this.requireSession(sessionID)
-    const request = session.permissions.find((candidate) => candidate.id === requestID && candidate.sessionID === sessionID && (!protocol || candidate.protocol === protocol))
+    const request = session.permissions.find((candidate) =>
+      candidate.id === requestID && candidate.sessionID === sessionID && (!protocol || candidate.protocol === protocol)
+    )
     if (!request) throw new Error("Permission request is no longer pending for this session")
-    if (request.truncated && response !== "reject") throw new Error("Incomplete permission details can only be rejected")
+    if (request.truncated && response !== "reject") {
+      throw new Error("Incomplete permission details can only be rejected")
+    }
     const patterns = typeof request.pattern === "string" ? [request.pattern] : request.pattern ?? []
     if (response === "exact" && !patterns.length) throw new Error("This permission has no exact reusable scope")
-    if (response === "scope" && (!scope || !reusablePermissionScopes(request).includes(scope))) throw new Error("This reusable permission scope is not available for the request")
+    if (response === "scope" && (!scope || !reusablePermissionScopes(request).includes(scope))) {
+      throw new Error("This reusable permission scope is not available for the request")
+    }
     const key = `${request.protocol}\0${sessionID}\0${requestID}`
     if (this.respondingPermissions.has(key)) throw new Error("Permission response is already in progress")
     this.respondingPermissions.add(key)
@@ -2296,8 +3187,9 @@ export class SessionController {
       await this.client.respondPermission(request, response === "reject" ? "reject" : "once", feedback)
       if (response === "exact") this.rememberPermissionGrant(request)
       else if (response === "scope") this.rememberPermissionGrant(request, [scope!])
-      if (response === "reject") this.clearPermissions(sessionID, request.protocol === "v2" ? ["v2"] : ["legacy", "current"])
-      else this.removePermission(sessionID, requestID, [request.protocol])
+      if (response === "reject") {
+        this.clearPermissions(sessionID, request.protocol === "v2" ? ["v2"] : ["legacy", "current"])
+      } else this.removePermission(sessionID, requestID, [request.protocol])
     } catch (error) {
       this.callbacks.error(`Could not answer permission request: ${message(error)}`)
       throw error
@@ -2309,7 +3201,9 @@ export class SessionController {
   private storePermission(request: PermissionRequest): void {
     const session = this.state.sessions[request.sessionID]
     if (!session) return
-    const index = session.permissions.findIndex((candidate) => candidate.id === request.id && candidate.protocol === request.protocol)
+    const index = session.permissions.findIndex((candidate) =>
+      candidate.id === request.id && candidate.protocol === request.protocol
+    )
     const permissions = session.permissions.slice()
     if (index < 0) {
       if (permissions.length >= 100) {
@@ -2318,16 +3212,26 @@ export class SessionController {
       }
       permissions.push(request)
     } else permissions[index] = request
-    if (permissions.reduce((total, candidate) => total + permissionRequestCharacters(candidate), 0) > PERMISSION_AGGREGATE_CHARACTER_LIMIT) {
+    if (
+      permissions.reduce((total, candidate) => total + permissionRequestCharacters(candidate), 0) >
+        PERMISSION_AGGREGATE_CHARACTER_LIMIT
+    ) {
       permissions[index < 0 ? permissions.length - 1 : index] = this.permissions.rejectOnly(request)
-      if (permissions.reduce((total, candidate) => total + permissionRequestCharacters(candidate), 0) > PERMISSION_AGGREGATE_CHARACTER_LIMIT) {
+      if (
+        permissions.reduce((total, candidate) => total + permissionRequestCharacters(candidate), 0) >
+          PERMISSION_AGGREGATE_CHARACTER_LIMIT
+      ) {
         this.callbacks.error("OpenCode permission request detail limit reached for this session")
         return
       }
     }
     const storedRequest = permissions[index < 0 ? permissions.length - 1 : index]!
     const covered = this.permissionCovered(storedRequest)
-    if (index < 0 && !covered && (storedRequest.type === "vscode.reload_opencode" || !this.autoApprovalFor(request.sessionID) || storedRequest.truncated)) {
+    if (
+      index < 0 && !covered &&
+      (storedRequest.type === "vscode.reload_opencode" || !this.autoApprovalFor(request.sessionID) ||
+        storedRequest.truncated)
+    ) {
       this.callbacks.attention?.(storedRequest)
     }
     this.permissionRevision += 1
@@ -2339,7 +3243,9 @@ export class SessionController {
   private removePermission(sessionID: string, requestID: string, protocols?: PermissionRequest["protocol"][]): void {
     const session = this.state.sessions[sessionID]
     if (!session) return
-    const permissions = session.permissions.filter((request) => request.id !== requestID || (protocols && !protocols.includes(request.protocol)))
+    const permissions = session.permissions.filter((request) =>
+      request.id !== requestID || (protocols && !protocols.includes(request.protocol))
+    )
     if (permissions.length === session.permissions.length) return
     this.permissionRevision += 1
     this.dispatch({ type: "permissions", sessionID, permissions })
@@ -2355,27 +3261,48 @@ export class SessionController {
   }
 
   private maybeAutoRespond(request: PermissionRequest, prepareOnly = false, assumeAutoApproval = false): void {
-    if (!this.permissionCovered(request) && (!(assumeAutoApproval || this.autoApprovalFor(request.sessionID)) || request.truncated || request.type === "vscode.reload_opencode")) return
+    if (
+      !this.permissionCovered(request) &&
+      (!(assumeAutoApproval || this.autoApprovalFor(request.sessionID)) || request.truncated ||
+        request.type === "vscode.reload_opencode")
+    ) return
     const key = `${request.protocol}\0${request.sessionID}\0${request.id}`
     if (this.respondingPermissions.has(key) && !this.automaticallyRespondingPermissions.has(key)) return
     this.automaticallyRespondingPermissions.add(key)
     if (prepareOnly || this.respondingPermissions.has(key)) return
-    void this.respondPermission(request.id, "once", request.sessionID, request.protocol).catch(() => undefined).finally(() => {
-      this.automaticallyRespondingPermissions.delete(key)
-      const session = this.state.sessions[request.sessionID]
-      if (session?.permissions.some((candidate) => candidate.id === request.id && candidate.protocol === request.protocol)) {
-        this.repository.notify({ type: "permissions", sessionID: request.sessionID, permissions: session.permissions })
-      }
-    })
+    void this.respondPermission(request.id, "once", request.sessionID, request.protocol).catch(() => undefined).finally(
+      () => {
+        this.automaticallyRespondingPermissions.delete(key)
+        const session = this.state.sessions[request.sessionID]
+        if (
+          session?.permissions.some((candidate) =>
+            candidate.id === request.id && candidate.protocol === request.protocol
+          )
+        ) {
+          this.repository.notify({
+            type: "permissions",
+            sessionID: request.sessionID,
+            permissions: session.permissions,
+          })
+        }
+      },
+    )
   }
 
   async respondQuestion(requestID: string, answers: string[][], sessionID = this.state.selectedID): Promise<void> {
     if (!sessionID) throw new Error("Select the session that owns the question")
     const session = this.requireSession(sessionID)
-    const request = session.questions.find((candidate) => candidate.id === requestID && candidate.sessionID === sessionID)
+    const request = session.questions.find((candidate) =>
+      candidate.id === requestID && candidate.sessionID === sessionID
+    )
     if (!request) throw new Error("Question is no longer pending for this session")
-    if (answers.length !== request.questions.length || answers.some((answer) => !Array.isArray(answer) || answer.length === 0 || answer.length > 20 ||
-      answer.some((item) => typeof item !== "string" || !item.trim() || item.length > 20_000))) throw new Error("Answer every question before submitting")
+    if (
+      answers.length !== request.questions.length ||
+      answers.some((answer) =>
+        !Array.isArray(answer) || answer.length === 0 || answer.length > 20 ||
+        answer.some((item) => typeof item !== "string" || !item.trim() || item.length > 20_000)
+      )
+    ) throw new Error("Answer every question before submitting")
     const key = `${sessionID}\0${requestID}`
     if (this.respondingQuestions.has(key)) throw new Error("Question response is already in progress")
     this.respondingQuestions.add(key)
@@ -2390,7 +3317,9 @@ export class SessionController {
   async rejectQuestion(requestID: string, sessionID = this.state.selectedID): Promise<void> {
     if (!sessionID) throw new Error("Select the session that owns the question")
     const session = this.requireSession(sessionID)
-    const request = session.questions.find((candidate) => candidate.id === requestID && candidate.sessionID === sessionID)
+    const request = session.questions.find((candidate) =>
+      candidate.id === requestID && candidate.sessionID === sessionID
+    )
     if (!request) throw new Error("Question is no longer pending for this session")
     const key = `${sessionID}\0${requestID}`
     if (this.respondingQuestions.has(key)) throw new Error("Question response is already in progress")

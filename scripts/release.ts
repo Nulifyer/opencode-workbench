@@ -18,8 +18,10 @@ const extensionManifest = await readManifest(join(root, "packages", "vscode-exte
 const pluginManifest = await readManifest(join(root, "packages", "opencode-plugin", "package.json"))
 const sharedManifest = await readManifest(join(root, "packages", "shared", "package.json"))
 
-if (rootManifest.version !== extensionManifest.version || rootManifest.version !== pluginManifest.version ||
-  rootManifest.version !== sharedManifest.version) {
+if (
+  rootManifest.version !== extensionManifest.version || rootManifest.version !== pluginManifest.version ||
+  rootManifest.version !== sharedManifest.version
+) {
   throw new Error("Root, extension, plugin, and shared versions must match")
 }
 const opencodeVersion = rootManifest.dependencies?.["@opencode-ai/plugin"]
@@ -62,4 +64,7 @@ const release = {
   assets,
 }
 await Deno.writeTextFile(join(dist, "release.json"), `${JSON.stringify(release, null, 2)}\n`)
-await Deno.writeTextFile(join(dist, "SHA256SUMS"), `${assets.map((asset) => `${asset.sha256}  ${asset.name}`).join("\n")}\n`)
+await Deno.writeTextFile(
+  join(dist, "SHA256SUMS"),
+  `${assets.map((asset) => `${asset.sha256}  ${asset.name}`).join("\n")}\n`,
+)

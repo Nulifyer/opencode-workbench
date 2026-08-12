@@ -1,7 +1,11 @@
 import type { ContextAttachmentSummary, InlineAttachment, PastedTextBlock } from "@opencode-workbench/shared"
 
 export type ComposerPayloadState = { attachments: InlineAttachment[]; pastedText: PastedTextBlock[] }
-export type PendingComposerPayload = ComposerPayloadState & { revision: number; mutationID: string; base: ComposerPayloadState }
+export type PendingComposerPayload = ComposerPayloadState & {
+  revision: number
+  mutationID: string
+  base: ComposerPayloadState
+}
 
 export class ComposerState {
   readonly localDrafts = new Map<string, string>()

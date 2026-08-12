@@ -1,5 +1,10 @@
 import { assertEquals, assertMatch, assertThrows } from "jsr:@std/assert"
-import { createPlanReference, generatedPlanDisposition, planArtifact, structuredPlanPrompt } from "../src/application/plan-service.ts"
+import {
+  createPlanReference,
+  generatedPlanDisposition,
+  planArtifact,
+  structuredPlanPrompt,
+} from "../src/application/plan-service.ts"
 
 Deno.test("plan workflow creates a read-only structured OpenCode request", () => {
   const prompt = structuredPlanPrompt("Add the feature")

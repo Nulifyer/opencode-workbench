@@ -89,7 +89,8 @@ function isScope(value: unknown): value is Scope {
 }
 
 function isProvenance(value: unknown): value is Provenance {
-  return isRecord(value) && isString(value.sessionID, 256) && isString(value.messageID, 256) && value.source === "explicit_tool"
+  return isRecord(value) && isString(value.sessionID, 256) && isString(value.messageID, 256) &&
+    value.source === "explicit_tool"
 }
 
 function optionalTime(value: unknown): boolean {
@@ -109,7 +110,8 @@ function isValidated(value: unknown, validate: (value: string) => string): value
 function isPreference(value: unknown): value is Preference {
   if (!isRecord(value)) return false
   return isString(value.id, 128) && isScope(value.scope) &&
-    PREFERENCE_CATEGORIES.includes(value.category as PreferenceCategory) && isValidated(value.key, validatePreferenceKey) &&
+    PREFERENCE_CATEGORIES.includes(value.category as PreferenceCategory) &&
+    isValidated(value.key, validatePreferenceKey) &&
     isValidated(value.value, (text) => validateDurableText(text, "value", 500)) &&
     ["proposed", "approved", "rejected", "superseded", "forgotten"].includes(String(value.status)) &&
     isProvenance(value.provenance) && isTime(value.createdAt) && optionalTime(value.approvedAt) &&
@@ -132,15 +134,19 @@ function isCandidate(value: unknown): value is SkillCandidate {
   return isString(value.id, 128) && isScope(value.scope) && isValidated(value.name, validateSkillName) &&
     isValidated(value.rationale, (text) => validateDurableText(text, "rationale", 500)) &&
     Array.isArray(value.evidenceIDs) && value.evidenceIDs.length <= 50 &&
-    value.evidenceIDs.every((id) => isString(id, 128)) && ["proposed", "staged", "rejected"].includes(String(value.status)) &&
-    isProvenance(value.provenance) && isTime(value.createdAt) && optionalTime(value.stagedAt) && optionalTime(value.rejectedAt)
+    value.evidenceIDs.every((id) => isString(id, 128)) &&
+    ["proposed", "staged", "rejected"].includes(String(value.status)) &&
+    isProvenance(value.provenance) && isTime(value.createdAt) && optionalTime(value.stagedAt) &&
+    optionalTime(value.rejectedAt)
 }
 
 export function parseState(value: unknown): PluginState {
-  if (!isRecord(value) || value.version !== STATE_VERSION || !Array.isArray(value.preferences) ||
+  if (
+    !isRecord(value) || value.version !== STATE_VERSION || !Array.isArray(value.preferences) ||
     !Array.isArray(value.evidence) || !Array.isArray(value.skillCandidates) ||
     !value.preferences.every(isPreference) || !value.evidence.every(isEvidence) ||
-    !value.skillCandidates.every(isCandidate)) {
+    !value.skillCandidates.every(isCandidate)
+  ) {
     throw new Error("Invalid or unsupported opencode-workbench state")
   }
   return value as unknown as PluginState
@@ -151,7 +157,8 @@ export function scopeFor(kind: "global" | "project", worktree: string): Scope {
 }
 
 export function sameScope(left: Scope, right: Scope): boolean {
-  return left.kind === right.kind && (left.kind === "global" || (right.kind === "project" && left.project === right.project))
+  return left.kind === right.kind &&
+    (left.kind === "global" || (right.kind === "project" && left.project === right.project))
 }
 
 export function visibleInProject(scope: Scope, project: string): boolean {

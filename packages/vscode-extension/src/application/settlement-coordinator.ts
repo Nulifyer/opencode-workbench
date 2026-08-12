@@ -12,5 +12,10 @@ export class SettlementCoordinator {
     return sessionID ? queued?.(sessionID) : undefined
   }
 
-  dispose(): void { this.pendingPromptSessions.clear(); this.pendingPromptTexts.clear(); this.pendingPromptFileCounts.clear(); this.sessionFailures.clear() }
+  dispose(): void {
+    this.pendingPromptSessions.clear()
+    this.pendingPromptTexts.clear()
+    this.pendingPromptFileCounts.clear()
+    this.sessionFailures.clear()
+  }
 }

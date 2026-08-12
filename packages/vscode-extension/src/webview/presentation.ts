@@ -1,4 +1,14 @@
-import { isNativeCompactionContinuationMessage as sharedIsNativeCompactionContinuationMessage, type ChatSnapshot, type ConnectionState, type MessageBundle, type MessagePart, type PermissionRequest, type RuntimeService } from "@opencode-workbench/shared"
+import {
+  type ChatSnapshot,
+  type ConnectionState,
+  isNativeCompactionContinuationMessage as sharedIsNativeCompactionContinuationMessage,
+  type MessageBundle,
+  type MessagePart,
+  type PermissionRequest,
+  type RuntimeService,
+} from "@opencode-workbench/shared"
+
+export { applyPatchFiles, applyPatchSection } from "../application/patch-source.js"
 
 export type SessionGroup = "Needs input" | "Working" | "Completed" | "Today" | "Yesterday" | "Previous 7 days" | "Older"
 
@@ -15,20 +25,27 @@ export function compactMetric(value: number | undefined): string {
   return `${(value / divisor).toFixed(3).replace(/\.?0+$/, "")}${suffix}`
 }
 
-export function sessionLoadPhase(session?: { loaded: boolean; loadState: "idle" | "loading" | "ready" | "error" }): "none" | "initial" | "refreshing" | "ready" | "error" {
+export function sessionLoadPhase(
+  session?: { loaded: boolean; loadState: "idle" | "loading" | "ready" | "error" },
+): "none" | "initial" | "refreshing" | "ready" | "error" {
   if (!session) return "none"
   if (session.loadState === "error") return "error"
   if (!session.loaded) return "initial"
   return session.loadState === "loading" ? "refreshing" : "ready"
 }
 
-export function connectionPresentation(state: ConnectionState, error?: string): { showNotice: boolean; label: string; title: string; message: string } {
+export function connectionPresentation(
+  state: ConnectionState,
+  error?: string,
+): { showNotice: boolean; label: string; title: string; message: string } {
   if (state === "connecting" || state === "connected") return { showNotice: false, label: "", title: "", message: "" }
-  if (state === "reconnecting") return {
-    showNotice: true,
-    label: "Reconnecting",
-    title: "Reconnecting to OpenCode",
-    message: error || "The OpenCode connection failed. Workbench is retrying automatically.",
+  if (state === "reconnecting") {
+    return {
+      showNotice: true,
+      label: "Reconnecting",
+      title: "Reconnecting to OpenCode",
+      message: error || "The OpenCode connection failed. Workbench is retrying automatically.",
+    }
   }
   return {
     showNotice: true,
@@ -38,19 +55,38 @@ export function connectionPresentation(state: ConnectionState, error?: string): 
   }
 }
 
-export function runtimeServicePresentation(service: RuntimeService, kind: "lsp" | "formatter" | "mcp"): { status: string; detail?: string; healthy: boolean; tone: "status" | "warning" | "error" | "muted" } {
-  if (kind === "formatter") return {
-    status: service.enabled ? "Available" : "Executable not found",
-    detail: service.extensions?.join(" "),
-    healthy: service.enabled === true,
-    tone: service.enabled ? "status" : "error",
+export function runtimeServicePresentation(
+  service: RuntimeService,
+  kind: "lsp" | "formatter" | "mcp",
+): { status: string; detail?: string; healthy: boolean; tone: "status" | "warning" | "error" | "muted" } {
+  if (kind === "formatter") {
+    return {
+      status: service.enabled ? "Available" : "Executable not found",
+      detail: service.extensions?.join(" "),
+      healthy: service.enabled === true,
+      tone: service.enabled ? "status" : "error",
+    }
   }
   if (kind === "mcp") {
-    const status = ({ connected: "Connected", disabled: "Disabled", failed: "Failed", needs_auth: "Authentication required", needs_client_registration: "Client registration required" } as Record<string, string>)[service.status ?? ""] ?? service.status ?? "Unknown"
-    const tone = service.status === "connected" ? "status" : service.status === "disabled" ? "muted" : service.status === "failed" ? "error" : "warning"
+    const status = ({
+      connected: "Connected",
+      disabled: "Disabled",
+      failed: "Failed",
+      needs_auth: "Authentication required",
+      needs_client_registration: "Client registration required",
+    } as Record<string, string>)[service.status ?? ""] ?? service.status ?? "Unknown"
+    const tone = service.status === "connected"
+      ? "status"
+      : service.status === "disabled"
+      ? "muted"
+      : service.status === "failed"
+      ? "error"
+      : "warning"
     return { status, detail: service.root, healthy: service.status === "connected", tone }
   }
-  const status = service.error || (({ connected: "Connected", error: "Error" } as Record<string, string>)[service.status ?? ""] ?? service.status ?? "Available")
+  const status = service.error ||
+    (({ connected: "Connected", error: "Error" } as Record<string, string>)[service.status ?? ""] ?? service.status ??
+      "Available")
   const healthy = service.status === "connected" && !service.error
   return { status, detail: service.root, healthy, tone: healthy ? "status" : "error" }
 }
@@ -69,7 +105,10 @@ export function isGoalContinuationMessage(message: MessageBundle): boolean {
     const marker = metadata && typeof metadata === "object" && !Array.isArray(metadata)
       ? (metadata as Record<string, unknown>)["opencode-workbench"]
       : undefined
-    if (marker && typeof marker === "object" && !Array.isArray(marker) && (marker as Record<string, unknown>).kind === "goal-continuation") return true
+    if (
+      marker && typeof marker === "object" && !Array.isArray(marker) &&
+      (marker as Record<string, unknown>).kind === "goal-continuation"
+    ) return true
     return part.text.startsWith("Continue working autonomously toward the active goal.")
   })
 }
@@ -99,11 +138,16 @@ export function reasoningDetail(text: string): string {
   return lines.slice(first + 1).join("\n").trim()
 }
 
-export function delegationCompletionSummary(actions: Array<{ kind: "reasoning" | "tool" | "output" }>, failed = false): string {
+export function delegationCompletionSummary(
+  actions: Array<{ kind: "reasoning" | "tool" | "output" }>,
+  failed = false,
+): string {
   const toolCalls = actions.filter((action) => action.kind === "tool").length
   const activity = toolCalls
     ? `${toolCalls} tool call${toolCalls === 1 ? "" : "s"}`
-    : actions.length ? `${actions.length} step${actions.length === 1 ? "" : "s"}` : ""
+    : actions.length
+    ? `${actions.length} step${actions.length === 1 ? "" : "s"}`
+    : ""
   return failed ? `Failed${activity ? ` · ${activity}` : ""}` : activity || "Completed"
 }
 
@@ -113,9 +157,11 @@ export function mergeRevisionValues<T extends { id: string }>(remote: T[], base:
   const removed = new Set(base.filter((value) => !desiredIDs.has(value.id)).map((value) => value.id))
   const merged = remote.filter((value) => !removed.has(value.id))
   const mergedIDs = new Set(merged.map((value) => value.id))
-  for (const value of desired) if (!baseIDs.has(value.id) && !mergedIDs.has(value.id)) {
-    merged.push(value)
-    mergedIDs.add(value.id)
+  for (const value of desired) {
+    if (!baseIDs.has(value.id) && !mergedIDs.has(value.id)) {
+      merged.push(value)
+      mergedIDs.add(value.id)
+    }
   }
   return merged
 }
@@ -138,19 +184,30 @@ export function formatDuration(milliseconds: number): string {
   return `${minutes}m ${seconds}s`
 }
 
-export function activityCollapsed(working: boolean, wasWorking: boolean, preferred?: boolean, existing?: boolean): boolean {
+export function activityCollapsed(
+  working: boolean,
+  wasWorking: boolean,
+  preferred?: boolean,
+  existing?: boolean,
+): boolean {
   if (working) return false
   if (wasWorking) return true
   return preferred ?? existing ?? true
 }
 
-export function activityWorking(active: boolean, lastAssistantID: string | undefined, turnAssistantIDs: string[]): boolean {
+export function activityWorking(
+  active: boolean,
+  lastAssistantID: string | undefined,
+  turnAssistantIDs: string[],
+): boolean {
   return Boolean(active && lastAssistantID && turnAssistantIDs.includes(lastAssistantID))
 }
 
 export function activityVisualState(status: string | undefined, active: boolean): string {
   const value = (status || "pending").toLowerCase()
-  if (["pending", "running", "in_progress", "in-progress", "active"].includes(value)) return active ? "running" : "stopped"
+  if (["pending", "running", "in_progress", "in-progress", "active"].includes(value)) {
+    return active ? "running" : "stopped"
+  }
   return value
 }
 
@@ -193,7 +250,11 @@ export function terminalAnsiMarkup(value: string): string {
   const pattern = /\x1B\[([0-9;]*)m/g
   for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
     const text = source.slice(offset, match.index)
-    if (text) result += classes.size ? `<span class="${[...classes].join(" ")}">${escapeTerminalText(text)}</span>` : escapeTerminalText(text)
+    if (text) {
+      result += classes.size
+        ? `<span class="${[...classes].join(" ")}">${escapeTerminalText(text)}</span>`
+        : escapeTerminalText(text)
+    }
     const codes = (match[1] || "0").split(";").map((code) => Number(code || 0))
     for (const code of codes) {
       if (code === 0) classes = new Set()
@@ -201,8 +262,10 @@ export function terminalAnsiMarkup(value: string): string {
       else if (code === 2) classes.add("ansi-dim")
       else if (code === 3) classes.add("ansi-italic")
       else if (code === 4) classes.add("ansi-underline")
-      else if (code === 22) { classes.delete("ansi-bold"); classes.delete("ansi-dim") }
-      else if (code === 23) classes.delete("ansi-italic")
+      else if (code === 22) {
+        classes.delete("ansi-bold")
+        classes.delete("ansi-dim")
+      } else if (code === 23) classes.delete("ansi-italic")
       else if (code === 24) classes.delete("ansi-underline")
       else if (code === 39) classes = new Set([...classes].filter((name) => !name.startsWith("ansi-fg-")))
       else if (code === 49) classes = new Set([...classes].filter((name) => !name.startsWith("ansi-bg-")))
@@ -217,12 +280,27 @@ export function terminalAnsiMarkup(value: string): string {
     offset = pattern.lastIndex
   }
   const tail = source.slice(offset)
-  if (tail) result += classes.size ? `<span class="${[...classes].join(" ")}">${escapeTerminalText(tail)}</span>` : escapeTerminalText(tail)
+  if (tail) {
+    result += classes.size
+      ? `<span class="${[...classes].join(" ")}">${escapeTerminalText(tail)}</span>`
+      : escapeTerminalText(tail)
+  }
   return result
 }
 
-export function shouldSubmitComposerKey(event: { key: string; shiftKey: boolean; ctrlKey?: boolean; metaKey?: boolean; isComposing: boolean; keyCode?: number }, behavior: "send" | "newline" = "send"): boolean {
-  return event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && (behavior === "send" || Boolean(event.ctrlKey || event.metaKey))
+export function shouldSubmitComposerKey(
+  event: {
+    key: string
+    shiftKey: boolean
+    ctrlKey?: boolean
+    metaKey?: boolean
+    isComposing: boolean
+    keyCode?: number
+  },
+  behavior: "send" | "newline" = "send",
+): boolean {
+  return event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229 &&
+    (behavior === "send" || Boolean(event.ctrlKey || event.metaKey))
 }
 
 export function shouldCollapsePaste(text: string): boolean {
@@ -252,9 +330,13 @@ export function questionAnswerValues(checked: string[], custom: string, multiple
 export function currentTodoContent(todos: Array<{ content: string; status: string }>): string {
   const working = todos.find((todo) => ["in_progress", "in-progress", "active"].includes(todo.status.toLowerCase()))
   if (working) return working.content
-  const unfinished = todos.find((todo) => !["completed", "cancelled", "canceled", "skipped"].includes(todo.status.toLowerCase()))
+  const unfinished = todos.find((todo) =>
+    !["completed", "cancelled", "canceled", "skipped"].includes(todo.status.toLowerCase())
+  )
   if (unfinished) return unfinished.content
-  return todos.length > 0 && todos.every((todo) => todo.status.toLowerCase() === "completed") ? "All todos complete" : "No active todos"
+  return todos.length > 0 && todos.every((todo) => todo.status.toLowerCase() === "completed")
+    ? "All todos complete"
+    : "No active todos"
 }
 
 export function patchActivityLabel(status: string | undefined): string {
@@ -281,7 +363,10 @@ export function workspaceMentionReference(value: string): FileReference | undefi
   if (!file) return undefined
   const line = range ? Number(range[1]) : undefined
   const endLine = range?.[2] ? Number(range[2]) : undefined
-  if ((line !== undefined && !Number.isSafeInteger(line)) || (endLine !== undefined && (!Number.isSafeInteger(endLine) || endLine < line!))) return undefined
+  if (
+    (line !== undefined && !Number.isSafeInteger(line)) ||
+    (endLine !== undefined && (!Number.isSafeInteger(endLine) || endLine < line!))
+  ) return undefined
   return { file, line, endLine }
 }
 
@@ -294,41 +379,22 @@ export function fileUriFromPath(value: string): string {
 export function fileReference(value: string): FileReference | undefined {
   const source = value.trim()
   const pathPattern = "((?!https?://).+\\.[A-Za-z][A-Za-z0-9]{0,11})"
-  const hash = new RegExp(`^${pathPattern}#L([1-9]\\d*)(?:C([1-9]\\d*))?(?:-L([1-9]\\d*)(?:C([1-9]\\d*))?)?$`).exec(source)
-  const colon = hash ? undefined : new RegExp(`^${pathPattern}:([1-9]\\d*)(?::([1-9]\\d*))?(?:-([1-9]\\d*)(?::([1-9]\\d*))?)?$`).exec(source)
+  const hash = new RegExp(`^${pathPattern}#L([1-9]\\d*)(?:C([1-9]\\d*))?(?:-L([1-9]\\d*)(?:C([1-9]\\d*))?)?$`).exec(
+    source,
+  )
+  const colon = hash
+    ? undefined
+    : new RegExp(`^${pathPattern}:([1-9]\\d*)(?::([1-9]\\d*))?(?:-([1-9]\\d*)(?::([1-9]\\d*))?)?$`).exec(source)
   const bare = hash || colon ? undefined : new RegExp(`^${pathPattern}$`).exec(source)
   const match = hash ?? colon ?? bare
   if (!match?.[1] || match[1].length > 8_192) return undefined
   const numbers = match.slice(2).map((entry) => entry ? Number(entry) : undefined)
-  if (numbers.some((entry) => entry !== undefined && (!Number.isSafeInteger(entry) || entry < 1 || entry > 1_000_000_000))) return undefined
+  if (
+    numbers.some((entry) => entry !== undefined && (!Number.isSafeInteger(entry) || entry < 1 || entry > 1_000_000_000))
+  ) return undefined
   const [line, column, endLine, endColumn] = numbers
   if (endLine !== undefined && line !== undefined && endLine < line) return undefined
   return { file: match[1], line, column, endLine, endColumn }
-}
-
-export function applyPatchFiles(patch: string): string[] {
-  return Array.from(patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File:\s+(.+)$/gm), (match) => match[1]!.trim()).slice(0, 100)
-}
-
-export function applyPatchSection(patch: string, file: string): string {
-  const lines = patch.split("\n")
-  const normalized = file.replace(/\\/g, "/")
-  const section: string[] = []
-  let found = false
-  let active = false
-  for (const line of lines) {
-    const marker = /^\*\*\* (?:Update|Add|Delete) File:\s+(.+)$/.exec(line)
-    if (marker) {
-      if (active) break
-      const candidate = marker[1]!.trim().replace(/\\/g, "/")
-      active = candidate === normalized || candidate.endsWith(`/${normalized}`) || normalized.endsWith(`/${candidate}`)
-      found ||= active
-      continue
-    }
-    if (active && line === "*** End Patch") break
-    if (active && line !== "*** Begin Patch") section.push(line)
-  }
-  return found ? section.join("\n").replace(/^\n|\n$/g, "") : patch
 }
 
 export interface PermissionPresentation {
@@ -337,6 +403,33 @@ export interface PermissionPresentation {
   lines: string[]
   diff?: string
   file?: string
+}
+
+export interface PermissionUiGroup {
+  request: PermissionRequest
+  requests: PermissionRequest[]
+}
+
+export function permissionUiGroups(
+  requests: PermissionRequest[],
+): PermissionUiGroup[] {
+  const groups = new Map<string, PermissionUiGroup>()
+  for (const request of requests) {
+    const key = JSON.stringify([
+      request.sessionID,
+      request.protocol,
+      request.type,
+      request.title,
+      request.pattern,
+      request.metadata,
+      request.always,
+      request.truncated,
+    ])
+    const group = groups.get(key)
+    if (group) group.requests.push(request)
+    else groups.set(key, { request, requests: [request] })
+  }
+  return [...groups.values()]
 }
 
 function permissionRecord(value: unknown): Record<string, unknown> {
@@ -385,16 +478,28 @@ export function permissionPresentation(request: PermissionRequest): PermissionPr
   }
   if (type === "list") {
     const directory = path("path")
-    return { icon: "→", title: directory ? `List ${directory}` : "List directory", lines: directory ? [`Path: ${directory}`] : [] }
+    return {
+      icon: "→",
+      title: directory ? `List ${directory}` : "List directory",
+      lines: directory ? [`Path: ${directory}`] : [],
+    }
   }
   if (type === "bash" || type === "shell") {
     const command = permissionText(input.command)
-    return { icon: "#", title: "Shell command", lines: command ? [`$ ${command}`] : patterns.map((item) => `- ${item}`) }
+    return {
+      icon: "#",
+      title: "Shell command",
+      lines: command ? [`$ ${command}`] : patterns.map((item) => `- ${item}`),
+    }
   }
   if (type === "task") {
     const agent = permissionText(input.subagent_type) || patterns[0] || "general"
     const description = permissionText(input.description)
-    return { icon: "#", title: `${agent.charAt(0).toUpperCase()}${agent.slice(1)} task`, lines: description ? [`◉ ${description}`] : [] }
+    return {
+      icon: "#",
+      title: `${agent.charAt(0).toUpperCase()}${agent.slice(1)} task`,
+      lines: description ? [`◉ ${description}`] : [],
+    }
   }
   if (type === "webfetch") {
     const url = permissionText(input.url) || patterns[0] || ""
@@ -408,19 +513,36 @@ export function permissionPresentation(request: PermissionRequest): PermissionPr
     const operation = permissionText(input.operation) || "request"
     const file = permissionText(input.filePath)
     const line = typeof input.line === "number" && Number.isFinite(input.line) ? input.line : undefined
-    const character = typeof input.character === "number" && Number.isFinite(input.character) ? input.character : undefined
+    const character = typeof input.character === "number" && Number.isFinite(input.character)
+      ? input.character
+      : undefined
     return {
       icon: "→",
-      title: `LSP ${operation}${file ? ` ${file}${line !== undefined && character !== undefined ? `:${line}:${character}` : ""}` : ""}`,
-      lines: [...(file ? [`Path: ${file}`] : []), ...(line !== undefined && character !== undefined ? [`Position: ${line}:${character}`] : [])],
+      title: `LSP ${operation}${
+        file ? ` ${file}${line !== undefined && character !== undefined ? `:${line}:${character}` : ""}` : ""
+      }`,
+      lines: [
+        ...(file ? [`Path: ${file}`] : []),
+        ...(line !== undefined && character !== undefined ? [`Position: ${line}:${character}`] : []),
+      ],
     }
   }
   if (type === "external_directory") {
     const raw = path("parentDir", "filepath", "path")
     const directory = raw.includes("*") ? raw.slice(0, raw.indexOf("*")).replace(/[\\/]+$/, "") : raw
-    return { icon: "←", title: directory ? `Access external directory ${directory}` : "Access external directory", lines: patterns.map((item) => `- ${item}`) }
+    return {
+      icon: "←",
+      title: directory ? `Access external directory ${directory}` : "Access external directory",
+      lines: patterns.map((item) => `- ${item}`),
+    }
   }
-  if (type === "doom_loop") return { icon: "⟳", title: "Continue after repeated failures", lines: ["This keeps the session running despite repeated failures."] }
+  if (type === "doom_loop") {
+    return {
+      icon: "⟳",
+      title: "Continue after repeated failures",
+      lines: ["This keeps the session running despite repeated failures."],
+    }
+  }
 
   return {
     icon: "⚙",
@@ -439,18 +561,86 @@ export function diffLineKind(line: string): DiffLineKind {
   return "context"
 }
 
-export type ToolKind = "skill" | "explore" | "bash" | "edit" | "todo" | "task" | "patch" | "unknown"
+export type ToolKind =
+  | "skill"
+  | "explore"
+  | "bash"
+  | "edit"
+  | "todo"
+  | "task"
+  | "patch"
+  | "web"
+  | "lsp"
+  | "goal"
+  | "question"
+  | "unknown"
 
 export function toolKind(part: MessagePart): ToolKind {
   const name = (part.tool ?? "").toLowerCase()
   if (name === "skill" || name.endsWith(".skill") || name.includes("load_skill")) return "skill"
-  if (["read", "glob", "grep"].includes(name)) return "explore"
+  if (["read", "glob", "grep", "list", "codesearch"].includes(name)) return "explore"
   if (["bash", "shell", "terminal"].includes(name)) return "bash"
   if (["apply_patch", "edit", "write"].includes(name)) return "edit"
-  if (["todowrite", "todo_write"].includes(name)) return "todo"
+  if (["todowrite", "todo_write", "todoread", "todo_read"].includes(name)) return "todo"
   if (name === "task" || name.endsWith("_task")) return "task"
+  if (["webfetch", "websearch", "web_fetch", "web_search"].includes(name)) return "web"
+  if (name === "lsp" || name.startsWith("lsp_")) return "lsp"
+  if (name.includes("goal")) return "goal"
+  if (name === "question" || name.endsWith("_question")) return "question"
   if (name.includes("patch")) return "patch"
   return "unknown"
+}
+
+export interface PresentedTodo {
+  content: string
+  status: string
+  priority?: string
+}
+
+function structuredValue(value: unknown): unknown {
+  if (typeof value !== "string") return value
+  const trimmed = value.trim()
+  if ((!trimmed.startsWith("[") && !trimmed.startsWith("{")) || trimmed.length > 1_000_000) return value
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return value
+  }
+}
+
+function todoArray(value: unknown): unknown[] | undefined {
+  const structured = structuredValue(value)
+  if (Array.isArray(structured)) return structured
+  if (structured && typeof structured === "object" && !Array.isArray(structured)) {
+    const record = structured as Record<string, unknown>
+    if (Array.isArray(record.todos)) return record.todos
+    if (record.data !== undefined) return todoArray(record.data)
+  }
+  return undefined
+}
+
+export function presentedTodos(part: MessagePart): PresentedTodo[] {
+  const state = part.state && typeof part.state === "object" && !Array.isArray(part.state)
+    ? part.state as Record<string, unknown>
+    : undefined
+  const input = state?.input
+  const candidates = [state?.output, input]
+  for (const candidate of candidates) {
+    const todos = todoArray(candidate)
+    if (!todos) continue
+    const presented = todos.slice(0, 100).flatMap((todo): PresentedTodo[] => {
+      if (!todo || typeof todo !== "object" || Array.isArray(todo)) return []
+      const item = todo as Record<string, unknown>
+      if (typeof item.content !== "string" || !item.content.trim() || item.content.length > 20_000) return []
+      return [{
+        content: item.content.trim(),
+        status: typeof item.status === "string" && item.status ? item.status : "pending",
+        priority: typeof item.priority === "string" && item.priority ? item.priority : undefined,
+      }]
+    })
+    if (presented.length || todos.length === 0) return presented
+  }
+  return []
 }
 
 export function turnContent(messages: MessageBundle[]): { hasActivity: boolean; finalTextPartKeys: string[] } {
@@ -461,7 +651,10 @@ export function turnContent(messages: MessageBundle[]): { hasActivity: boolean; 
     if (message.info.role !== "assistant") continue
     for (const part of message.parts) {
       if (part.synthetic || part.type === "step-start" || part.type === "step-finish") continue
-      if (part.type === "reasoning" || part.type === "tool" || ["patch", "apply_patch", "edit", "write", "todowrite", "task", "bash"].includes(part.type)) lastProcessPosition = position
+      if (
+        part.type === "reasoning" || part.type === "tool" ||
+        ["patch", "apply_patch", "edit", "write", "todowrite", "task", "bash"].includes(part.type)
+      ) lastProcessPosition = position
       if (part.type === "text" && part.text) textPositions.push({ key: `${message.info.id}:${part.id}`, position })
       position += 1
     }

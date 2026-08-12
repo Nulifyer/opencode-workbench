@@ -63,7 +63,7 @@ exercises admission and persistence without creating an assistant response.
 | Transcript visibility     | Retain the separate verifier session ID and bounded attempt/result metadata in the generated report and deterministic evidence ledger.      |
 | Filesystem/tool isolation | Require both agent wildcard deny and request wildcard false. Any tool event fails the verifier run.                                         |
 | Token accounting          | Read authoritative usage from OpenCode's verifier assistant message; unknown remains unknown rather than zero.                              |
-| Retry                     | Workbench owns a small explicit retry budget and records every attempt with timestamps, outcome, and available session/usage metadata.       |
+| Retry                     | Workbench owns a small explicit retry budget and records every attempt with timestamps, outcome, and available session/usage metadata.      |
 | Provider-free tests       | Use `noReply`; tests must assert that no assistant message or provider request was produced.                                                |
 
 ## OpenCode 1.18.15 compatibility finding

@@ -1,4 +1,11 @@
-import type { DelegationProgress, MessageBundle, RunGroup, RunPhase, WorktreeJournalEntry, WorktreePhase } from "@opencode-workbench/shared"
+import type {
+  DelegationProgress,
+  MessageBundle,
+  RunGroup,
+  RunPhase,
+  WorktreeJournalEntry,
+  WorktreePhase,
+} from "@opencode-workbench/shared"
 
 export type JobGroup = "needs-input" | "running" | "failed" | "completed"
 export type JobSource = "delegation" | "run" | "worktree"
@@ -62,11 +69,17 @@ const MAX_ACTIVITY_LIMIT = 100
 const MAX_TEXT = 2_000
 
 function boundedText(value: unknown, fallback = ""): string {
-  return (typeof value === "string" ? value : fallback).replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, MAX_TEXT)
+  return (typeof value === "string" ? value : fallback).replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(
+    0,
+    MAX_TEXT,
+  )
 }
 
 function lastMessageTime(messages: readonly MessageBundle[]): number {
-  return messages.reduce((latest, message) => Math.max(latest, message.info.time?.completed ?? message.info.time?.created ?? 0), 0)
+  return messages.reduce(
+    (latest, message) => Math.max(latest, message.info.time?.completed ?? message.info.time?.created ?? 0),
+    0,
+  )
 }
 
 function activity(messages: readonly MessageBundle[], limit: number): JobActivitySummary[] {
@@ -97,7 +110,10 @@ function runGroup(phase: RunPhase): JobGroup {
 
 function worktreeGroup(phase: WorktreePhase): JobGroup {
   if (phase === "cleanup-pending" || phase === "retained-dirty") return "needs-input"
-  if (phase === "requested" || phase === "creating" || phase === "setup-running" || phase === "session-creating" || phase === "prompt-admitting") return "running"
+  if (
+    phase === "requested" || phase === "creating" || phase === "setup-running" || phase === "session-creating" ||
+    phase === "prompt-admitting"
+  ) return "running"
   if (phase === "failed") return "failed"
   return "completed"
 }
@@ -108,9 +124,9 @@ function errorMessage(value: { message?: unknown } | undefined): string | undefi
 }
 
 function compareJobs(left: JobSummary, right: JobSummary): number {
-  return GROUP_PRIORITY[left.group] - GROUP_PRIORITY[right.group]
-    || right.updatedAt - left.updatedAt
-    || left.id.localeCompare(right.id)
+  return GROUP_PRIORITY[left.group] - GROUP_PRIORITY[right.group] ||
+    right.updatedAt - left.updatedAt ||
+    left.id.localeCompare(right.id)
 }
 
 function boundedOption(value: number | undefined, fallback: number, maximum: number): number {
@@ -152,10 +168,13 @@ export class JobProjectionService {
         jobs.push({
           id: `run:${boundedText(group.id)}:${boundedText(run.id)}`,
           source: "run",
-          group: projectedGroup === "running" && sessionID && needsInput.has(sessionID) ? "needs-input" : projectedGroup,
+          group: projectedGroup === "running" && sessionID && needsInput.has(sessionID)
+            ? "needs-input"
+            : projectedGroup,
           title: boundedText(group.title, `Run ${run.id}`),
           status: run.phase,
-          updatedAt: run.completedAt ?? Math.max(run.startedAt ?? group.createdAt, delegation ? lastMessageTime(delegation.messages) : 0),
+          updatedAt: run.completedAt ??
+            Math.max(run.startedAt ?? group.createdAt, delegation ? lastMessageTime(delegation.messages) : 0),
           sessionID,
           runGroupID: boundedText(group.id),
           runID: boundedText(run.id),
@@ -181,7 +200,9 @@ export class JobProjectionService {
         id: `worktree:${boundedText(worktree.id)}`,
         source: "worktree",
         group: delegation ? delegationGroup(delegation, needsInput) : worktreeGroup(worktree.phase),
-        title: delegation ? boundedText(delegation.title, "Delegated session") : boundedText(worktree.branch, "Isolated worktree"),
+        title: delegation
+          ? boundedText(delegation.title, "Delegated session")
+          : boundedText(worktree.branch, "Isolated worktree"),
         status: delegation?.status.type ?? worktree.phase,
         updatedAt: Math.max(worktree.updatedAt, delegation ? lastMessageTime(delegation.messages) : 0),
         sessionID: worktree.sessionID ? boundedText(worktree.sessionID) : undefined,
@@ -209,7 +230,9 @@ export class JobProjectionService {
         parentSessionID: input.selectedSessionID ? boundedText(input.selectedSessionID) : undefined,
         messageCount: delegation.messages.length,
         recentActivity: activity(delegation.messages, this.recentActivityLimit),
-        error: delegation.status.type === "error" ? boundedText(delegation.status.message) || "OpenCode session failed" : undefined,
+        error: delegation.status.type === "error"
+          ? boundedText(delegation.status.message) || "OpenCode session failed"
+          : undefined,
       })
     }
 

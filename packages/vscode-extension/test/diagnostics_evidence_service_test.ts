@@ -1,5 +1,9 @@
 import { assertEquals, assertMatch, assertThrows } from "jsr:@std/assert"
-import { captureDiagnostics, diagnosticsDelta, diagnosticsSummary } from "../src/application/diagnostics-evidence-service.ts"
+import {
+  captureDiagnostics,
+  diagnosticsDelta,
+  diagnosticsSummary,
+} from "../src/application/diagnostics-evidence-service.ts"
 
 Deno.test("diagnostic evidence includes only files in the selected repository", () => {
   const snapshot = captureDiagnostics("/work/repo", [
@@ -20,12 +24,18 @@ Deno.test("diagnostic evidence reports deterministic before and after deltas", (
   )
   assertEquals(introduced.status, "failed")
   assertMatch(introduced.summary, /delta: \+2 errors, -1 warnings, \+1 files/)
-  assertEquals(diagnosticsDelta(
-    { errors: 1, warnings: 1, files: 1 },
-    { errors: 0, warnings: 0, files: 0 },
-  ).status, "passed")
-  assertEquals(diagnosticsDelta(
-    { errors: 2, warnings: 0, files: 1 },
-    { errors: 1, warnings: 0, files: 1 },
-  ).status, "warning")
+  assertEquals(
+    diagnosticsDelta(
+      { errors: 1, warnings: 1, files: 1 },
+      { errors: 0, warnings: 0, files: 0 },
+    ).status,
+    "passed",
+  )
+  assertEquals(
+    diagnosticsDelta(
+      { errors: 2, warnings: 0, files: 1 },
+      { errors: 1, warnings: 0, files: 1 },
+    ).status,
+    "warning",
+  )
 })

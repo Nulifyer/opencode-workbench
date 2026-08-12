@@ -13,7 +13,12 @@ Deno.test("context receipt metadata measures decoded bytes without retaining pay
 
 Deno.test("context receipt metadata never persists malformed data URLs", () => {
   assertEquals(dataUrlPayload("data:text/plain,%E0%A4%A"), undefined)
-  const [item] = promptFileReceiptItems([{ type: "file", filename: "bad.txt", mime: "text/plain", url: "data:text/plain,%E0%A4%A" }], "context")
+  const [item] = promptFileReceiptItems([{
+    type: "file",
+    filename: "bad.txt",
+    mime: "text/plain",
+    url: "data:text/plain,%E0%A4%A",
+  }], "context")
   assertEquals(item?.bytes, undefined)
   assertEquals(item?.contentHash, undefined)
 })

@@ -13,14 +13,24 @@ const MAX_ERROR_MESSAGE_LENGTH = 2_000
 // A failed entry may still own a real checkout and branch. Only an explicitly
 // removed entry is safe to forget without orphaning user-manageable state.
 const TERMINAL_JOURNAL_PHASES = new Set<WorktreeJournalEntry["phase"]>(["removed"])
-const STRANDED_RECOVERY_PHASES = new Set<WorktreeJournalEntry["phase"]>(["setup-running", "session-creating", "prompt-admitting"])
+const STRANDED_RECOVERY_PHASES = new Set<WorktreeJournalEntry["phase"]>([
+  "setup-running",
+  "session-creating",
+  "prompt-admitting",
+])
 const AUTHORIZATION_VALUE = /\b(authorization\s*:\s*)(?:(?:bearer|token|basic)\s+)?[^\s,'"`]+/gi
 const COOKIE_VALUE = /\b((?:set-)?cookie\s*:\s*)[^\r\n]*/gi
-const SECRET_VALUE = /\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|cookie|password|secret|token|credential)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi
+const SECRET_VALUE =
+  /\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|cookie|password|secret|token|credential)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi
 const URL_CREDENTIAL = /(https?:\/\/)[^/@\s]+@/gi
 
-export interface GitResult { stdout: string; stderr: string }
-export interface GitRunner { run(args: string[], cwd: string, signal?: AbortSignal): Promise<GitResult> }
+export interface GitResult {
+  stdout: string
+  stderr: string
+}
+export interface GitRunner {
+  run(args: string[], cwd: string, signal?: AbortSignal): Promise<GitResult>
+}
 
 interface NormalizedCreateRequest {
   mutationID: string
@@ -64,7 +74,8 @@ function cloneEntry(entry: WorktreeJournalEntry): WorktreeJournalEntry {
 }
 
 function validBranch(value: string): boolean {
-  return value.length > 0 && value.length <= 240 && !value.startsWith("-") && !/[\s~^:?*[\\\0]/.test(value) && !value.includes("..") && !value.endsWith("/") && !value.endsWith(".") && !value.includes("@{")
+  return value.length > 0 && value.length <= 240 && !value.startsWith("-") && !/[\s~^:?*[\\\0]/.test(value) &&
+    !value.includes("..") && !value.endsWith("/") && !value.endsWith(".") && !value.includes("@{")
 }
 
 export class WorktreeService {
@@ -75,10 +86,17 @@ export class WorktreeService {
   private persistenceTail: Promise<void> = Promise.resolve()
   private persistenceFailure: unknown
 
-  constructor(private readonly git: GitRunner, initial: WorktreeJournalEntry[] = [], private readonly persist?: (entries: WorktreeJournalEntry[]) => void | PromiseLike<void>, private readonly clock: () => number = Date.now) {
+  constructor(
+    private readonly git: GitRunner,
+    initial: WorktreeJournalEntry[] = [],
+    private readonly persist?: (entries: WorktreeJournalEntry[]) => void | PromiseLike<void>,
+    private readonly clock: () => number = Date.now,
+  ) {
     for (const entry of initial) if (entry.owner === "workbench") this.entries.set(entry.id, cloneEntry(entry))
     const pruned = this.pruneTerminalHistory()
-    if (this.entries.size > MAX_JOURNAL_ENTRIES) throw new Error("Worktree journal limit exceeded by active, failed, or retained operations")
+    if (this.entries.size > MAX_JOURNAL_ENTRIES) {
+      throw new Error("Worktree journal limit exceeded by active, failed, or retained operations")
+    }
     if (pruned) this.publish()
   }
 
@@ -126,11 +144,19 @@ export class WorktreeService {
     return { root, id: `git:${createHash("sha256").update(common).digest("hex")}` }
   }
 
-  async create(input: { directory: string; path: string; branch: string; baseRef: string; mutationID: string }, signal?: AbortSignal): Promise<WorktreeJournalEntry> {
-    if (!validBranch(input.branch) || !input.baseRef.trim() || input.baseRef.length > 1_024 || !input.mutationID || input.mutationID.length > 1_024) throw new Error("Invalid worktree request")
+  async create(
+    input: { directory: string; path: string; branch: string; baseRef: string; mutationID: string },
+    signal?: AbortSignal,
+  ): Promise<WorktreeJournalEntry> {
+    if (
+      !validBranch(input.branch) || !input.baseRef.trim() || input.baseRef.length > 1_024 || !input.mutationID ||
+      input.mutationID.length > 1_024
+    ) throw new Error("Invalid worktree request")
     const repository = await this.repository(input.directory)
     const target = path.resolve(input.path)
-    if (target === repository.root || path.dirname(target) === target) throw new Error("Worktree path must not replace the repository root")
+    if (target === repository.root || path.dirname(target) === target) {
+      throw new Error("Worktree path must not replace the repository root")
+    }
     const request: NormalizedCreateRequest = {
       mutationID: input.mutationID,
       repository: repository.root,
@@ -159,7 +185,9 @@ export class WorktreeService {
     const pruned = this.pruneTerminalHistory(1)
     if (this.entries.size >= MAX_JOURNAL_ENTRIES) {
       if (pruned) this.publish()
-      throw new Error("Worktree journal limit reached by active or retained operations; resolve or remove an existing worktree before creating another")
+      throw new Error(
+        "Worktree journal limit reached by active or retained operations; resolve or remove an existing worktree before creating another",
+      )
     }
 
     const operation = this.createOnce(request, signal)
@@ -174,8 +202,17 @@ export class WorktreeService {
   private async createOnce(request: NormalizedCreateRequest, signal?: AbortSignal): Promise<WorktreeJournalEntry> {
     const now = this.clock()
     const entry: WorktreeJournalEntry = {
-      id: randomUUID(), mutationID: request.mutationID, owner: "workbench", repository: request.repository, repositoryID: request.repositoryID,
-      path: request.path, branch: request.branch, baseRef: request.baseRef, phase: "requested", createdAt: now, updatedAt: now,
+      id: randomUUID(),
+      mutationID: request.mutationID,
+      owner: "workbench",
+      repository: request.repository,
+      repositoryID: request.repositoryID,
+      path: request.path,
+      branch: request.branch,
+      baseRef: request.baseRef,
+      phase: "requested",
+      createdAt: now,
+      updatedAt: now,
     }
     this.entries.set(entry.id, entry)
     this.commit(entry, "requested")
@@ -184,7 +221,11 @@ export class WorktreeService {
       await this.flush()
       await this.git.run(["check-ref-format", "--branch", request.branch], request.repository, signal)
       await mkdir(path.dirname(request.path), { recursive: true })
-      await this.git.run(["worktree", "add", "--no-track", "-b", request.branch, "--", request.path, request.baseRef], request.repository, signal)
+      await this.git.run(
+        ["worktree", "add", "--no-track", "-b", request.branch, "--", request.path, request.baseRef],
+        request.repository,
+        signal,
+      )
       this.commit(entry, "ready")
       await this.flush()
       return { ...entry }
@@ -195,7 +236,11 @@ export class WorktreeService {
     }
   }
 
-  mark(entryID: string, phase: WorktreeJournalEntry["phase"], values: Pick<WorktreeJournalEntry, "sessionID" | "promptID"> = {}): WorktreeJournalEntry {
+  mark(
+    entryID: string,
+    phase: WorktreeJournalEntry["phase"],
+    values: Pick<WorktreeJournalEntry, "sessionID" | "promptID"> = {},
+  ): WorktreeJournalEntry {
     const entry = this.require(entryID)
     if (entry.owner !== "workbench" || entry.phase === "removed") throw new Error("Worktree operation is not mutable")
     Object.assign(entry, values)
@@ -203,7 +248,11 @@ export class WorktreeService {
     return { ...entry }
   }
 
-  async markDurably(entryID: string, phase: WorktreeJournalEntry["phase"], values: Pick<WorktreeJournalEntry, "sessionID" | "promptID"> = {}): Promise<WorktreeJournalEntry> {
+  async markDurably(
+    entryID: string,
+    phase: WorktreeJournalEntry["phase"],
+    values: Pick<WorktreeJournalEntry, "sessionID" | "promptID"> = {},
+  ): Promise<WorktreeJournalEntry> {
     const entry = this.mark(entryID, phase, values)
     await this.flush()
     return entry
@@ -239,13 +288,23 @@ export class WorktreeService {
       let paths = repositories.get(entry.repository)
       if (!paths) {
         const output = await this.git.run(["worktree", "list", "--porcelain"], entry.repository)
-        paths = new Set(output.stdout.split(/\r?\n/).flatMap((line) => line.startsWith("worktree ") ? [path.resolve(line.slice(9))] : []))
+        paths = new Set(
+          output.stdout.split(/\r?\n/).flatMap((line) =>
+            line.startsWith("worktree ") ? [path.resolve(line.slice(9))] : []
+          ),
+        )
         repositories.set(entry.repository, paths)
       }
       if (!paths.has(path.resolve(entry.path)) && entry.phase === "cleanup-pending") this.commit(entry, "removed")
-      else if (!paths.has(path.resolve(entry.path)) && entry.phase !== "failed") this.commit(entry, "failed", { code: "SESSION_NOT_FOUND", message: "Journaled worktree is missing from Git", retryable: false })
-      else if (paths.has(path.resolve(entry.path)) && ["requested", "creating"].includes(entry.phase)) this.commit(entry, "ready")
-      else if (paths.has(path.resolve(entry.path)) && STRANDED_RECOVERY_PHASES.has(entry.phase)) {
+      else if (!paths.has(path.resolve(entry.path)) && entry.phase !== "failed") {
+        this.commit(entry, "failed", {
+          code: "SESSION_NOT_FOUND",
+          message: "Journaled worktree is missing from Git",
+          retryable: false,
+        })
+      } else if (paths.has(path.resolve(entry.path)) && ["requested", "creating"].includes(entry.phase)) {
+        this.commit(entry, "ready")
+      } else if (paths.has(path.resolve(entry.path)) && STRANDED_RECOVERY_PHASES.has(entry.phase)) {
         this.commit(entry, "failed", {
           code: "OPERATION_CONFLICT",
           message: `Worktree operation was interrupted during ${entry.phase}; retry explicitly before continuing`,
@@ -262,7 +321,9 @@ export class WorktreeService {
     if (entry.owner !== "workbench") throw new Error("Workbench cannot remove a native-owned worktree")
     if (entry.phase === "removed") return
     const listed = await this.git.run(["worktree", "list", "--porcelain"], entry.repository, signal)
-    const registered = new Set(listed.stdout.split(/\r?\n/).flatMap((line) => line.startsWith("worktree ") ? [path.resolve(line.slice(9))] : []))
+    const registered = new Set(
+      listed.stdout.split(/\r?\n/).flatMap((line) => line.startsWith("worktree ") ? [path.resolve(line.slice(9))] : []),
+    )
     if (!registered.has(path.resolve(entry.path))) {
       this.commit(entry, "removed")
       await this.flush()
@@ -294,8 +355,11 @@ export class WorktreeService {
   }
 
   private assertSameRequest(entry: WorktreeJournalEntry, request: NormalizedCreateRequest): void {
-    if (entry.repository !== request.repository || entry.repositoryID !== request.repositoryID || path.resolve(entry.path) !== request.path ||
-      entry.branch !== request.branch || entry.baseRef !== request.baseRef) {
+    if (
+      entry.repository !== request.repository || entry.repositoryID !== request.repositoryID ||
+      path.resolve(entry.path) !== request.path ||
+      entry.branch !== request.branch || entry.baseRef !== request.baseRef
+    ) {
       throw new Error(`Worktree mutation ${request.mutationID} was reused with a different request`)
     }
   }
@@ -305,7 +369,9 @@ export class WorktreeService {
     if (excess <= 0) return false
     const terminal = [...this.entries.values()]
       .filter((entry) => TERMINAL_JOURNAL_PHASES.has(entry.phase))
-      .sort((left, right) => left.updatedAt - right.updatedAt || left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+      .sort((left, right) =>
+        left.updatedAt - right.updatedAt || left.createdAt - right.createdAt || left.id.localeCompare(right.id)
+      )
     const removeCount = Math.min(excess, terminal.length)
     for (let index = 0; index < removeCount; index += 1) this.entries.delete(terminal[index]!.id)
     return removeCount > 0
@@ -318,7 +384,9 @@ export class WorktreeService {
         const pending = Promise.resolve(this.persist(snapshot))
         this.persistenceTail = Promise.all([this.persistenceTail, pending]).then(
           () => undefined,
-          (error) => { if (this.persistenceFailure === undefined) this.persistenceFailure = error },
+          (error) => {
+            if (this.persistenceFailure === undefined) this.persistenceFailure = error
+          },
         )
       } catch (error) {
         if (this.persistenceFailure === undefined) this.persistenceFailure = error

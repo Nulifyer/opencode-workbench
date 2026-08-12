@@ -1,7 +1,48 @@
-import { activityCollapsed, activityVisualState, activityWorking, applyPatchFiles, applyPatchSection, attachmentDisplay, attachmentReference, commandActivityLabel, compactMetric, connectionPresentation, currentTodoContent, delegationCompletionSummary, diffLineKind, fileReference, fileUriFromPath, formatDuration, isCompactionMessage, isGoalContinuationMessage, isNativeCompactionContinuationMessage, mergeRevisionValues, pastedTextReference, patchActivityLabel, permissionPresentation, questionAnswerValues, reasoningDetail, reasoningSummary, runtimeServicePresentation, sessionGroup, sessionLoadPhase, shouldCollapsePaste, shouldSubmitComposerKey, stripTerminalSequences, terminalAnsiMarkup, toolKind, turnContent, workspaceMentionReference } from "../src/webview/presentation.ts"
+import {
+  activityCollapsed,
+  activityVisualState,
+  activityWorking,
+  applyPatchFiles,
+  applyPatchSection,
+  attachmentDisplay,
+  attachmentReference,
+  commandActivityLabel,
+  compactMetric,
+  connectionPresentation,
+  currentTodoContent,
+  delegationCompletionSummary,
+  diffLineKind,
+  fileReference,
+  fileUriFromPath,
+  formatDuration,
+  isCompactionMessage,
+  isGoalContinuationMessage,
+  isNativeCompactionContinuationMessage,
+  mergeRevisionValues,
+  pastedTextReference,
+  patchActivityLabel,
+  permissionPresentation,
+  permissionUiGroups,
+  presentedTodos,
+  questionAnswerValues,
+  reasoningDetail,
+  reasoningSummary,
+  runtimeServicePresentation,
+  sessionGroup,
+  sessionLoadPhase,
+  shouldCollapsePaste,
+  shouldSubmitComposerKey,
+  stripTerminalSequences,
+  terminalAnsiMarkup,
+  toolKind,
+  turnContent,
+  workspaceMentionReference,
+} from "../src/webview/presentation.ts"
 
 function assertEquals(actual: unknown, expected: unknown): void {
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`)
+  }
 }
 
 Deno.test("recognizes compaction-only user messages as timeline markers", () => {
@@ -17,18 +58,28 @@ Deno.test("recognizes tagged and legacy goal continuations without hiding ordina
     info: { id: "message", sessionID: "session", role },
     parts: [{ id: "part", messageID: "message", sessionID: "session", type: "text", ...part }],
   })
-  if (!isGoalContinuationMessage(message({
-    text: "Continue toward the goal.",
-    synthetic: true,
-    metadata: { "opencode-workbench": { kind: "goal-continuation", version: 1 } },
-  }))) throw new Error("Tagged goal continuation was treated as an empty user prompt")
-  if (!isGoalContinuationMessage(message({
-    text: "Continue working autonomously toward the active goal. Call get_goal first.",
-    synthetic: true,
-  }))) throw new Error("Existing untagged goal continuation was not recognized")
-  if (isGoalContinuationMessage(message({ text: "Internal context", synthetic: true })) ||
-    isGoalContinuationMessage(message({ text: "Continue working autonomously toward the active goal.", synthetic: false })) ||
-    isGoalContinuationMessage(message({ text: "Continue working autonomously toward the active goal.", synthetic: true }, "assistant"))) {
+  if (
+    !isGoalContinuationMessage(message({
+      text: "Continue toward the goal.",
+      synthetic: true,
+      metadata: { "opencode-workbench": { kind: "goal-continuation", version: 1 } },
+    }))
+  ) throw new Error("Tagged goal continuation was treated as an empty user prompt")
+  if (
+    !isGoalContinuationMessage(message({
+      text: "Continue working autonomously toward the active goal. Call get_goal first.",
+      synthetic: true,
+    }))
+  ) throw new Error("Existing untagged goal continuation was not recognized")
+  if (
+    isGoalContinuationMessage(message({ text: "Internal context", synthetic: true })) ||
+    isGoalContinuationMessage(
+      message({ text: "Continue working autonomously toward the active goal.", synthetic: false }),
+    ) ||
+    isGoalContinuationMessage(
+      message({ text: "Continue working autonomously toward the active goal.", synthetic: true }, "assistant"),
+    )
+  ) {
     throw new Error("An ordinary or non-user message was classified as a goal continuation")
   }
 })
@@ -38,18 +89,35 @@ Deno.test("recognizes native OpenCode compaction continuations without hiding or
     info: { id: "message", sessionID: "session", role },
     parts: [{ id: "part", messageID: "message", sessionID: "session", type: "text", ...part }],
   })
-  if (!isNativeCompactionContinuationMessage(message({
-    text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
-    synthetic: true,
-    metadata: { compaction_continue: true },
-  }))) throw new Error("Tagged native compaction continuation was treated as authored input")
-  if (!isNativeCompactionContinuationMessage(message({
-    text: "Media context was removed.\n\nContinue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
-    synthetic: true,
-  }))) throw new Error("Legacy native compaction continuation was not recognized")
-  if (isNativeCompactionContinuationMessage(message({ text: "Internal context", synthetic: true })) ||
-    isNativeCompactionContinuationMessage(message({ text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.", synthetic: false })) ||
-    isNativeCompactionContinuationMessage(message({ text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.", synthetic: true }, "assistant"))) {
+  if (
+    !isNativeCompactionContinuationMessage(message({
+      text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+      synthetic: true,
+      metadata: { compaction_continue: true },
+    }))
+  ) throw new Error("Tagged native compaction continuation was treated as authored input")
+  if (
+    !isNativeCompactionContinuationMessage(message({
+      text:
+        "Media context was removed.\n\nContinue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+      synthetic: true,
+    }))
+  ) throw new Error("Legacy native compaction continuation was not recognized")
+  if (
+    isNativeCompactionContinuationMessage(message({ text: "Internal context", synthetic: true })) ||
+    isNativeCompactionContinuationMessage(
+      message({
+        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+        synthetic: false,
+      }),
+    ) ||
+    isNativeCompactionContinuationMessage(
+      message({
+        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+        synthetic: true,
+      }, "assistant"),
+    )
+  ) {
     throw new Error("An ordinary or non-user message was classified as a native compaction continuation")
   }
 })
@@ -81,8 +149,18 @@ Deno.test("distinguishes initial transcript hydration from background refresh", 
 Deno.test("connection presentation stays quiet while loading and warns after failure", () => {
   assertEquals(connectionPresentation("connecting"), { showNotice: false, label: "", title: "", message: "" })
   assertEquals(connectionPresentation("connected"), { showNotice: false, label: "", title: "", message: "" })
-  assertEquals(connectionPresentation("reconnecting"), { showNotice: true, label: "Reconnecting", title: "Reconnecting to OpenCode", message: "The OpenCode connection failed. Workbench is retrying automatically." })
-  assertEquals(connectionPresentation("failed", "No server"), { showNotice: true, label: "Offline", title: "OpenCode is offline", message: "No server" })
+  assertEquals(connectionPresentation("reconnecting"), {
+    showNotice: true,
+    label: "Reconnecting",
+    title: "Reconnecting to OpenCode",
+    message: "The OpenCode connection failed. Workbench is retrying automatically.",
+  })
+  assertEquals(connectionPresentation("failed", "No server"), {
+    showNotice: true,
+    label: "Offline",
+    title: "OpenCode is offline",
+    message: "No server",
+  })
 })
 
 Deno.test("work activity stays expanded while active and collapses on completion", () => {
@@ -98,17 +176,97 @@ Deno.test("work activity stays expanded while active and collapses on completion
 Deno.test("summarizes reasoning and tool presentation", () => {
   assertEquals(reasoningSummary("\n**Inspecting** `src/main.ts`\nMore"), "Inspecting src/main.ts")
   assertEquals(reasoningDetail("Planning repo exploration"), "")
-  assertEquals(reasoningDetail("A long single-line thought stays in the summary without being repeated in the detail."), "")
+  assertEquals(
+    reasoningDetail("A long single-line thought stays in the summary without being repeated in the detail."),
+    "",
+  )
   assertEquals(reasoningDetail("Planning repo exploration\n\nInspect package manifests."), "Inspect package manifests.")
   assertEquals(formatDuration(1_250), "1.3s")
   assertEquals(formatDuration(119_999), "1m 59s")
   assertEquals(formatDuration(3_900_000), "1h 5m")
   assertEquals(formatDuration(104_400_000), "1d 5h")
-  assertEquals(delegationCompletionSummary([{ kind: "reasoning" }, { kind: "tool" }, { kind: "output" }]), "1 tool call")
+  assertEquals(
+    delegationCompletionSummary([{ kind: "reasoning" }, { kind: "tool" }, { kind: "output" }]),
+    "1 tool call",
+  )
   assertEquals(delegationCompletionSummary([{ kind: "tool" }, { kind: "tool" }], true), "Failed · 2 tool calls")
   assertEquals(delegationCompletionSummary([]), "Completed")
   assertEquals(toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "grep" }), "explore")
   assertEquals(toolKind({ id: "p", sessionID: "s", messageID: "m", type: "tool", tool: "apply_patch" }), "edit")
+  assertEquals(
+    toolKind({
+      id: "p",
+      sessionID: "s",
+      messageID: "m",
+      type: "tool",
+      tool: "todo_read",
+    }),
+    "todo",
+  )
+  assertEquals(
+    toolKind({
+      id: "p",
+      sessionID: "s",
+      messageID: "m",
+      type: "tool",
+      tool: "websearch",
+    }),
+    "web",
+  )
+  assertEquals(
+    toolKind({
+      id: "p",
+      sessionID: "s",
+      messageID: "m",
+      type: "tool",
+      tool: "lsp_diagnostics",
+    }),
+    "lsp",
+  )
+  assertEquals(
+    toolKind({
+      id: "p",
+      sessionID: "s",
+      messageID: "m",
+      type: "tool",
+      tool: "update_goal",
+    }),
+    "goal",
+  )
+})
+
+Deno.test("turns todo tool input and output into a single human-readable list", () => {
+  const base = {
+    id: "p",
+    sessionID: "s",
+    messageID: "m",
+    type: "tool" as const,
+    tool: "todowrite",
+  }
+  assertEquals(
+    presentedTodos({
+      ...base,
+      state: {
+        input: {
+          todos: [{
+            content: "Draft plan",
+            status: "pending",
+            priority: "high",
+          }],
+        },
+        output: JSON.stringify([{
+          content: "Draft plan",
+          status: "completed",
+          priority: "high",
+        }]),
+      },
+    }),
+    [{ content: "Draft plan", status: "completed", priority: "high" }],
+  )
+  assertEquals(
+    presentedTodos({ ...base, state: { input: { todos: [] } } }),
+    [],
+  )
 })
 
 Deno.test("compact metrics scale through trillions without noisy trailing zeroes", () => {
@@ -119,13 +277,46 @@ Deno.test("compact metrics scale through trillions without noisy trailing zeroes
 })
 
 Deno.test("presents OpenCode runtime service contracts accurately", () => {
-  assertEquals(runtimeServicePresentation({ id: "typescript", status: "connected", root: "/work" }, "lsp"), { status: "Connected", detail: "/work", healthy: true, tone: "status" })
-  assertEquals(runtimeServicePresentation({ id: "broken", status: "error", root: "/work" }, "lsp"), { status: "Error", detail: "/work", healthy: false, tone: "error" })
-  assertEquals(runtimeServicePresentation({ id: "prettier", name: "prettier", enabled: true, extensions: [".js", ".ts"] }, "formatter"), { status: "Available", detail: ".js .ts", healthy: true, tone: "status" })
-  assertEquals(runtimeServicePresentation({ id: "gofmt", enabled: false, extensions: [".go"] }, "formatter"), { status: "Executable not found", detail: ".go", healthy: false, tone: "error" })
-  assertEquals(runtimeServicePresentation({ id: "docs", status: "needs_auth" }, "mcp"), { status: "Authentication required", healthy: false, tone: "warning" })
-  assertEquals(runtimeServicePresentation({ id: "off", status: "disabled" }, "mcp"), { status: "Disabled", healthy: false, tone: "muted" })
-  assertEquals(runtimeServicePresentation({ id: "fs", status: "connected" }, "mcp"), { status: "Connected", healthy: true, tone: "status" })
+  assertEquals(runtimeServicePresentation({ id: "typescript", status: "connected", root: "/work" }, "lsp"), {
+    status: "Connected",
+    detail: "/work",
+    healthy: true,
+    tone: "status",
+  })
+  assertEquals(runtimeServicePresentation({ id: "broken", status: "error", root: "/work" }, "lsp"), {
+    status: "Error",
+    detail: "/work",
+    healthy: false,
+    tone: "error",
+  })
+  assertEquals(
+    runtimeServicePresentation(
+      { id: "prettier", name: "prettier", enabled: true, extensions: [".js", ".ts"] },
+      "formatter",
+    ),
+    { status: "Available", detail: ".js .ts", healthy: true, tone: "status" },
+  )
+  assertEquals(runtimeServicePresentation({ id: "gofmt", enabled: false, extensions: [".go"] }, "formatter"), {
+    status: "Executable not found",
+    detail: ".go",
+    healthy: false,
+    tone: "error",
+  })
+  assertEquals(runtimeServicePresentation({ id: "docs", status: "needs_auth" }, "mcp"), {
+    status: "Authentication required",
+    healthy: false,
+    tone: "warning",
+  })
+  assertEquals(runtimeServicePresentation({ id: "off", status: "disabled" }, "mcp"), {
+    status: "Disabled",
+    healthy: false,
+    tone: "muted",
+  })
+  assertEquals(runtimeServicePresentation({ id: "fs", status: "connected" }, "mcp"), {
+    status: "Connected",
+    healthy: true,
+    tone: "status",
+  })
 })
 
 Deno.test("composer submit ignores IME composition", () => {
@@ -134,13 +325,23 @@ Deno.test("composer submit ignores IME composition", () => {
   assertEquals(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 229 }), false)
   assertEquals(shouldSubmitComposerKey({ key: "Enter", shiftKey: true, isComposing: false }), false)
   assertEquals(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: false }, "newline"), false)
-  assertEquals(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, ctrlKey: true, isComposing: false }, "newline"), true)
+  assertEquals(
+    shouldSubmitComposerKey({ key: "Enter", shiftKey: false, ctrlKey: true, isComposing: false }, "newline"),
+    true,
+  )
 })
 
 Deno.test("composer revision merge preserves concurrent additions and removals", () => {
   const item = (id: string) => ({ id })
-  assertEquals(mergeRevisionValues([item("a"), item("remote")], [item("a")], [item("a"), item("local")]), [item("a"), item("remote"), item("local")])
-  assertEquals(mergeRevisionValues([item("a"), item("b"), item("remote")], [item("a"), item("b")], [item("a")]), [item("a"), item("remote")])
+  assertEquals(mergeRevisionValues([item("a"), item("remote")], [item("a")], [item("a"), item("local")]), [
+    item("a"),
+    item("remote"),
+    item("local"),
+  ])
+  assertEquals(mergeRevisionValues([item("a"), item("b"), item("remote")], [item("a"), item("b")], [item("a")]), [
+    item("a"),
+    item("remote"),
+  ])
 })
 
 Deno.test("formats attachment references and collapses only substantial pastes", () => {
@@ -151,17 +352,26 @@ Deno.test("formats attachment references and collapses only substantial pastes",
   assertEquals(shouldCollapsePaste(Array.from({ length: 8 }, (_, index) => String(index)).join("\n")), true)
   assertEquals(shouldCollapsePaste("x".repeat(1_000)), true)
   assertEquals(attachmentDisplay("[Image 1] image.png"), { label: "[Image 1]", name: "image.png" })
-  assertEquals(attachmentDisplay("[Pasted text 2 · ~15 lines] pasted-text-2.txt"), { label: "[Pasted text 2 · ~15 lines]", name: "pasted-text-2.txt" })
+  assertEquals(attachmentDisplay("[Pasted text 2 · ~15 lines] pasted-text-2.txt"), {
+    label: "[Pasted text 2 · ~15 lines]",
+    name: "pasted-text-2.txt",
+  })
 })
 
 Deno.test("collapsed todos summarize current work", () => {
-  assertEquals(currentTodoContent([
-    { content: "Queued", status: "pending" },
-    { content: "Working now", status: "in_progress" },
-  ]), "Working now")
+  assertEquals(
+    currentTodoContent([
+      { content: "Queued", status: "pending" },
+      { content: "Working now", status: "in_progress" },
+    ]),
+    "Working now",
+  )
   assertEquals(currentTodoContent([{ content: "Done", status: "completed" }]), "All todos complete")
   assertEquals(currentTodoContent([{ content: "Skipped", status: "skipped" }]), "No active todos")
-  assertEquals(currentTodoContent([{ content: "Done", status: "completed" }, { content: "Cancelled", status: "cancelled" }]), "No active todos")
+  assertEquals(
+    currentTodoContent([{ content: "Done", status: "completed" }, { content: "Cancelled", status: "cancelled" }]),
+    "No active todos",
+  )
 })
 
 Deno.test("terminal sessions stop incomplete activity indicators", () => {
@@ -186,7 +396,10 @@ Deno.test("terminal output removes ANSI and unsafe control sequences", () => {
   assertEquals(stripTerminalSequences("\u001b[32mok\u001b[0m\r\nnext\u0007"), "ok\nnext")
   assertEquals(stripTerminalSequences("\u001b]0;title\u0007output"), "output")
   assertEquals(terminalAnsiMarkup("\u001b[32mok\u001b[0m <next>"), '<span class="ansi-fg-green">ok</span> &lt;next&gt;')
-  assertEquals(terminalAnsiMarkup("\u001b]0;private title\u0007\u001b[1;91mfail\u001b[0m"), '<span class="ansi-bold ansi-fg-bright-red">fail</span>')
+  assertEquals(
+    terminalAnsiMarkup("\u001b]0;private title\u0007\u001b[1;91mfail\u001b[0m"),
+    '<span class="ansi-bold ansi-fg-bright-red">fail</span>',
+  )
 })
 
 Deno.test("patch labels reflect execution state", () => {
@@ -205,10 +418,34 @@ Deno.test("multi-select custom answers preserve checked choices", () => {
 })
 
 Deno.test("parses relative, absolute, and ranged workspace file references", () => {
-  assertEquals(fileReference("src/main.ts:42:3"), { file: "src/main.ts", line: 42, column: 3, endLine: undefined, endColumn: undefined })
-  assertEquals(fileReference("/home/user/project/settings.gradle.kts:20-21"), { file: "/home/user/project/settings.gradle.kts", line: 20, column: undefined, endLine: 21, endColumn: undefined })
-  assertEquals(fileReference("app/Main.java:10:2-14:8"), { file: "app/Main.java", line: 10, column: 2, endLine: 14, endColumn: 8 })
-  assertEquals(fileReference("app/Main.java#L10C2-L14C8"), { file: "app/Main.java", line: 10, column: 2, endLine: 14, endColumn: 8 })
+  assertEquals(fileReference("src/main.ts:42:3"), {
+    file: "src/main.ts",
+    line: 42,
+    column: 3,
+    endLine: undefined,
+    endColumn: undefined,
+  })
+  assertEquals(fileReference("/home/user/project/settings.gradle.kts:20-21"), {
+    file: "/home/user/project/settings.gradle.kts",
+    line: 20,
+    column: undefined,
+    endLine: 21,
+    endColumn: undefined,
+  })
+  assertEquals(fileReference("app/Main.java:10:2-14:8"), {
+    file: "app/Main.java",
+    line: 10,
+    column: 2,
+    endLine: 14,
+    endColumn: 8,
+  })
+  assertEquals(fileReference("app/Main.java#L10C2-L14C8"), {
+    file: "app/Main.java",
+    line: 10,
+    column: 2,
+    endLine: 14,
+    endColumn: 8,
+  })
   assertEquals(fileReference("https://example.test/main.ts:2"), undefined)
   assertEquals(fileReference("app/Main.java:14-10"), undefined)
 })
@@ -226,27 +463,62 @@ Deno.test("encodes reserved characters in dropped file paths", () => {
 
 Deno.test("summarizes permission requests with visible tool-specific context", () => {
   const base = { id: "permission", sessionID: "session", title: "OpenCode permission", protocol: "current" as const }
-  assertEquals(permissionPresentation({ ...base, type: "bash", pattern: ["git:*"], metadata: { command: "git status --short" } }), {
-    icon: "#",
-    title: "Shell command",
-    lines: ["$ git status --short"],
-  })
+  assertEquals(
+    permissionPresentation({ ...base, type: "bash", pattern: ["git:*"], metadata: { command: "git status --short" } }),
+    {
+      icon: "#",
+      title: "Shell command",
+      lines: ["$ git status --short"],
+    },
+  )
   assertEquals(permissionPresentation({ ...base, type: "read", pattern: ["src/main.ts"], metadata: {} }), {
     icon: "→",
     title: "Read src/main.ts",
     lines: ["Path: src/main.ts"],
   })
-  assertEquals(permissionPresentation({ ...base, type: "edit", pattern: ["src/main.ts"], metadata: { filepath: "/work/src/main.ts", diff: "-old\n+new" } }), {
-    icon: "→",
-    title: "Edit /work/src/main.ts",
-    lines: [],
-    diff: "-old\n+new",
-    file: "/work/src/main.ts",
-  })
+  assertEquals(
+    permissionPresentation({
+      ...base,
+      type: "edit",
+      pattern: ["src/main.ts"],
+      metadata: { filepath: "/work/src/main.ts", diff: "-old\n+new" },
+    }),
+    {
+      icon: "→",
+      title: "Edit /work/src/main.ts",
+      lines: [],
+      diff: "-old\n+new",
+      file: "/work/src/main.ts",
+    },
+  )
+})
+
+Deno.test("groups only identical permission requests from the same owning session", () => {
+  const request = {
+    id: "one",
+    sessionID: "session",
+    title: "External directory",
+    type: "external_directory",
+    pattern: ["/outside"],
+    metadata: { path: "/outside" },
+    protocol: "current" as const,
+  }
+  const groups = permissionUiGroups([
+    request,
+    { ...request, id: "two" },
+    { ...request, id: "child", sessionID: "child" },
+    { ...request, id: "different", metadata: { path: "/elsewhere" } },
+  ])
+  assertEquals(groups.map((group) => group.requests.map((item) => item.id)), [
+    ["one", "two"],
+    ["child"],
+    ["different"],
+  ])
 })
 
 Deno.test("turns apply-patch envelopes into readable per-file diffs", () => {
-  const patch = "*** Begin Patch\n*** Update File: src/one.txt\n@@\n-old\n+new\n*** Add File: src/two.txt\n+created\n*** End Patch"
+  const patch =
+    "*** Begin Patch\n*** Update File: src/one.txt\n@@\n-old\n+new\n*** Add File: src/two.txt\n+created\n*** End Patch"
   assertEquals(applyPatchFiles(patch), ["src/one.txt", "src/two.txt"])
   assertEquals(applyPatchSection(patch, "src/one.txt"), "@@\n-old\n+new")
   assertEquals(applyPatchSection(patch, "/work/src/two.txt"), "+created")
@@ -259,9 +531,18 @@ Deno.test("turns apply-patch envelopes into readable per-file diffs", () => {
 Deno.test("classifies streamed text after the last process action as final response", () => {
   const base = { sessionID: "s", role: "assistant" as const }
   const content = turnContent([
-    { info: { ...base, id: "one" }, parts: [{ id: "intro", sessionID: "s", messageID: "one", type: "text", text: "I will inspect this." }] },
-    { info: { ...base, id: "two" }, parts: [{ id: "tool", sessionID: "s", messageID: "two", type: "tool", tool: "read" }] },
-    { info: { ...base, id: "three" }, parts: [{ id: "final", sessionID: "s", messageID: "three", type: "text", text: "Inspection complete." }] },
+    {
+      info: { ...base, id: "one" },
+      parts: [{ id: "intro", sessionID: "s", messageID: "one", type: "text", text: "I will inspect this." }],
+    },
+    {
+      info: { ...base, id: "two" },
+      parts: [{ id: "tool", sessionID: "s", messageID: "two", type: "tool", tool: "read" }],
+    },
+    {
+      info: { ...base, id: "three" },
+      parts: [{ id: "final", sessionID: "s", messageID: "three", type: "text", text: "Inspection complete." }],
+    },
   ])
   assertEquals(content, { hasActivity: true, finalTextPartKeys: ["three:final"] })
 })

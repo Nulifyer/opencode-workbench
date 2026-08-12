@@ -4,7 +4,9 @@ export function localDevelopmentVersion(releaseVersion: string, now = new Date()
   const major = Number(match[1])
   const minor = Number(match[2])
   const patch = Number(match[3])
-  if (![major, minor, patch].every(Number.isSafeInteger) || patch >= Number.MAX_SAFE_INTEGER) throw new Error(`Invalid release version: ${releaseVersion}`)
+  if (![major, minor, patch].every(Number.isSafeInteger) || patch >= Number.MAX_SAFE_INTEGER) {
+    throw new Error(`Invalid release version: ${releaseVersion}`)
+  }
   const stamp = now.toISOString()
   const day = stamp.slice(0, 10).replaceAll("-", "")
   const time = stamp.slice(11, 19).replaceAll(":", "")

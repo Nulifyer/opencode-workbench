@@ -12,7 +12,7 @@ export const PROTOCOL_V2_ERROR_CODES = [
   "CANCELLED",
   "TIMEOUT",
   "INTERNAL",
-] as const;
+] as const
 
 export const WORKBENCH_CAPABILITIES = [
   "session.create",
@@ -32,7 +32,7 @@ export const WORKBENCH_CAPABILITIES = [
   "preference.memory",
   "skill.candidates",
   "native.agentHost",
-] as const;
+] as const
 
 export const PROTOCOL_V2_SCHEMA_SOURCE = {
   schemaVersion: 1,
@@ -80,7 +80,7 @@ export const PROTOCOL_V2_SCHEMA_SOURCE = {
     maxStringCharacters: 20_000_000,
     maxErrorDetailsBytes: 16_384,
   },
-} as const;
+} as const
 
-export type ProtocolV2ErrorCode = typeof PROTOCOL_V2_ERROR_CODES[number];
-export type WorkbenchCapability = typeof WORKBENCH_CAPABILITIES[number];
+export type ProtocolV2ErrorCode = typeof PROTOCOL_V2_ERROR_CODES[number]
+export type WorkbenchCapability = typeof WORKBENCH_CAPABILITIES[number]

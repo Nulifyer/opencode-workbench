@@ -13,8 +13,12 @@ await Deno.remove(dist, { recursive: true }).catch((error) => {
 await Deno.mkdir(dist, { recursive: true })
 await Deno.mkdir(join(extension, "dist"), { recursive: true })
 await Promise.all([
-  Deno.remove(join(extension, "dist", "extension.cjs.map")).catch((error) => { if (!(error instanceof Deno.errors.NotFound)) throw error }),
-  Deno.remove(join(extension, "media", "chat.js.map")).catch((error) => { if (!(error instanceof Deno.errors.NotFound)) throw error }),
+  Deno.remove(join(extension, "dist", "extension.cjs.map")).catch((error) => {
+    if (!(error instanceof Deno.errors.NotFound)) throw error
+  }),
+  Deno.remove(join(extension, "media", "chat.js.map")).catch((error) => {
+    if (!(error instanceof Deno.errors.NotFound)) throw error
+  }),
 ])
 
 await Promise.all([
@@ -75,7 +79,9 @@ createRequire(import.meta.url)(${JSON.stringify(extensionBundlePath)});`,
   stderr: "piped",
 }).output()
 if (!smoke.success) {
-  throw new Error(`Extension bundle failed module-load smoke test:\n${new TextDecoder().decode(smoke.stderr).slice(-4_000)}`)
+  throw new Error(
+    `Extension bundle failed module-load smoke test:\n${new TextDecoder().decode(smoke.stderr).slice(-4_000)}`,
+  )
 }
 
 await Deno.copyFile(join(dist, "opencode-plugin.js"), join(extension, "dist", "opencode-plugin.js"))

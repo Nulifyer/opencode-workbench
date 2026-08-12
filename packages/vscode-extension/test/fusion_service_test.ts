@@ -1,22 +1,79 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert"
 import type { RunGroup } from "@opencode-workbench/shared"
 import { createHash } from "node:crypto"
-import { boundedFusionContinuityEvidence, boundedFusionSourceEvidence, buildFusionBundle } from "../src/application/fusion-service.ts"
+import {
+  boundedFusionContinuityEvidence,
+  boundedFusionSourceEvidence,
+  buildFusionBundle,
+} from "../src/application/fusion-service.ts"
 
 const group: RunGroup = {
-  id: "group", title: "Compare", repository: "/repo", baseRef: "HEAD", promptReceiptID: "receipt", isolation: "worktree", createdAt: 1,
-  runs: ["one", "two"].map((id) => ({ id, phase: "completed", model: `provider/${id}`, session: { sessionID: `session-${id}`, directory: `/runs/${id}`, experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } })),
+  id: "group",
+  title: "Compare",
+  repository: "/repo",
+  baseRef: "HEAD",
+  promptReceiptID: "receipt",
+  isolation: "worktree",
+  createdAt: 1,
+  runs: ["one", "two"].map((id) => ({
+    id,
+    phase: "completed",
+    model: `provider/${id}`,
+    session: {
+      sessionID: `session-${id}`,
+      directory: `/runs/${id}`,
+      experience: "workbench",
+      transport: "http-sse",
+      runtimeEpoch: "epoch",
+    },
+  })),
 }
 
 function artifact(run: RunGroup["runs"][number], unifiedDiff = `diff --git a/${run.id} b/${run.id}\n`) {
   const unifiedDiffHash = `sha256:${createHash("sha256").update(unifiedDiff).digest("hex")}`
-  return { runID: run.id, directory: run.session.directory, sessionID: run.session.sessionID, model: run.model, phase: run.phase, unifiedDiff, diffSnapshot: { id: `diff-${run.id}`, scope: "branch" as const, repository: run.session.directory, baseRef: "HEAD", unifiedDiffHash, generatedAt: 1, complete: true, files: [] }, evidence: [], objectiveSummary: { runID: run.id, status: run.phase, model: run.model, changedFiles: 0, additions: 0, deletions: 0, taskOutcomes: "not-recorded" as const, diagnostics: "not-recorded" as const, complete: true }, assistantSummary: `Summary ${run.id}` }
+  return {
+    runID: run.id,
+    directory: run.session.directory,
+    sessionID: run.session.sessionID,
+    model: run.model,
+    phase: run.phase,
+    unifiedDiff,
+    diffSnapshot: {
+      id: `diff-${run.id}`,
+      scope: "branch" as const,
+      repository: run.session.directory,
+      baseRef: "HEAD",
+      unifiedDiffHash,
+      generatedAt: 1,
+      complete: true,
+      files: [],
+    },
+    evidence: [],
+    objectiveSummary: {
+      runID: run.id,
+      status: run.phase,
+      model: run.model,
+      changedFiles: 0,
+      additions: 0,
+      deletions: 0,
+      taskOutcomes: "not-recorded" as const,
+      diagnostics: "not-recorded" as const,
+      complete: true,
+    },
+    assistantSummary: `Summary ${run.id}`,
+  }
 }
 
 Deno.test("Fusion bundle preserves exact source provenance without merge instructions", () => {
   const artifacts = group.runs.map((run) => artifact(run))
   const bundle = buildFusionBundle(group, "build", artifacts)
-  assertEquals(bundle.files.map((file) => file.filename), ["fusion-provenance.json", "one.diff", "one-record.json", "two.diff", "two-record.json"])
+  assertEquals(bundle.files.map((file) => file.filename), [
+    "fusion-provenance.json",
+    "one.diff",
+    "one-record.json",
+    "two.diff",
+    "two-record.json",
+  ])
   assertEquals(bundle.provenanceHash.length, 64)
   assertEquals(bundle.prompt.includes("do not merge, cherry-pick, push, or publish"), true)
 })
@@ -52,7 +109,17 @@ Deno.test("Fusion continuity evidence is deterministic, byte bounded, and report
 })
 
 Deno.test("Fusion source evidence selects the newest 199 references and an explicit omission marker", () => {
-  const source = Array.from({ length: 205 }, (_, index) => ({ id: `evidence-${index}`, kind: "test" as const, label: `Test ${index}`, status: "passed" as const, observedAt: index, summary: "passed" }))
+  const source = Array.from(
+    { length: 205 },
+    (_, index) => ({
+      id: `evidence-${index}`,
+      kind: "test" as const,
+      label: `Test ${index}`,
+      status: "passed" as const,
+      observedAt: index,
+      summary: "passed",
+    }),
+  )
   const selected = boundedFusionSourceEvidence(source, "one", "session-one")
   assertEquals(selected.length, 200)
   assertEquals(selected.some((entry) => entry.id === "evidence-0"), false)

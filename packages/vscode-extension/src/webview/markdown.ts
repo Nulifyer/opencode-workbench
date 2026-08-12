@@ -8,7 +8,10 @@ export interface MarkdownRenderOptions {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[character]!)
+  return value.replace(
+    /[&<>"']/g,
+    (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!,
+  )
 }
 
 function safeHttpUrl(value: string): string | undefined {
@@ -45,7 +48,10 @@ export function renderMarkdown(source: string, options: MarkdownRenderOptions = 
   renderer.renderer.rules.fence = (tokens, index) => {
     const token = tokens[index]!
     const language = token.info.trim().split(/\s+/, 1)[0] ?? ""
-    return options.fencedCode?.(token.content, language) ?? `<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ""}>${escapeHtml(token.content)}</code></pre>\n`
+    return options.fencedCode?.(token.content, language) ??
+      `<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ""}>${
+        escapeHtml(token.content)
+      }</code></pre>\n`
   }
   renderer.renderer.rules.code_block = (tokens, index) => {
     const content = tokens[index]!.content

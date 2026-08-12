@@ -6,7 +6,9 @@ export class SessionRepository {
   private state: WorkbenchState = initialWorkbenchState
   private readonly listeners = new Set<(update: SessionRepositoryUpdate) => void>()
 
-  get snapshot(): WorkbenchState { return this.state }
+  get snapshot(): WorkbenchState {
+    return this.state
+  }
 
   subscribe(listener: (update: SessionRepositoryUpdate) => void): { dispose(): void } {
     this.listeners.add(listener)
@@ -25,5 +27,7 @@ export class SessionRepository {
     for (const listener of this.listeners) listener(update)
   }
 
-  dispose(): void { this.listeners.clear() }
+  dispose(): void {
+    this.listeners.clear()
+  }
 }

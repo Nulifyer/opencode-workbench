@@ -1,4 +1,4 @@
-import { execFile as execFileCallback, spawn, type ChildProcessByStdio } from "node:child_process"
+import { type ChildProcessByStdio, execFile as execFileCallback, spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { constants as fsConstants, promises as fs } from "node:fs"
 import path from "node:path"
@@ -51,7 +51,12 @@ export function windowsTreeKillInvocation(pid: number, force = false): Executabl
 function killWindowsTree(pid: number, force: boolean): Promise<boolean> {
   const invocation = windowsTreeKillInvocation(pid, force)
   return new Promise((resolve) => {
-    execFileCallback(invocation.command, invocation.args, { timeout: 5_000, windowsHide: true }, (error) => resolve(!error))
+    execFileCallback(
+      invocation.command,
+      invocation.args,
+      { timeout: 5_000, windowsHide: true },
+      (error) => resolve(!error),
+    )
   })
 }
 
@@ -72,7 +77,9 @@ function compareVersion(left: readonly number[], right: readonly number[]): numb
 
 export function supportedVersion(value: string): boolean {
   const version = parseVersion(value)
-  return Boolean(version && compareVersion(version, MINIMUM_VERSION) >= 0 && compareVersion(version, MAXIMUM_VERSION) < 0)
+  return Boolean(
+    version && compareVersion(version, MINIMUM_VERSION) >= 0 && compareVersion(version, MAXIMUM_VERSION) < 0,
+  )
 }
 
 export function parseListeningAddress(line: string): string | undefined {
@@ -86,13 +93,20 @@ export function managedConfigContent(existing: string | undefined, pluginUrl: st
   const errors: Array<{ error: number; offset: number; length: number }> = []
   const parsed = existing?.trim() ? parse(existing, errors, { allowTrailingComma: true, disallowComments: false }) : {}
   if (errors.length) throw new Error(`OPENCODE_CONFIG_CONTENT is invalid: ${printParseErrorCode(errors[0]!.error)}`)
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("OPENCODE_CONFIG_CONTENT must contain an object")
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("OPENCODE_CONFIG_CONTENT must contain an object")
+  }
   const config = parsed as Record<string, unknown>
-  if (config.plugin !== undefined && !Array.isArray(config.plugin)) throw new Error("OPENCODE_CONFIG_CONTENT plugin must be an array")
+  if (config.plugin !== undefined && !Array.isArray(config.plugin)) {
+    throw new Error("OPENCODE_CONFIG_CONTENT plugin must be an array")
+  }
   const plugins = (config.plugin ?? []) as unknown[]
-  const validPlugin = (value: unknown): boolean => typeof value === "string" || (Array.isArray(value) && value.length === 2 && typeof value[0] === "string" &&
-    typeof value[1] === "object" && value[1] !== null && !Array.isArray(value[1]))
-  if (!plugins.every(validPlugin)) throw new Error("OPENCODE_CONFIG_CONTENT plugin entries must be URLs or [URL, options] tuples")
+  const validPlugin = (value: unknown): boolean =>
+    typeof value === "string" || (Array.isArray(value) && value.length === 2 && typeof value[0] === "string" &&
+      typeof value[1] === "object" && value[1] !== null && !Array.isArray(value[1]))
+  if (!plugins.every(validPlugin)) {
+    throw new Error("OPENCODE_CONFIG_CONTENT plugin entries must be URLs or [URL, options] tuples")
+  }
   const matches = (value: unknown) => value === pluginUrl || (Array.isArray(value) && value[0] === pluginUrl)
   return JSON.stringify({ ...config, plugin: plugins.some(matches) ? plugins : [...plugins, pluginUrl] })
 }
@@ -132,22 +146,32 @@ function runVersion(executable: string, timeoutMilliseconds: number): Promise<st
   return new Promise((resolve, reject) => {
     let timedOut = false
     let timer: NodeJS.Timeout | undefined
-    const child = execFileCallback(invocation.command, invocation.args, { maxBuffer: 4_096, windowsHide: true, env: { ...process.env, ...invocation.env } }, (error, stdout, stderr) => {
+    const child = execFileCallback(invocation.command, invocation.args, {
+      maxBuffer: 4_096,
+      windowsHide: true,
+      env: { ...process.env, ...invocation.env },
+    }, (error, stdout, stderr) => {
       if (timer) clearTimeout(timer)
       if (timedOut) reject(new Error(`Could not run OpenCode: version check timed out after ${timeoutMilliseconds}ms`))
       else if (error) reject(new Error(`Could not run OpenCode: ${error.message}`))
       else {
         const value = `${stdout}${stderr}`.trim()
-        if (!supportedVersion(value)) reject(new Error(`Unsupported OpenCode version: ${value || "unknown"}; expected 1.18.11 or newer within major version 1`))
-        else resolve(value)
+        if (!supportedVersion(value)) {
+          reject(
+            new Error(
+              `Unsupported OpenCode version: ${value || "unknown"}; expected 1.18.11 or newer within major version 1`,
+            ),
+          )
+        } else resolve(value)
       }
     })
     timer = setTimeout(() => {
       timedOut = true
-      if (process.platform === "win32" && child.pid) void killWindowsTree(child.pid, true).finally(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill()
-      })
-      else child.kill("SIGKILL")
+      if (process.platform === "win32" && child.pid) {
+        void killWindowsTree(child.pid, true).finally(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill()
+        })
+      } else child.kill("SIGKILL")
     }, timeoutMilliseconds)
   })
 }
@@ -185,15 +209,23 @@ async function probe(connection: OpenCodeConnection, deadline: number): Promise<
   if (!configured.ok) throw new Error(`Managed OpenCode configuration check failed (${configured.status})`)
   const providers = new URL("/config/providers", connection.baseUrl)
   providers.searchParams.set("directory", connection.directory)
-  const providerResponse = await fetch(providers, { headers, signal: AbortSignal.timeout(remainingMilliseconds(deadline)) })
+  const providerResponse = await fetch(providers, {
+    headers,
+    signal: AbortSignal.timeout(remainingMilliseconds(deadline)),
+  })
   if (!providerResponse.ok) throw new Error(`Managed OpenCode provider check failed (${providerResponse.status})`)
   const providerData = await providerResponse.json().catch(() => undefined)
-  if (!providerData || typeof providerData !== "object" || !Array.isArray((providerData as { providers?: unknown }).providers)) throw new Error("Managed OpenCode returned a malformed provider catalog")
+  if (
+    !providerData || typeof providerData !== "object" ||
+    !Array.isArray((providerData as { providers?: unknown }).providers)
+  ) throw new Error("Managed OpenCode returned a malformed provider catalog")
   const active = new URL("/api/session/active", connection.baseUrl)
   const activeResponse = await fetch(active, { headers, signal: AbortSignal.timeout(remainingMilliseconds(deadline)) })
   if (!activeResponse.ok) throw new Error(`Managed OpenCode active-session check failed (${activeResponse.status})`)
   const activeData = await activeResponse.json().catch(() => undefined)
-  if (!activeData || typeof activeData !== "object" || typeof (activeData as { data?: unknown }).data !== "object") throw new Error("Managed OpenCode returned malformed active-session data")
+  if (!activeData || typeof activeData !== "object" || typeof (activeData as { data?: unknown }).data !== "object") {
+    throw new Error("Managed OpenCode returned malformed active-session data")
+  }
 }
 
 function stopped(child: ServerProcess): Promise<void> {
@@ -261,13 +293,26 @@ export class ManagedOpenCodeServer {
     this.child = child
     let settled = false
     const connection = await new Promise<OpenCodeConnection>((resolve, reject) => {
-      const timer = setTimeout(() => finish(new Error(`Managed OpenCode server did not become ready within ${startupTimeout / 1_000} seconds`)), remainingMilliseconds(deadline))
+      const timer = setTimeout(
+        () =>
+          finish(new Error(`Managed OpenCode server did not become ready within ${startupTimeout / 1_000} seconds`)),
+        remainingMilliseconds(deadline),
+      )
       const buffers = { stdout: "", stderr: "" }
-      const sensitive = [username, password, authorization(username, password), processEnvironment.OPENCODE_CONFIG_CONTENT,
-        ...Object.entries(processEnvironment).filter(([key, value]) => value && /(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)/i.test(key)).map(([, value]) => value),
-      ].filter((value): value is string => typeof value === "string" && value.length >= 4).sort((left, right) => right.length - left.length).slice(0, 200)
+      const sensitive = [
+        username,
+        password,
+        authorization(username, password),
+        processEnvironment.OPENCODE_CONFIG_CONTENT,
+        ...Object.entries(processEnvironment).filter(([key, value]) =>
+          value && /(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)/i.test(key)
+        ).map(([, value]) => value),
+      ].filter((value): value is string => typeof value === "string" && value.length >= 4).sort((left, right) =>
+        right.length - left.length
+      ).slice(0, 200)
       let loggedLines = 0
-      const redact = (value: string) => sensitive.reduce((result, secret) => result.replaceAll(secret, "[redacted]"), value)
+      const redact = (value: string) =>
+        sensitive.reduce((result, secret) => result.replaceAll(secret, "[redacted]"), value)
       const finish = (error?: Error, value?: OpenCodeConnection) => {
         if (settled) return
         settled = true
@@ -293,7 +338,11 @@ export class ManagedOpenCodeServer {
       child.stdout.on("data", (chunk: Buffer) => lines(chunk, "stdout"))
       child.stderr.on("data", (chunk: Buffer) => lines(chunk, "stderr"))
       child.once("error", (error) => finish(new Error(`Could not start managed OpenCode server: ${error.message}`)))
-      child.once("exit", (code, signal) => finish(new Error(`Managed OpenCode server exited before startup (${signal ?? code ?? "unknown"})`)))
+      child.once(
+        "exit",
+        (code, signal) =>
+          finish(new Error(`Managed OpenCode server exited before startup (${signal ?? code ?? "unknown"})`)),
+      )
     }).catch(async (error) => {
       await this.terminate(child)
       throw error
@@ -310,7 +359,9 @@ export class ManagedOpenCodeServer {
       await this.terminate(child)
       throw new Error("Managed OpenCode startup was cancelled")
     }
-    if (child.exitCode !== null || child.signalCode !== null) throw new Error("Managed OpenCode server exited during readiness checks")
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error("Managed OpenCode server exited during readiness checks")
+    }
     child.once("exit", () => this.unexpectedExit(generation))
     this.options.output?.appendLine(`Managed OpenCode server ready at ${connection.baseUrl}`)
     this.restartCount = 0
@@ -333,7 +384,10 @@ export class ManagedOpenCodeServer {
     const delay = 1_000 * 2 ** this.restartCount
     this.restartCount += 1
     this.options.output?.appendLine(`Managed OpenCode server exited; restarting in ${delay / 1_000}s`)
-    this.restartTimer = setTimeout(() => void this.startProcess(true).catch((error) => this.scheduleRestart(error)), delay)
+    this.restartTimer = setTimeout(
+      () => void this.startProcess(true).catch((error) => this.scheduleRestart(error)),
+      delay,
+    )
   }
 
   private async terminate(child: ServerProcess): Promise<void> {
@@ -349,7 +403,9 @@ export class ManagedOpenCodeServer {
         child.kill("SIGKILL")
         await Promise.race([stopped(child), new Promise((resolve) => setTimeout(resolve, 1_000))])
       }
-      if (child.exitCode === null && child.signalCode === null) throw new Error(`Could not terminate managed OpenCode process tree ${child.pid}`)
+      if (child.exitCode === null && child.signalCode === null) {
+        throw new Error(`Could not terminate managed OpenCode process tree ${child.pid}`)
+      }
       return
     }
     killUnixTree(child, "SIGTERM")
@@ -376,6 +432,10 @@ export class ManagedOpenCodeServer {
   }
 
   dispose(): void {
-    void this.stop().catch((error) => this.options.onFailure?.(`Could not stop managed OpenCode server: ${error instanceof Error ? error.message : String(error)}`))
+    void this.stop().catch((error) =>
+      this.options.onFailure?.(
+        `Could not stop managed OpenCode server: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    )
   }
 }

@@ -53,7 +53,10 @@ export function exactRunComparisonMarkdown(
 ): string {
   if (reference.groupID !== group.id) throw new Error("Run comparison export group changed")
   const artifact = artifacts.find((candidate) => candidate.id === reference.artifactID)
-  if (!artifact || artifact.kind !== "run-comparison" || artifact.lifecycle !== "active" || artifact.payload.groupID !== group.id) {
+  if (
+    !artifact || artifact.kind !== "run-comparison" || artifact.lifecycle !== "active" ||
+    artifact.payload.groupID !== group.id
+  ) {
     throw new Error("Run comparison artifact is no longer available")
   }
   if (artifact.revision !== reference.revision) throw new Error("Run comparison changed; export the refreshed matrix")
@@ -63,7 +66,12 @@ export function exactRunComparisonMarkdown(
 export class RunComparisonService {
   constructor(private readonly git: GitRunner) {}
 
-  async compare(group: RunGroup, observations: Readonly<Record<string, { evidence?: EvidenceReference[]; tokens?: number; cost?: number; verifierState?: string }>> = {}): Promise<RunComparisonRow[]> {
+  async compare(
+    group: RunGroup,
+    observations: Readonly<
+      Record<string, { evidence?: EvidenceReference[]; tokens?: number; cost?: number; verifierState?: string }>
+    > = {},
+  ): Promise<RunComparisonRow[]> {
     const rows = new Array<RunComparisonRow>(group.runs.length)
     let next = 0
     const worker = async (): Promise<void> => {
@@ -72,29 +80,44 @@ export class RunComparisonService {
         next += 1
         const run = group.runs[index]!
         const observation = observations[run.id]
-        const taskEvidence = observation?.evidence?.filter((entry) => entry.kind === "task" || entry.kind === "test") ?? []
+        const taskEvidence = observation?.evidence?.filter((entry) => entry.kind === "task" || entry.kind === "test") ??
+          []
         const diagnosticEvidence = observation?.evidence?.filter((entry) => entry.kind === "diagnostics") ?? []
-        const taskOutcomes: RunComparisonRow["taskOutcomes"] = !taskEvidence.length ? "not-recorded"
-          : taskEvidence.every((entry) => entry.status === "passed") ? "passed"
-          : taskEvidence.every((entry) => entry.status === "failed") ? "failed"
+        const taskOutcomes: RunComparisonRow["taskOutcomes"] = !taskEvidence.length
+          ? "not-recorded"
+          : taskEvidence.every((entry) => entry.status === "passed")
+          ? "passed"
+          : taskEvidence.every((entry) => entry.status === "failed")
+          ? "failed"
           : "mixed"
-        const latestDiagnostics = diagnosticEvidence.reduce<EvidenceReference | undefined>((latest, entry) =>
-          !latest || entry.observedAt >= latest.observedAt ? entry : latest, undefined)
-        const diagnostics: RunComparisonRow["diagnostics"] = !latestDiagnostics || latestDiagnostics.status === "unknown" || latestDiagnostics.status === "warning" ? "not-recorded"
-          : latestDiagnostics.status === "failed" ? "has-errors"
-          : "clean"
+        const latestDiagnostics = diagnosticEvidence.reduce<EvidenceReference | undefined>(
+          (latest, entry) => !latest || entry.observedAt >= latest.observedAt ? entry : latest,
+          undefined,
+        )
+        const diagnostics: RunComparisonRow["diagnostics"] =
+          !latestDiagnostics || latestDiagnostics.status === "unknown" || latestDiagnostics.status === "warning"
+            ? "not-recorded"
+            : latestDiagnostics.status === "failed"
+            ? "has-errors"
+            : "clean"
         let stats = { files: 0, additions: 0, deletions: 0, binary: false }
         let limitation: string | undefined
         try {
           if (run.session.sessionID !== "pending") {
-            const capture = await new DiffService(this.git).capture({ repository: run.session.directory, scope: "branch", baseRef: group.baseRef })
+            const capture = await new DiffService(this.git).capture({
+              repository: run.session.directory,
+              scope: "branch",
+              baseRef: group.baseRef,
+            })
             stats = {
               files: capture.snapshot.files.length,
               additions: capture.snapshot.files.reduce((total, file) => total + file.additions, 0),
               deletions: capture.snapshot.files.reduce((total, file) => total + file.deletions, 0),
               binary: capture.snapshot.files.some((file) => file.binary),
             }
-            if (!capture.snapshot.complete) limitation = capture.snapshot.truncationReason ?? "Diff capture is incomplete"
+            if (!capture.snapshot.complete) {
+              limitation = capture.snapshot.truncationReason ?? "Diff capture is incomplete"
+            }
           } else limitation = "Run directory was not created"
         } catch (error) {
           limitation = `Git comparison unavailable: ${userFacingError(error)}`.slice(0, 2_000)
@@ -105,7 +128,9 @@ export class RunComparisonService {
           model: run.model,
           agent: run.agent,
           variant: run.variant,
-          elapsedMilliseconds: run.startedAt === undefined ? undefined : Math.max(0, (run.completedAt ?? Date.now()) - run.startedAt),
+          elapsedMilliseconds: run.startedAt === undefined
+            ? undefined
+            : Math.max(0, (run.completedAt ?? Date.now()) - run.startedAt),
           changedFiles: stats.files,
           additions: stats.additions,
           deletions: stats.deletions,

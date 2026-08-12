@@ -35,8 +35,12 @@ export function validateDurableText(value: string, field: string, maxLength: num
   const normalized = value.trim().replace(/\r\n/g, "\n")
   if (!normalized) throw new Error(`${field} must not be empty`)
   if (normalized.length > maxLength) throw new Error(`${field} exceeds ${maxLength} characters`)
-  if (SECRET_PATTERNS.some((pattern) => pattern.test(normalized))) throw new Error(`${field} appears to contain a secret`)
-  if (INJECTION_PATTERNS.some((pattern) => pattern.test(normalized))) throw new Error(`${field} appears to contain prompt injection`)
+  if (SECRET_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    throw new Error(`${field} appears to contain a secret`)
+  }
+  if (INJECTION_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    throw new Error(`${field} appears to contain prompt injection`)
+  }
   return normalized
 }
 

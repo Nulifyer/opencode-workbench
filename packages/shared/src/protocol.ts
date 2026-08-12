@@ -1,13 +1,13 @@
 import type {
   AgentOption,
-  ContextSummary,
-  ContextAttachmentSummary,
   CommandOption,
+  ContextAttachmentSummary,
+  ContextSummary,
   DelegationProgress,
+  EditorContextSummary,
   FileChange,
   GoalMetricSummary,
   GoalSummary,
-  EditorContextSummary,
   InlineAttachment,
   MessageBundle,
   ModelOption,
@@ -15,35 +15,76 @@ import type {
   PastedTextBlock,
   PermissionRequest,
   ProviderOption,
-  QueuedPrompt,
   QuestionRequest,
-  RuntimeStatus,
+  QueuedPrompt,
   ResourceOption,
+  RuntimeStatus,
   SessionMetrics,
   SessionStatus,
   TodoItem,
 } from "./opencode.ts"
 import { sanitizeDurableMetadataText } from "./workbench-domain.ts"
-import type { AttentionItem, ContextReceipt, EvidenceReference, RunComparisonRow, RunGroup, TaskArtifactSummary, WalkthroughDocument, WorktreeJournalEntry } from "./workbench-domain.ts"
+import type {
+  AttentionItem,
+  ContextReceipt,
+  EvidenceReference,
+  RunComparisonRow,
+  RunGroup,
+  TaskArtifactSummary,
+  WalkthroughDocument,
+  WorktreeJournalEntry,
+} from "./workbench-domain.ts"
 import type { ConnectionState } from "./session-state.ts"
 import {
+  isOpenCodeMessageID,
   PERMISSION_AGGREGATE_CHARACTER_LIMIT,
   PERMISSION_METADATA_CHARACTER_LIMIT,
-  PROMPT_ATTACHMENT_COUNT_LIMIT,
+  permissionRequestCharacters,
   PROMPT_ATTACHMENT_CHARACTER_LIMIT,
+  PROMPT_ATTACHMENT_COUNT_LIMIT,
   PROMPT_QUEUE_CHARACTER_LIMIT,
   PROMPT_QUEUE_COUNT_LIMIT,
   PROMPT_TEXT_CHARACTER_LIMIT,
-  isOpenCodeMessageID,
-  permissionRequestCharacters,
 } from "./opencode.ts"
 
 export type WebviewToHostMessage =
   | { type: "ready" }
   | { type: "setDraft"; sessionID: string; draft: string }
-  | { type: "setComposerPayload"; sessionID: string; revision: number; mutationID: string; attachments: InlineAttachment[]; pastedText: PastedTextBlock[] }
-  | { type: "send"; sessionID: string; promptID?: string; composerRevision?: number; delivery?: "queue" | "steer" | "replace"; text: string; agent?: string; model?: string; variant?: string; attachments?: InlineAttachment[]; pastedText?: PastedTextBlock[]; contextIDs?: string[] }
-  | { type: "sendMultiModel"; sessionID: string; composerRevision?: number; text: string; models: string[]; concurrency: number; agent?: string; variant?: string; attachments?: InlineAttachment[]; pastedText?: PastedTextBlock[]; contextIDs?: string[] }
+  | {
+    type: "setComposerPayload"
+    sessionID: string
+    revision: number
+    mutationID: string
+    attachments: InlineAttachment[]
+    pastedText: PastedTextBlock[]
+  }
+  | {
+    type: "send"
+    sessionID: string
+    promptID?: string
+    composerRevision?: number
+    delivery?: "queue" | "steer" | "replace"
+    text: string
+    agent?: string
+    model?: string
+    variant?: string
+    attachments?: InlineAttachment[]
+    pastedText?: PastedTextBlock[]
+    contextIDs?: string[]
+  }
+  | {
+    type: "sendMultiModel"
+    sessionID: string
+    composerRevision?: number
+    text: string
+    models: string[]
+    concurrency: number
+    agent?: string
+    variant?: string
+    attachments?: InlineAttachment[]
+    pastedText?: PastedTextBlock[]
+    contextIDs?: string[]
+  }
   | { type: "abort"; sessionID: string }
   | { type: "createSession"; draft?: string; submit?: boolean }
   | { type: "planTask" }
@@ -54,29 +95,115 @@ export type WebviewToHostMessage =
   | { type: "editQueued"; sessionID: string; promptID: string }
   | { type: "reorderQueue"; sessionID: string; promptIDs: string[] }
   | { type: "sendQueuedNow"; sessionID: string; promptID: string }
-  | { type: "respondPermission"; sessionID: string; requestID: string; protocol: "legacy" | "current" | "v2"; response: "once" | "exact" | "scope" | "reject"; scope?: string; feedback?: string }
+  | {
+    type: "respondPermission"
+    sessionID: string
+    requestID: string
+    protocol: "legacy" | "current" | "v2"
+    response: "once" | "exact" | "scope" | "reject"
+    scope?: string
+    feedback?: string
+  }
   | { type: "respondQuestion"; sessionID: string; requestID: string; answers: string[][] }
   | { type: "rejectQuestion"; sessionID: string; requestID: string }
-  | { type: "openFile"; sessionID: string; file: string; line?: number; column?: number; endLine?: number; endColumn?: number }
-  | { type: "openPatch"; sessionID: string; file: string }
-  | { type: "sessionAction"; sessionID: string; action: "rename" | "delete" | "fork" | "undo" | "redo" | "retry" | "compact" | "share" | "unshare" | "export" | "copyLast" | "copyTranscript"; messageID?: string }
+  | {
+    type: "openFile"
+    sessionID: string
+    file: string
+    line?: number
+    column?: number
+    endLine?: number
+    endColumn?: number
+    messageID?: string
+    partID?: string
+  }
+  | { type: "openPatch"; sessionID: string; file: string; messageID?: string; partID?: string; requestID?: string }
+  | {
+    type: "changeReviewAction"
+    sessionID: string
+    action: "review-session" | "mark-reviewed" | "mark-all-reviewed" | "timeline"
+    file?: string
+  }
+  | {
+    type: "sessionAction"
+    sessionID: string
+    action:
+      | "rename"
+      | "delete"
+      | "fork"
+      | "undo"
+      | "redo"
+      | "retry"
+      | "compact"
+      | "share"
+      | "unshare"
+      | "export"
+      | "copyLast"
+      | "copyTranscript"
+    messageID?: string
+  }
   | { type: "sessionPresentation"; sessionID: string; action: "pin" | "unpin" | "archive" }
   | { type: "ptyAction"; id: string; action: "cancel" }
   | { type: "jobAction"; sessionID: string; action: "open" | "background" }
   | { type: "setAutoApproval"; sessionID: string; enabled: boolean }
   | { type: "goalAction"; sessionID: string; action: "edit" | "configure" | "verify" | "pause" | "resume" | "cancel" }
-  | { type: "configureGoal"; sessionID: string; expectedSettlementGeneration?: number; configuration: GoalConfigurationInput }
-  | { type: "artifactAction"; sessionID: string; artifactID: string; action: "open" | "approve" | "handoff" | "archive" | "delete" | "open-finding" | "set-finding-disposition" | "regenerate"; expectedRevision?: number; findingID?: string; disposition?: "open" | "fixed" | "dismissed" | "accepted-risk" }
+  | {
+    type: "configureGoal"
+    sessionID: string
+    expectedSettlementGeneration?: number
+    configuration: GoalConfigurationInput
+  }
+  | {
+    type: "artifactAction"
+    sessionID: string
+    artifactID: string
+    action:
+      | "open"
+      | "approve"
+      | "handoff"
+      | "archive"
+      | "delete"
+      | "open-finding"
+      | "set-finding-disposition"
+      | "regenerate"
+    expectedRevision?: number
+    findingID?: string
+    disposition?: "open" | "fixed" | "dismissed" | "accepted-risk"
+  }
   | { type: "requestRecoveryPreview"; sessionID: string; messageID?: string }
   | { type: "applyRecovery"; sessionID: string; mode: "revert" | "fork" | "redo"; messageID?: string }
   | { type: "healthAction"; action: "refresh" | "reconnect" | "logs" | "trace" | "copy" }
   | { type: "evidenceAction"; action: "capture" }
-  | { type: "workbenchAction"; sessionID: string; action: "refresh-session" | "review" | "walkthrough" | "compare-models" }
+  | {
+    type: "workbenchAction"
+    sessionID: string
+    action: "refresh-session" | "review" | "walkthrough" | "compare-models"
+  }
   | { type: "contextReceiptAction"; sessionID: string; receiptID: string; itemID: string; action: "open-source" }
-  | { type: "browserContextAction"; sessionID: string; action: "capture"; task?: string; sources?: Array<"selection" | "console" | "element" | "terminal-task" | "diagnostics" | "debug" | "url" | "screenshot">; approvedUrl?: string }
+  | {
+    type: "browserContextAction"
+    sessionID: string
+    action: "capture"
+    task?: string
+    sources?: Array<
+      "selection" | "console" | "element" | "terminal-task" | "diagnostics" | "debug" | "url" | "screenshot"
+    >
+    approvedUrl?: string
+  }
   | { type: "runAction"; groupID: string; action: "refresh" | "compare" | "fuse" }
-  | { type: "runAction"; groupID: string; action: "export-comparison"; comparisonArtifactID: string; comparisonRevision: number }
-  | { type: "runAction"; groupID: string; runID: string; action: "open" | "cancel" | "retry" | "diff" | "review" | "keep" | "discard" }
+  | {
+    type: "runAction"
+    groupID: string
+    action: "export-comparison"
+    comparisonArtifactID: string
+    comparisonRevision: number
+  }
+  | {
+    type: "runAction"
+    groupID: string
+    runID: string
+    action: "open" | "cancel" | "retry" | "diff" | "review" | "keep" | "discard"
+  }
   | { type: "walkthroughAction"; documentID: string; stopID: string }
   | { type: "openInEditor"; tab?: WorkbenchInspectorTab }
   | { type: "openInSidebar" }
@@ -98,9 +225,26 @@ export type WebviewToHostMessage =
   | { type: "attachWorkspacePath"; sessionID: string; path: string }
   | { type: "attachResource"; sessionID: string; uri: string }
   | { type: "openPlan"; sessionID: string }
-  | { type: "mcpAction"; sessionID: string; name: string; action: "connect" | "disconnect" | "authenticate" | "removeAuth" }
+  | {
+    type: "mcpAction"
+    sessionID: string
+    name: string
+    action: "connect" | "disconnect" | "authenticate" | "removeAuth"
+  }
 
-export type WorkbenchInspectorTab = "activity" | "changes" | "context" | "plan" | "goal" | "jobs" | "runs" | "lineage" | "walkthrough" | "review" | "evidence" | "health"
+export type WorkbenchInspectorTab =
+  | "activity"
+  | "changes"
+  | "context"
+  | "plan"
+  | "goal"
+  | "jobs"
+  | "runs"
+  | "lineage"
+  | "walkthrough"
+  | "review"
+  | "evidence"
+  | "health"
 
 export interface GoalConfigurationInput {
   objective: string
@@ -108,7 +252,13 @@ export interface GoalConfigurationInput {
   tokenBudget: number | null
   maxAutoTurns: number | null
   maxDurationSeconds: number | null
-  verifier: { enabled: boolean; model: string | null; agent: string | null; timeoutMilliseconds: number; repeatedBlockThreshold: number }
+  verifier: {
+    enabled: boolean
+    model: string | null
+    agent: string | null
+    timeoutMilliseconds: number
+    repeatedBlockThreshold: number
+  }
 }
 
 export interface WorkbenchHealthSummary {
@@ -207,6 +357,8 @@ export interface ChatSnapshot {
   connected: boolean
   connectionState: ConnectionState
   connectionError?: string
+  /** Current VS Code workspace root used only for local presentation scoping. */
+  workspaceDirectory?: string
   sessions: Array<{
     id: string
     title: string
@@ -375,7 +527,15 @@ export type HostToWebviewMessage =
   | { type: "fileSuggestions"; sessionID: string; requestID: number; files: string[] }
   | { type: "editorContextChanged"; context?: EditorContextSummary }
   | { type: "contextAttachmentsChanged"; sessionID: string; attachments: ContextAttachmentSummary[] }
-  | { type: "composerPayloadChanged"; sessionID: string; revision: number; attachments: InlineAttachment[]; pastedText: PastedTextBlock[]; conflict?: boolean; mutationID?: string }
+  | {
+    type: "composerPayloadChanged"
+    sessionID: string
+    revision: number
+    attachments: InlineAttachment[]
+    pastedText: PastedTextBlock[]
+    conflict?: boolean
+    mutationID?: string
+  }
   | { type: "draftChanged"; sessionID: string; draft: string; revision: number }
   | { type: "sessionRemoved"; sessionID: string }
   | { type: "navigateWorkbench"; tab: WorkbenchInspectorTab; itemID?: string; focus?: boolean }
@@ -413,24 +573,53 @@ function validPromptID(value: unknown): value is string {
 }
 
 const inlineMimes = new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp", "application/pdf"])
-const WORKBENCH_INSPECTOR_TABS = new Set<string>(["activity", "changes", "context", "plan", "goal", "jobs", "runs", "lineage", "walkthrough", "review", "evidence", "health"] satisfies WorkbenchInspectorTab[])
+const WORKBENCH_INSPECTOR_TABS = new Set<string>(
+  [
+    "activity",
+    "changes",
+    "context",
+    "plan",
+    "goal",
+    "jobs",
+    "runs",
+    "lineage",
+    "walkthrough",
+    "review",
+    "evidence",
+    "health",
+  ] satisfies WorkbenchInspectorTab[],
+)
 
 function validGoalLimit(value: unknown): value is number | null {
   return value === null || (Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 1_000_000_000)
 }
 
 function validGoalConfiguration(value: unknown): value is GoalConfigurationInput {
-  if (!record(value) || !exactKeys(value, ["objective", "acceptanceCriteria", "tokenBudget", "maxAutoTurns", "maxDurationSeconds", "verifier"]) ||
+  if (
+    !record(value) ||
+    !exactKeys(value, [
+      "objective",
+      "acceptanceCriteria",
+      "tokenBudget",
+      "maxAutoTurns",
+      "maxDurationSeconds",
+      "verifier",
+    ]) ||
     !boundedString(value.objective, 4_000) || !value.objective.trim() ||
-    !Array.isArray(value.acceptanceCriteria) || value.acceptanceCriteria.length < 1 || value.acceptanceCriteria.length > 100 ||
+    !Array.isArray(value.acceptanceCriteria) || value.acceptanceCriteria.length < 1 ||
+    value.acceptanceCriteria.length > 100 ||
     !value.acceptanceCriteria.every((criterion) => boundedString(criterion, 2_000) && criterion.trim().length > 0) ||
     !validGoalLimit(value.tokenBudget) || !validGoalLimit(value.maxAutoTurns) ||
     !validGoalLimit(value.maxDurationSeconds) || !record(value.verifier) ||
-    !exactKeys(value.verifier, ["enabled", "model", "agent", "timeoutMilliseconds", "repeatedBlockThreshold"])) return false
-  return typeof value.verifier.enabled === "boolean" && (value.verifier.model === null || boundedString(value.verifier.model)) &&
-    (value.verifier.agent === null || boundedString(value.verifier.agent)) && Number.isSafeInteger(value.verifier.timeoutMilliseconds) &&
+    !exactKeys(value.verifier, ["enabled", "model", "agent", "timeoutMilliseconds", "repeatedBlockThreshold"])
+  ) return false
+  return typeof value.verifier.enabled === "boolean" &&
+    (value.verifier.model === null || boundedString(value.verifier.model)) &&
+    (value.verifier.agent === null || boundedString(value.verifier.agent)) &&
+    Number.isSafeInteger(value.verifier.timeoutMilliseconds) &&
     Number(value.verifier.timeoutMilliseconds) >= 1_000 && Number(value.verifier.timeoutMilliseconds) <= 300_000 &&
-    Number.isSafeInteger(value.verifier.repeatedBlockThreshold) && Number(value.verifier.repeatedBlockThreshold) >= 1 && Number(value.verifier.repeatedBlockThreshold) <= 10
+    Number.isSafeInteger(value.verifier.repeatedBlockThreshold) && Number(value.verifier.repeatedBlockThreshold) >= 1 &&
+    Number(value.verifier.repeatedBlockThreshold) <= 10
 }
 
 function validInlineAttachments(value: unknown, optional = true): value is InlineAttachment[] | undefined {
@@ -440,16 +629,27 @@ function validInlineAttachments(value: unknown, optional = true): value is Inlin
   const labels = new Set<string>()
   let characters = 0
   return value.every((attachment) => {
-    if (!record(attachment) || !exactKeys(attachment, ["id", "label", "name", "mime", "data", "size", "width", "height"]) || !validID(attachment.id) || ids.has(attachment.id) ||
-      !boundedString(attachment.label, 100) || !/^\[(?:Image|PDF) \d+\]$/.test(attachment.label) || labels.has(attachment.label) || !boundedString(attachment.name, 255) || !attachment.name ||
+    if (
+      !record(attachment) ||
+      !exactKeys(attachment, ["id", "label", "name", "mime", "data", "size", "width", "height"]) ||
+      !validID(attachment.id) || ids.has(attachment.id) ||
+      !boundedString(attachment.label, 100) || !/^\[(?:Image|PDF) \d+\]$/.test(attachment.label) ||
+      labels.has(attachment.label) || !boundedString(attachment.name, 255) || !attachment.name ||
       typeof attachment.mime !== "string" || !inlineMimes.has(attachment.mime) || typeof attachment.data !== "string" ||
-      attachment.data.length > (attachment.mime === "application/pdf" ? 14_000_000 : 5_242_880) || attachment.data.length % 4 !== 0 ||
-      !/^[A-Za-z0-9+/]*={0,2}$/.test(attachment.data) || !Number.isSafeInteger(attachment.size) || Number(attachment.size) < 0 ||
+      attachment.data.length > (attachment.mime === "application/pdf" ? 14_000_000 : 5_242_880) ||
+      attachment.data.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(attachment.data) || !Number.isSafeInteger(attachment.size) ||
+      Number(attachment.size) < 0 ||
       Number(attachment.size) > (attachment.mime === "application/pdf" ? 10_000_000 : 3_900_000) ||
-      ![attachment.width, attachment.height].every((dimension) => dimension === undefined || (Number.isSafeInteger(dimension) && Number(dimension) > 0 && Number(dimension) <= 100_000))) return false
+      ![attachment.width, attachment.height].every((dimension) =>
+        dimension === undefined ||
+        (Number.isSafeInteger(dimension) && Number(dimension) > 0 && Number(dimension) <= 100_000)
+      )
+    ) return false
     ids.add(attachment.id)
     labels.add(attachment.label)
-    characters += attachment.id.length + attachment.label.length + attachment.name.length + attachment.mime.length + attachment.data.length
+    characters += attachment.id.length + attachment.label.length + attachment.name.length + attachment.mime.length +
+      attachment.data.length
     return characters <= PROMPT_ATTACHMENT_CHARACTER_LIMIT
   })
 }
@@ -460,9 +660,14 @@ function validPastedText(value: unknown): value is PastedTextBlock[] {
   const labels = new Set<string>()
   let characters = 0
   return value.every((block) => {
-    if (!record(block) || !exactKeys(block, ["id", "label", "text", "lineCount"]) || !validID(block.id) || ids.has(block.id) ||
-      !boundedString(block.label, 100) || !/^\[Pasted text \d+ · ~\d+ lines\]$/.test(block.label) || labels.has(block.label) ||
-      !boundedString(block.text, PROMPT_TEXT_CHARACTER_LIMIT) || !Number.isSafeInteger(block.lineCount) || Number(block.lineCount) < 1 || Number(block.lineCount) > PROMPT_TEXT_CHARACTER_LIMIT) return false
+    if (
+      !record(block) || !exactKeys(block, ["id", "label", "text", "lineCount"]) || !validID(block.id) ||
+      ids.has(block.id) ||
+      !boundedString(block.label, 100) || !/^\[Pasted text \d+ · ~\d+ lines\]$/.test(block.label) ||
+      labels.has(block.label) ||
+      !boundedString(block.text, PROMPT_TEXT_CHARACTER_LIMIT) || !Number.isSafeInteger(block.lineCount) ||
+      Number(block.lineCount) < 1 || Number(block.lineCount) > PROMPT_TEXT_CHARACTER_LIMIT
+    ) return false
     ids.add(block.id)
     labels.add(block.label)
     characters += block.id.length + block.label.length + block.text.length
@@ -478,20 +683,24 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         ? { type: "abort", sessionID: value.sessionID }
         : undefined
     case "createSession":
-      return exactKeys(value, ["type", "draft", "submit"]) && boundedOptionalString(value.draft, PROMPT_TEXT_CHARACTER_LIMIT) &&
-          (value.submit === undefined || typeof value.submit === "boolean") && (!value.submit || Boolean(value.draft?.trim()))
+      return exactKeys(value, ["type", "draft", "submit"]) &&
+          boundedOptionalString(value.draft, PROMPT_TEXT_CHARACTER_LIMIT) &&
+          (value.submit === undefined || typeof value.submit === "boolean") &&
+          (!value.submit || Boolean(value.draft?.trim()))
         ? { type: "createSession", draft: value.draft, submit: value.submit }
         : undefined
     case "planTask":
       return exactKeys(value, ["type"]) ? { type: "planTask" } : undefined
     case "loadOlderHistory":
-      return exactKeys(value, ["type", "sessionID", "beforeMessageID"]) && validID(value.sessionID) && validID(value.beforeMessageID)
+      return exactKeys(value, ["type", "sessionID", "beforeMessageID"]) && validID(value.sessionID) &&
+          validID(value.beforeMessageID)
         ? { type: "loadOlderHistory", sessionID: value.sessionID, beforeMessageID: value.beforeMessageID }
         : undefined
     case "ready":
       return { type: "ready" }
     case "openInEditor":
-      return exactKeys(value, ["type", "tab"]) && (value.tab === undefined || WORKBENCH_INSPECTOR_TABS.has(String(value.tab)))
+      return exactKeys(value, ["type", "tab"]) &&
+          (value.tab === undefined || WORKBENCH_INSPECTOR_TABS.has(String(value.tab)))
         ? { type: "openInEditor", tab: value.tab as WorkbenchInspectorTab | undefined }
         : undefined
     case "openInSidebar":
@@ -511,75 +720,166 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
     case "reloadWindow":
       return exactKeys(value, ["type"]) ? { type: "reloadWindow" } : undefined
     case "setDraft":
-      return boundedString(value.sessionID) && value.sessionID.length > 0 && typeof value.draft === "string" && value.draft.length <= PROMPT_TEXT_CHARACTER_LIMIT
+      return boundedString(value.sessionID) && value.sessionID.length > 0 && typeof value.draft === "string" &&
+          value.draft.length <= PROMPT_TEXT_CHARACTER_LIMIT
         ? { type: "setDraft", sessionID: value.sessionID, draft: value.draft }
         : undefined
     case "setComposerPayload":
-      return exactKeys(value, ["type", "sessionID", "revision", "mutationID", "attachments", "pastedText"]) && validID(value.sessionID) && Number.isSafeInteger(value.revision) && Number(value.revision) >= 0 &&
-          typeof value.mutationID === "string" && /^cmp_[a-f0-9]{32}$/.test(value.mutationID) && validInlineAttachments(value.attachments, false) && validPastedText(value.pastedText) &&
-          (Array.isArray(value.attachments) ? value.attachments.length : 0) + (Array.isArray(value.pastedText) ? value.pastedText.length : 0) <= PROMPT_ATTACHMENT_COUNT_LIMIT
+      return exactKeys(value, ["type", "sessionID", "revision", "mutationID", "attachments", "pastedText"]) &&
+          validID(value.sessionID) && Number.isSafeInteger(value.revision) && Number(value.revision) >= 0 &&
+          typeof value.mutationID === "string" && /^cmp_[a-f0-9]{32}$/.test(value.mutationID) &&
+          validInlineAttachments(value.attachments, false) && validPastedText(value.pastedText) &&
+          (Array.isArray(value.attachments) ? value.attachments.length : 0) +
+                (Array.isArray(value.pastedText) ? value.pastedText.length : 0) <= PROMPT_ATTACHMENT_COUNT_LIMIT
         ? value as unknown as WebviewToHostMessage
         : undefined
     case "send":
-      return exactKeys(value, ["type", "sessionID", "promptID", "composerRevision", "delivery", "text", "agent", "model", "variant", "attachments", "pastedText", "contextIDs"]) && boundedString(value.sessionID) && value.sessionID.length > 0 &&
+      return exactKeys(value, [
+          "type",
+          "sessionID",
+          "promptID",
+          "composerRevision",
+          "delivery",
+          "text",
+          "agent",
+          "model",
+          "variant",
+          "attachments",
+          "pastedText",
+          "contextIDs",
+        ]) &&
+          boundedString(value.sessionID) && value.sessionID.length > 0 &&
           (value.promptID === undefined || validPromptID(value.promptID)) &&
-          (value.composerRevision === undefined || (Number.isSafeInteger(value.composerRevision) && Number(value.composerRevision) >= 0)) &&
-          (value.delivery === undefined || value.delivery === "queue" || value.delivery === "steer" || value.delivery === "replace") &&
-          typeof value.text === "string" && value.text.length <= PROMPT_TEXT_CHARACTER_LIMIT && (value.text.trim().length > 0 || (Array.isArray(value.attachments) && value.attachments.length > 0) || (Array.isArray(value.pastedText) && value.pastedText.length > 0) || (Array.isArray(value.contextIDs) && value.contextIDs.length > 0)) &&
-          boundedOptionalString(value.agent) && boundedOptionalString(value.model) && boundedOptionalString(value.variant) && validInlineAttachments(value.attachments) && (value.pastedText === undefined || validPastedText(value.pastedText)) &&
+          (value.composerRevision === undefined ||
+            (Number.isSafeInteger(value.composerRevision) && Number(value.composerRevision) >= 0)) &&
+          (value.delivery === undefined || value.delivery === "queue" || value.delivery === "steer" ||
+            value.delivery === "replace") &&
+          typeof value.text === "string" && value.text.length <= PROMPT_TEXT_CHARACTER_LIMIT &&
+          (value.text.trim().length > 0 || (Array.isArray(value.attachments) && value.attachments.length > 0) ||
+            (Array.isArray(value.pastedText) && value.pastedText.length > 0) ||
+            (Array.isArray(value.contextIDs) && value.contextIDs.length > 0)) &&
+          boundedOptionalString(value.agent) && boundedOptionalString(value.model) &&
+          boundedOptionalString(value.variant) && validInlineAttachments(value.attachments) &&
+          (value.pastedText === undefined || validPastedText(value.pastedText)) &&
           (value.attachments?.length ?? 0) + (value.pastedText?.length ?? 0) <= PROMPT_ATTACHMENT_COUNT_LIMIT &&
-          (value.contextIDs === undefined || (Array.isArray(value.contextIDs) && value.contextIDs.length <= 20 && value.contextIDs.every(validID) && new Set(value.contextIDs).size === value.contextIDs.length))
-        ? { type: "send", sessionID: value.sessionID, promptID: value.promptID, composerRevision: value.composerRevision as number | undefined, delivery: value.delivery as "queue" | "steer" | "replace" | undefined, text: value.text, agent: value.agent, model: value.model, variant: value.variant, attachments: value.attachments, pastedText: value.pastedText as PastedTextBlock[] | undefined, contextIDs: value.contextIDs as string[] | undefined }
+          (value.contextIDs === undefined ||
+            (Array.isArray(value.contextIDs) && value.contextIDs.length <= 20 && value.contextIDs.every(validID) &&
+              new Set(value.contextIDs).size === value.contextIDs.length))
+        ? {
+          type: "send",
+          sessionID: value.sessionID,
+          promptID: value.promptID,
+          composerRevision: value.composerRevision as number | undefined,
+          delivery: value.delivery as "queue" | "steer" | "replace" | undefined,
+          text: value.text,
+          agent: value.agent,
+          model: value.model,
+          variant: value.variant,
+          attachments: value.attachments,
+          pastedText: value.pastedText as PastedTextBlock[] | undefined,
+          contextIDs: value.contextIDs as string[] | undefined,
+        }
         : undefined
     case "sendMultiModel":
-      return exactKeys(value, ["type", "sessionID", "composerRevision", "text", "models", "concurrency", "agent", "variant", "attachments", "pastedText", "contextIDs"]) && boundedString(value.sessionID) && value.sessionID.length > 0 &&
-          (value.composerRevision === undefined || (Number.isSafeInteger(value.composerRevision) && Number(value.composerRevision) >= 0)) &&
-          typeof value.text === "string" && value.text.length <= PROMPT_TEXT_CHARACTER_LIMIT && value.text.trim().length > 0 &&
-          Array.isArray(value.models) && value.models.length >= 2 && value.models.length <= 100 && value.models.every(validID) && new Set(value.models).size === value.models.length &&
-          Number.isSafeInteger(value.concurrency) && Number(value.concurrency) >= 1 && Number(value.concurrency) <= 20 && Number(value.concurrency) <= value.models.length &&
-          boundedOptionalString(value.agent) && boundedOptionalString(value.variant) && validInlineAttachments(value.attachments) && (value.pastedText === undefined || validPastedText(value.pastedText)) &&
+      return exactKeys(value, [
+          "type",
+          "sessionID",
+          "composerRevision",
+          "text",
+          "models",
+          "concurrency",
+          "agent",
+          "variant",
+          "attachments",
+          "pastedText",
+          "contextIDs",
+        ]) &&
+          boundedString(value.sessionID) && value.sessionID.length > 0 &&
+          (value.composerRevision === undefined ||
+            (Number.isSafeInteger(value.composerRevision) && Number(value.composerRevision) >= 0)) &&
+          typeof value.text === "string" && value.text.length <= PROMPT_TEXT_CHARACTER_LIMIT &&
+          value.text.trim().length > 0 &&
+          Array.isArray(value.models) && value.models.length >= 2 && value.models.length <= 100 &&
+          value.models.every(validID) && new Set(value.models).size === value.models.length &&
+          Number.isSafeInteger(value.concurrency) && Number(value.concurrency) >= 1 &&
+          Number(value.concurrency) <= 20 && Number(value.concurrency) <= value.models.length &&
+          boundedOptionalString(value.agent) && boundedOptionalString(value.variant) &&
+          validInlineAttachments(value.attachments) &&
+          (value.pastedText === undefined || validPastedText(value.pastedText)) &&
           (value.attachments?.length ?? 0) + (value.pastedText?.length ?? 0) <= PROMPT_ATTACHMENT_COUNT_LIMIT &&
-          (value.contextIDs === undefined || (Array.isArray(value.contextIDs) && value.contextIDs.length <= 20 && value.contextIDs.every(validID) && new Set(value.contextIDs).size === value.contextIDs.length))
-        ? { type: "sendMultiModel", sessionID: value.sessionID, composerRevision: value.composerRevision as number | undefined, text: value.text, models: value.models as string[], concurrency: Number(value.concurrency), agent: value.agent, variant: value.variant, attachments: value.attachments, pastedText: value.pastedText as PastedTextBlock[] | undefined, contextIDs: value.contextIDs as string[] | undefined }
+          (value.contextIDs === undefined ||
+            (Array.isArray(value.contextIDs) && value.contextIDs.length <= 20 && value.contextIDs.every(validID) &&
+              new Set(value.contextIDs).size === value.contextIDs.length))
+        ? {
+          type: "sendMultiModel",
+          sessionID: value.sessionID,
+          composerRevision: value.composerRevision as number | undefined,
+          text: value.text,
+          models: value.models as string[],
+          concurrency: Number(value.concurrency),
+          agent: value.agent,
+          variant: value.variant,
+          attachments: value.attachments,
+          pastedText: value.pastedText as PastedTextBlock[] | undefined,
+          contextIDs: value.contextIDs as string[] | undefined,
+        }
         : undefined
     case "pickFiles":
     case "attachCurrentEditor":
-      return exactKeys(value, ["type", "sessionID"]) && validID(value.sessionID) ? { type: value.type, sessionID: value.sessionID } : undefined
+      return exactKeys(value, ["type", "sessionID"]) && validID(value.sessionID)
+        ? { type: value.type, sessionID: value.sessionID }
+        : undefined
     case "resolveDroppedUris":
-      return exactKeys(value, ["type", "sessionID", "uris"]) && validID(value.sessionID) && Array.isArray(value.uris) && value.uris.length <= 10 && value.uris.every((uri) => boundedString(uri, 8_192))
+      return exactKeys(value, ["type", "sessionID", "uris"]) && validID(value.sessionID) && Array.isArray(value.uris) &&
+          value.uris.length <= 10 && value.uris.every((uri) => boundedString(uri, 8_192))
         ? { type: "resolveDroppedUris", sessionID: value.sessionID, uris: value.uris }
         : undefined
     case "searchFiles":
-      return exactKeys(value, ["type", "sessionID", "requestID", "query"]) && validID(value.sessionID) && Number.isSafeInteger(value.requestID) && Number(value.requestID) >= 0 &&
+      return exactKeys(value, ["type", "sessionID", "requestID", "query"]) && validID(value.sessionID) &&
+          Number.isSafeInteger(value.requestID) && Number(value.requestID) >= 0 &&
           boundedString(value.query, 100) && /^[A-Za-z0-9._~/-]*$/.test(value.query)
         ? { type: "searchFiles", sessionID: value.sessionID, requestID: Number(value.requestID), query: value.query }
         : undefined
     case "removeContextAttachment":
-      return exactKeys(value, ["type", "sessionID", "attachmentID"]) && validID(value.sessionID) && validID(value.attachmentID)
+      return exactKeys(value, ["type", "sessionID", "attachmentID"]) && validID(value.sessionID) &&
+          validID(value.attachmentID)
         ? { type: "removeContextAttachment", sessionID: value.sessionID, attachmentID: value.attachmentID }
         : undefined
     case "openContextAttachment":
-      return exactKeys(value, ["type", "sessionID", "attachmentID"]) && validID(value.sessionID) && validID(value.attachmentID)
+      return exactKeys(value, ["type", "sessionID", "attachmentID"]) && validID(value.sessionID) &&
+          validID(value.attachmentID)
         ? { type: "openContextAttachment", sessionID: value.sessionID, attachmentID: value.attachmentID }
         : undefined
     case "attachWorkspacePath":
-      return exactKeys(value, ["type", "sessionID", "path"]) && validID(value.sessionID) && boundedString(value.path, 8_192) && value.path.length > 0
+      return exactKeys(value, ["type", "sessionID", "path"]) && validID(value.sessionID) &&
+          boundedString(value.path, 8_192) && value.path.length > 0
         ? { type: "attachWorkspacePath", sessionID: value.sessionID, path: value.path }
         : undefined
     case "attachResource":
-      return exactKeys(value, ["type", "sessionID", "uri"]) && validID(value.sessionID) && boundedString(value.uri, 8_192) && value.uri.length > 0
+      return exactKeys(value, ["type", "sessionID", "uri"]) && validID(value.sessionID) &&
+          boundedString(value.uri, 8_192) && value.uri.length > 0
         ? { type: "attachResource", sessionID: value.sessionID, uri: value.uri }
         : undefined
     case "openPlan":
-      return exactKeys(value, ["type", "sessionID"]) && validID(value.sessionID) ? { type: "openPlan", sessionID: value.sessionID } : undefined
+      return exactKeys(value, ["type", "sessionID"]) && validID(value.sessionID)
+        ? { type: "openPlan", sessionID: value.sessionID }
+        : undefined
     case "mcpAction":
-      return exactKeys(value, ["type", "sessionID", "name", "action"]) && validID(value.sessionID) && boundedString(value.name, 1_024) && value.name.length > 0 &&
+      return exactKeys(value, ["type", "sessionID", "name", "action"]) && validID(value.sessionID) &&
+          boundedString(value.name, 1_024) && value.name.length > 0 &&
           ["connect", "disconnect", "authenticate", "removeAuth"].includes(String(value.action))
         ? value as unknown as WebviewToHostMessage
         : undefined
     case "setPreference":
-      return boundedString(value.sessionID) && value.sessionID.length > 0 && boundedOptionalString(value.agent) && boundedOptionalString(value.model) && boundedOptionalString(value.variant)
-        ? { type: "setPreference", sessionID: value.sessionID, agent: value.agent, model: value.model, variant: value.variant }
+      return boundedString(value.sessionID) && value.sessionID.length > 0 && boundedOptionalString(value.agent) &&
+          boundedOptionalString(value.model) && boundedOptionalString(value.variant)
+        ? {
+          type: "setPreference",
+          sessionID: value.sessionID,
+          agent: value.agent,
+          model: value.model,
+          variant: value.variant,
+        }
         : undefined
     case "removeQueued":
     case "editQueued":
@@ -594,43 +894,143 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         ? { type: "reorderQueue", sessionID: value.sessionID, promptIDs: value.promptIDs }
         : undefined
     case "respondPermission":
-      return exactKeys(value, ["type", "sessionID", "requestID", "protocol", "response", "scope", "feedback"]) && validID(value.sessionID) && validID(value.requestID) &&
+      return exactKeys(value, ["type", "sessionID", "requestID", "protocol", "response", "scope", "feedback"]) &&
+          validID(value.sessionID) && validID(value.requestID) &&
           ["legacy", "current", "v2"].includes(String(value.protocol)) &&
-          (value.response === "once" || value.response === "exact" || value.response === "scope" || value.response === "reject") && boundedOptionalString(value.scope, 2_000) && boundedOptionalString(value.feedback, 20_000) &&
-          (value.response === "scope" ? typeof value.scope === "string" && value.scope.length > 0 : value.scope === undefined) && (value.feedback === undefined || value.response === "reject")
-        ? { type: "respondPermission", sessionID: value.sessionID, requestID: value.requestID, protocol: value.protocol as "legacy" | "current" | "v2", response: value.response, scope: value.scope, feedback: value.feedback }
+          (value.response === "once" || value.response === "exact" || value.response === "scope" ||
+            value.response === "reject") &&
+          boundedOptionalString(value.scope, 2_000) && boundedOptionalString(value.feedback, 20_000) &&
+          (value.response === "scope"
+            ? typeof value.scope === "string" && value.scope.length > 0
+            : value.scope === undefined) &&
+          (value.feedback === undefined || value.response === "reject")
+        ? {
+          type: "respondPermission",
+          sessionID: value.sessionID,
+          requestID: value.requestID,
+          protocol: value.protocol as "legacy" | "current" | "v2",
+          response: value.response,
+          scope: value.scope,
+          feedback: value.feedback,
+        }
         : undefined
     case "respondQuestion":
-      return exactKeys(value, ["type", "sessionID", "requestID", "answers"]) && validID(value.sessionID) && validID(value.requestID) &&
-          Array.isArray(value.answers) && value.answers.length <= 20 && value.answers.every((answer) =>
+      return exactKeys(value, ["type", "sessionID", "requestID", "answers"]) && validID(value.sessionID) &&
+          validID(value.requestID) &&
+          Array.isArray(value.answers) && value.answers.length <= 20 &&
+          value.answers.every((answer) =>
             Array.isArray(answer) && answer.length <= 20 && answer.every((item) => boundedString(item, 20_000))
           )
         ? { type: "respondQuestion", sessionID: value.sessionID, requestID: value.requestID, answers: value.answers }
         : undefined
     case "rejectQuestion":
-      return exactKeys(value, ["type", "sessionID", "requestID"]) && validID(value.sessionID) && validID(value.requestID)
+      return exactKeys(value, ["type", "sessionID", "requestID"]) && validID(value.sessionID) &&
+          validID(value.requestID)
         ? { type: "rejectQuestion", sessionID: value.sessionID, requestID: value.requestID }
         : undefined
     case "openFile":
-      return exactKeys(value, ["type", "sessionID", "file", "line", "column", "endLine", "endColumn"]) && validID(value.sessionID) && boundedString(value.file, 8_192) && value.file.length > 0 &&
-          (value.line === undefined || (Number.isSafeInteger(value.line) && Number(value.line) >= 1 && Number(value.line) <= 1_000_000_000)) &&
-          (value.column === undefined || (Number.isSafeInteger(value.column) && Number(value.column) >= 1 && Number(value.column) <= 1_000_000_000)) &&
-          (value.endLine === undefined || (Number.isSafeInteger(value.endLine) && Number(value.endLine) >= Number(value.line ?? 1) && Number(value.endLine) <= 1_000_000_000)) &&
-          (value.endColumn === undefined || (value.endLine !== undefined && Number.isSafeInteger(value.endColumn) && Number(value.endColumn) >= 1 && Number(value.endColumn) <= 1_000_000_000))
-        ? { type: "openFile", sessionID: value.sessionID, file: value.file, line: value.line as number | undefined, column: value.column as number | undefined, endLine: value.endLine as number | undefined, endColumn: value.endColumn as number | undefined }
+      return exactKeys(value, [
+          "type",
+          "sessionID",
+          "file",
+          "line",
+          "column",
+          "endLine",
+          "endColumn",
+          "messageID",
+          "partID",
+        ]) &&
+          validID(value.sessionID) && boundedString(value.file, 8_192) && value.file.length > 0 &&
+          (value.line === undefined ||
+            (Number.isSafeInteger(value.line) && Number(value.line) >= 1 && Number(value.line) <= 1_000_000_000)) &&
+          (value.column === undefined ||
+            (Number.isSafeInteger(value.column) && Number(value.column) >= 1 &&
+              Number(value.column) <= 1_000_000_000)) &&
+          (value.endLine === undefined ||
+            (Number.isSafeInteger(value.endLine) && Number(value.endLine) >= Number(value.line ?? 1) &&
+              Number(value.endLine) <= 1_000_000_000)) &&
+          (value.endColumn === undefined ||
+            (value.endLine !== undefined && Number.isSafeInteger(value.endColumn) && Number(value.endColumn) >= 1 &&
+              Number(value.endColumn) <= 1_000_000_000)) &&
+          boundedOptionalString(value.messageID) && boundedOptionalString(value.partID) &&
+          ((value.messageID === undefined && value.partID === undefined) ||
+            (value.messageID !== undefined && value.partID !== undefined))
+        ? {
+          type: "openFile",
+          sessionID: value.sessionID,
+          file: value.file,
+          line: value.line as number | undefined,
+          column: value.column as number | undefined,
+          endLine: value.endLine as number | undefined,
+          endColumn: value.endColumn as number | undefined,
+          messageID: value.messageID,
+          partID: value.partID,
+        }
         : undefined
     case "openPatch":
-      return exactKeys(value, ["type", "sessionID", "file"]) && validID(value.sessionID) && boundedString(value.file, 8_192) && value.file.length > 0
-        ? { type: "openPatch", sessionID: value.sessionID, file: value.file }
+      return exactKeys(value, ["type", "sessionID", "file", "messageID", "partID", "requestID"]) &&
+          validID(value.sessionID) && boundedString(value.file, 8_192) && value.file.length > 0 &&
+          boundedOptionalString(value.messageID) && boundedOptionalString(value.partID) &&
+          boundedOptionalString(value.requestID) &&
+          ((value.messageID === undefined && value.partID === undefined) ||
+            (value.messageID !== undefined && value.partID !== undefined)) &&
+          !(value.requestID !== undefined && value.messageID !== undefined)
+        ? {
+          type: "openPatch",
+          sessionID: value.sessionID,
+          file: value.file,
+          messageID: value.messageID,
+          partID: value.partID,
+          requestID: value.requestID,
+        }
+        : undefined
+    case "changeReviewAction":
+      return exactKeys(value, ["type", "sessionID", "action", "file"]) && validID(value.sessionID) &&
+          ["review-session", "mark-reviewed", "mark-all-reviewed", "timeline"].includes(String(value.action)) &&
+          boundedOptionalString(value.file) &&
+          (["mark-reviewed", "timeline"].includes(String(value.action))
+            ? typeof value.file === "string" && value.file.length > 0
+            : value.file === undefined)
+        ? {
+          type: "changeReviewAction",
+          sessionID: value.sessionID,
+          action: value.action as Extract<WebviewToHostMessage, { type: "changeReviewAction" }>["action"],
+          file: value.file,
+        }
         : undefined
     case "sessionAction":
-      return exactKeys(value, ["type", "sessionID", "action", "messageID"]) && validID(value.sessionID) && boundedOptionalString(value.messageID) &&
-          (value.messageID === undefined || value.action === "fork" || value.action === "retry") && ["rename", "delete", "fork", "undo", "redo", "retry", "compact", "share", "unshare", "export", "copyLast", "copyTranscript"].includes(String(value.action))
-        ? { type: "sessionAction", sessionID: value.sessionID, action: value.action as Extract<WebviewToHostMessage, { type: "sessionAction" }>["action"], messageID: value.messageID }
+      return exactKeys(value, ["type", "sessionID", "action", "messageID"]) && validID(value.sessionID) &&
+          boundedOptionalString(value.messageID) &&
+          (value.messageID === undefined || value.action === "fork" || value.action === "retry") &&
+          [
+            "rename",
+            "delete",
+            "fork",
+            "undo",
+            "redo",
+            "retry",
+            "compact",
+            "share",
+            "unshare",
+            "export",
+            "copyLast",
+            "copyTranscript",
+          ].includes(String(value.action))
+        ? {
+          type: "sessionAction",
+          sessionID: value.sessionID,
+          action: value.action as Extract<WebviewToHostMessage, { type: "sessionAction" }>["action"],
+          messageID: value.messageID,
+        }
         : undefined
     case "sessionPresentation":
-      return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) && ["pin", "unpin", "archive"].includes(String(value.action))
-        ? { type: "sessionPresentation", sessionID: value.sessionID, action: value.action as "pin" | "unpin" | "archive" }
+      return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) &&
+          ["pin", "unpin", "archive"].includes(String(value.action))
+        ? {
+          type: "sessionPresentation",
+          sessionID: value.sessionID,
+          action: value.action as "pin" | "unpin" | "archive",
+        }
         : undefined
     case "ptyAction":
       return exactKeys(value, ["type", "id", "action"]) && validID(value.id) &&
@@ -638,68 +1038,154 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         ? { type: "ptyAction", id: value.id, action: "cancel" }
         : undefined
     case "jobAction":
-      return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) && ["open", "background"].includes(String(value.action))
+      return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) &&
+          ["open", "background"].includes(String(value.action))
         ? { type: "jobAction", sessionID: value.sessionID, action: value.action as "open" | "background" }
         : undefined
     case "setAutoApproval":
-      return exactKeys(value, ["type", "sessionID", "enabled"]) && validID(value.sessionID) && typeof value.enabled === "boolean"
+      return exactKeys(value, ["type", "sessionID", "enabled"]) && validID(value.sessionID) &&
+          typeof value.enabled === "boolean"
         ? { type: "setAutoApproval", sessionID: value.sessionID, enabled: value.enabled }
         : undefined
     case "goalAction":
       return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) &&
           ["edit", "configure", "verify", "pause", "resume", "cancel"].includes(String(value.action))
-        ? { type: "goalAction", sessionID: value.sessionID, action: value.action as Extract<WebviewToHostMessage, { type: "goalAction" }>["action"] }
+        ? {
+          type: "goalAction",
+          sessionID: value.sessionID,
+          action: value.action as Extract<WebviewToHostMessage, { type: "goalAction" }>["action"],
+        }
         : undefined
     case "configureGoal":
-      return exactKeys(value, ["type", "sessionID", "expectedSettlementGeneration", "configuration"]) && validID(value.sessionID) &&
-          (value.expectedSettlementGeneration === undefined || (Number.isSafeInteger(value.expectedSettlementGeneration) && Number(value.expectedSettlementGeneration) >= 0)) && validGoalConfiguration(value.configuration)
-        ? { type: "configureGoal", sessionID: value.sessionID, expectedSettlementGeneration: value.expectedSettlementGeneration as number | undefined, configuration: value.configuration }
+      return exactKeys(value, ["type", "sessionID", "expectedSettlementGeneration", "configuration"]) &&
+          validID(value.sessionID) &&
+          (value.expectedSettlementGeneration === undefined ||
+            (Number.isSafeInteger(value.expectedSettlementGeneration) &&
+              Number(value.expectedSettlementGeneration) >= 0)) &&
+          validGoalConfiguration(value.configuration)
+        ? {
+          type: "configureGoal",
+          sessionID: value.sessionID,
+          expectedSettlementGeneration: value.expectedSettlementGeneration as number | undefined,
+          configuration: value.configuration,
+        }
         : undefined
     case "artifactAction":
-      return exactKeys(value, ["type", "sessionID", "artifactID", "action", "expectedRevision", "findingID", "disposition"]) && validID(value.sessionID) && validID(value.artifactID) &&
-          ["open", "approve", "handoff", "archive", "delete", "open-finding", "set-finding-disposition", "regenerate"].includes(String(value.action)) &&
-          (value.expectedRevision === undefined || (Number.isSafeInteger(value.expectedRevision) && Number(value.expectedRevision) >= 1)) && boundedOptionalString(value.findingID) &&
-          (value.disposition === undefined || ["open", "fixed", "dismissed", "accepted-risk"].includes(String(value.disposition))) &&
+      return exactKeys(value, [
+          "type",
+          "sessionID",
+          "artifactID",
+          "action",
+          "expectedRevision",
+          "findingID",
+          "disposition",
+        ]) &&
+          validID(value.sessionID) && validID(value.artifactID) &&
+          ["open", "approve", "handoff", "archive", "delete", "open-finding", "set-finding-disposition", "regenerate"]
+            .includes(String(value.action)) &&
+          (value.expectedRevision === undefined ||
+            (Number.isSafeInteger(value.expectedRevision) && Number(value.expectedRevision) >= 1)) &&
+          boundedOptionalString(value.findingID) &&
+          (value.disposition === undefined ||
+            ["open", "fixed", "dismissed", "accepted-risk"].includes(String(value.disposition))) &&
           (value.action === "open-finding" ? value.findingID !== undefined : true) &&
-          (value.action === "set-finding-disposition" ? value.findingID !== undefined && value.disposition !== undefined && value.expectedRevision !== undefined : true)
+          (value.action === "set-finding-disposition"
+            ? value.findingID !== undefined && value.disposition !== undefined && value.expectedRevision !== undefined
+            : true)
         ? value as unknown as WebviewToHostMessage
         : undefined
     case "requestRecoveryPreview":
-      return exactKeys(value, ["type", "sessionID", "messageID"]) && validID(value.sessionID) && boundedOptionalString(value.messageID)
+      return exactKeys(value, ["type", "sessionID", "messageID"]) && validID(value.sessionID) &&
+          boundedOptionalString(value.messageID)
         ? { type: "requestRecoveryPreview", sessionID: value.sessionID, messageID: value.messageID }
         : undefined
     case "applyRecovery":
-      return exactKeys(value, ["type", "sessionID", "mode", "messageID"]) && validID(value.sessionID) && ["revert", "fork", "redo"].includes(String(value.mode)) && boundedOptionalString(value.messageID) &&
+      return exactKeys(value, ["type", "sessionID", "mode", "messageID"]) && validID(value.sessionID) &&
+          ["revert", "fork", "redo"].includes(String(value.mode)) && boundedOptionalString(value.messageID) &&
           (value.mode === "redo" || value.messageID !== undefined)
-        ? { type: "applyRecovery", sessionID: value.sessionID, mode: value.mode as "revert" | "fork" | "redo", messageID: value.messageID }
+        ? {
+          type: "applyRecovery",
+          sessionID: value.sessionID,
+          mode: value.mode as "revert" | "fork" | "redo",
+          messageID: value.messageID,
+        }
         : undefined
     case "healthAction":
-      return exactKeys(value, ["type", "action"]) && ["refresh", "reconnect", "logs", "trace", "copy"].includes(String(value.action))
+      return exactKeys(value, ["type", "action"]) &&
+          ["refresh", "reconnect", "logs", "trace", "copy"].includes(String(value.action))
         ? { type: "healthAction", action: value.action as "refresh" | "reconnect" | "logs" | "trace" | "copy" }
         : undefined
     case "evidenceAction":
-      return exactKeys(value, ["type", "action"]) && value.action === "capture" ? { type: "evidenceAction", action: "capture" } : undefined
+      return exactKeys(value, ["type", "action"]) && value.action === "capture"
+        ? { type: "evidenceAction", action: "capture" }
+        : undefined
     case "workbenchAction":
       return exactKeys(value, ["type", "sessionID", "action"]) && validID(value.sessionID) &&
           ["refresh-session", "review", "walkthrough", "compare-models"].includes(String(value.action))
-        ? { type: "workbenchAction", sessionID: value.sessionID, action: value.action as "refresh-session" | "review" | "walkthrough" | "compare-models" }
+        ? {
+          type: "workbenchAction",
+          sessionID: value.sessionID,
+          action: value.action as "refresh-session" | "review" | "walkthrough" | "compare-models",
+        }
         : undefined
     case "contextReceiptAction":
-      return exactKeys(value, ["type", "sessionID", "receiptID", "itemID", "action"]) && value.action === "open-source" &&
+      return exactKeys(value, ["type", "sessionID", "receiptID", "itemID", "action"]) &&
+          value.action === "open-source" &&
           validID(value.sessionID) && validID(value.receiptID) && validID(value.itemID) &&
-          !/[\u0000-\u001f\u007f]/.test(value.sessionID) && !/[\u0000-\u001f\u007f]/.test(value.receiptID) && !/[\u0000-\u001f\u007f]/.test(value.itemID)
-        ? { type: "contextReceiptAction", sessionID: value.sessionID, receiptID: value.receiptID, itemID: value.itemID, action: "open-source" }
+          !/[\u0000-\u001f\u007f]/.test(value.sessionID) && !/[\u0000-\u001f\u007f]/.test(value.receiptID) &&
+          !/[\u0000-\u001f\u007f]/.test(value.itemID)
+        ? {
+          type: "contextReceiptAction",
+          sessionID: value.sessionID,
+          receiptID: value.receiptID,
+          itemID: value.itemID,
+          action: "open-source",
+        }
         : undefined
     case "browserContextAction":
-      if (!exactKeys(value, ["type", "sessionID", "action", "task", "sources", "approvedUrl"]) || !validID(value.sessionID) || /[\u0000-\u001f\u007f]/.test(value.sessionID) || value.action !== "capture") return undefined
-      if (value.task === undefined && value.sources === undefined && value.approvedUrl === undefined) return { type: "browserContextAction", sessionID: value.sessionID, action: "capture" }
-      if (!boundedString(value.task, 20_000) || !value.task.trim() || !Array.isArray(value.sources) || !value.sources.length || value.sources.length > 8) return undefined
+      if (
+        !exactKeys(value, ["type", "sessionID", "action", "task", "sources", "approvedUrl"]) ||
+        !validID(value.sessionID) || /[\u0000-\u001f\u007f]/.test(value.sessionID) || value.action !== "capture"
+      ) return undefined
+      if (value.task === undefined && value.sources === undefined && value.approvedUrl === undefined) {
+        return { type: "browserContextAction", sessionID: value.sessionID, action: "capture" }
+      }
+      if (
+        !boundedString(value.task, 20_000) || !value.task.trim() || !Array.isArray(value.sources) ||
+        !value.sources.length || value.sources.length > 8
+      ) return undefined
       {
-        const allowed = new Set(["selection", "console", "element", "terminal-task", "diagnostics", "debug", "url", "screenshot"])
-        if (!value.sources.every((source) => typeof source === "string" && allowed.has(source)) || new Set(value.sources).size !== value.sources.length) return undefined
-        if (value.sources.filter((source) => ["console", "element", "terminal-task"].includes(String(source))).length > 1) return undefined
-        if ((value.sources.includes("url") && (!boundedString(value.approvedUrl, 8_192) || !value.approvedUrl.trim())) || (!value.sources.includes("url") && value.approvedUrl !== undefined)) return undefined
-        return { type: "browserContextAction", sessionID: value.sessionID, action: "capture", task: value.task, sources: value.sources as Array<"selection" | "console" | "element" | "terminal-task" | "diagnostics" | "debug" | "url" | "screenshot">, approvedUrl: typeof value.approvedUrl === "string" ? value.approvedUrl : undefined }
+        const allowed = new Set([
+          "selection",
+          "console",
+          "element",
+          "terminal-task",
+          "diagnostics",
+          "debug",
+          "url",
+          "screenshot",
+        ])
+        if (
+          !value.sources.every((source) => typeof source === "string" && allowed.has(source)) ||
+          new Set(value.sources).size !== value.sources.length
+        ) return undefined
+        if (
+          value.sources.filter((source) => ["console", "element", "terminal-task"].includes(String(source))).length > 1
+        ) return undefined
+        if (
+          (value.sources.includes("url") && (!boundedString(value.approvedUrl, 8_192) || !value.approvedUrl.trim())) ||
+          (!value.sources.includes("url") && value.approvedUrl !== undefined)
+        ) return undefined
+        return {
+          type: "browserContextAction",
+          sessionID: value.sessionID,
+          action: "capture",
+          task: value.task,
+          sources: value.sources as Array<
+            "selection" | "console" | "element" | "terminal-task" | "diagnostics" | "debug" | "url" | "screenshot"
+          >,
+          approvedUrl: typeof value.approvedUrl === "string" ? value.approvedUrl : undefined,
+        }
       }
     case "runAction": {
       if (!validID(value.groupID)) return undefined
@@ -709,14 +1195,26 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
           : undefined
       }
       if (value.action === "export-comparison") {
-        return exactKeys(value, ["type", "groupID", "action", "comparisonArtifactID", "comparisonRevision"]) && validID(value.comparisonArtifactID) &&
+        return exactKeys(value, ["type", "groupID", "action", "comparisonArtifactID", "comparisonRevision"]) &&
+            validID(value.comparisonArtifactID) &&
             Number.isSafeInteger(value.comparisonRevision) && Number(value.comparisonRevision) > 0
-          ? { type: "runAction", groupID: value.groupID, action: "export-comparison", comparisonArtifactID: value.comparisonArtifactID, comparisonRevision: Number(value.comparisonRevision) }
+          ? {
+            type: "runAction",
+            groupID: value.groupID,
+            action: "export-comparison",
+            comparisonArtifactID: value.comparisonArtifactID,
+            comparisonRevision: Number(value.comparisonRevision),
+          }
           : undefined
       }
       return exactKeys(value, ["type", "groupID", "runID", "action"]) && validID(value.runID) &&
           ["open", "cancel", "retry", "diff", "review", "keep", "discard"].includes(String(value.action))
-        ? { type: "runAction", groupID: value.groupID, runID: value.runID, action: value.action as "open" | "cancel" | "retry" | "diff" | "review" | "keep" | "discard" }
+        ? {
+          type: "runAction",
+          groupID: value.groupID,
+          runID: value.runID,
+          action: value.action as "open" | "cancel" | "retry" | "diff" | "review" | "keep" | "discard",
+        }
         : undefined
     }
     case "walkthroughAction":
@@ -728,9 +1226,13 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         ? { type: "selectSession", sessionID: value.sessionID }
         : undefined
     case "openLink":
-      return typeof value.url === "string" && value.url.length <= 8_192 ? { type: "openLink", url: value.url } : undefined
+      return typeof value.url === "string" && value.url.length <= 8_192
+        ? { type: "openLink", url: value.url }
+        : undefined
     case "copyText":
-      return exactKeys(value, ["type", "text"]) && boundedString(value.text, 500_000) ? { type: "copyText", text: value.text } : undefined
+      return exactKeys(value, ["type", "text"]) && boundedString(value.text, 500_000)
+        ? { type: "copyText", text: value.text }
+        : undefined
     default:
       return undefined
   }
@@ -746,81 +1248,128 @@ function validStatus(value: unknown): value is SessionStatus {
 function validAgent(value: unknown): boolean {
   return record(value) && validID(value.name) && boundedOptionalString(value.description, 20_000) &&
     (value.model === undefined || (record(value.model) && exactKeys(value.model, ["providerID", "modelID"]) &&
-      validID(value.model.providerID) && validID(value.model.modelID))) && boundedOptionalString(value.variant) &&
+      validID(value.model.providerID) && validID(value.model.modelID))) &&
+    boundedOptionalString(value.variant) &&
     (value.mode === undefined || ["primary", "subagent", "all"].includes(String(value.mode)))
 }
 
 function validModalities(value: unknown): boolean {
   return record(value) && exactKeys(value, ["text", "audio", "image", "video", "pdf"]) &&
-    [value.text, value.audio, value.image, value.video, value.pdf].every((item) => item === undefined || typeof item === "boolean")
+    [value.text, value.audio, value.image, value.video, value.pdf].every((item) =>
+      item === undefined || typeof item === "boolean"
+    )
 }
 
 function validCapabilities(value: unknown): boolean {
-  return record(value) && exactKeys(value, ["temperature", "reasoning", "attachment", "toolcall", "input", "output", "interleaved"]) &&
-    [value.temperature, value.reasoning, value.attachment, value.toolcall].every((item) => item === undefined || typeof item === "boolean") &&
-    (value.input === undefined || validModalities(value.input)) && (value.output === undefined || validModalities(value.output)) &&
+  return record(value) &&
+    exactKeys(value, ["temperature", "reasoning", "attachment", "toolcall", "input", "output", "interleaved"]) &&
+    [value.temperature, value.reasoning, value.attachment, value.toolcall].every((item) =>
+      item === undefined || typeof item === "boolean"
+    ) &&
+    (value.input === undefined || validModalities(value.input)) &&
+    (value.output === undefined || validModalities(value.output)) &&
     (value.interleaved === undefined || typeof value.interleaved === "boolean" ||
-      (record(value.interleaved) && exactKeys(value.interleaved, ["field"]) && boundedOptionalString(value.interleaved.field, 100)))
+      (record(value.interleaved) && exactKeys(value.interleaved, ["field"]) &&
+        boundedOptionalString(value.interleaved.field, 100)))
 }
 
 function validModel(value: unknown): boolean {
   return record(value) && validID(value.id) && boundedString(value.name, 2_000) && validID(value.providerID) &&
-    (value.contextLimit === undefined || (Number.isSafeInteger(value.contextLimit) && Number(value.contextLimit) > 0)) &&
+    (value.contextLimit === undefined ||
+      (Number.isSafeInteger(value.contextLimit) && Number(value.contextLimit) > 0)) &&
     (value.inputLimit === undefined || (Number.isSafeInteger(value.inputLimit) && Number(value.inputLimit) > 0)) &&
     (value.outputLimit === undefined || (Number.isSafeInteger(value.outputLimit) && Number(value.outputLimit) > 0)) &&
     boundedOptionalString(value.status, 100) && boundedOptionalString(value.releaseDate, 100) &&
     (value.capabilities === undefined || validCapabilities(value.capabilities)) &&
-    (value.variants === undefined || (Array.isArray(value.variants) && value.variants.length <= 100 && value.variants.every((variant) => validID(variant))))
+    (value.variants === undefined ||
+      (Array.isArray(value.variants) && value.variants.length <= 100 &&
+        value.variants.every((variant) => validID(variant))))
 }
 
 function validProvider(value: unknown): boolean {
-  return record(value) && exactKeys(value, ["id", "name", "source"]) && validID(value.id) && boundedString(value.name, 2_000) &&
+  return record(value) && exactKeys(value, ["id", "name", "source"]) && validID(value.id) &&
+    boundedString(value.name, 2_000) &&
     (value.source === undefined || ["env", "config", "custom", "api"].includes(String(value.source)))
 }
 
 function validResource(value: unknown): boolean {
-  return record(value) && exactKeys(value, ["name", "uri", "description", "mimeType", "client"]) && boundedString(value.name, 2_000) && validID(value.uri) &&
-    boundedOptionalString(value.description, 20_000) && boundedOptionalString(value.mimeType, 100) && boundedString(value.client, 2_000)
+  return record(value) && exactKeys(value, ["name", "uri", "description", "mimeType", "client"]) &&
+    boundedString(value.name, 2_000) && validID(value.uri) &&
+    boundedOptionalString(value.description, 20_000) && boundedOptionalString(value.mimeType, 100) &&
+    boundedString(value.client, 2_000)
 }
 
 function validCommand(value: unknown): boolean {
   return record(value) && exactKeys(value, ["name", "description", "source", "hints"]) && validID(value.name) &&
-    boundedOptionalString(value.description, 20_000) && (value.source === undefined || ["command", "mcp", "skill"].includes(String(value.source))) &&
-    (value.hints === undefined || (Array.isArray(value.hints) && value.hints.length <= 100 && value.hints.every((hint) => boundedString(hint, 2_000))))
+    boundedOptionalString(value.description, 20_000) &&
+    (value.source === undefined || ["command", "mcp", "skill"].includes(String(value.source))) &&
+    (value.hints === undefined ||
+      (Array.isArray(value.hints) && value.hints.length <= 100 &&
+        value.hints.every((hint) => boundedString(hint, 2_000))))
 }
 
 function validCatalog(value: unknown[], validator: (entry: unknown) => boolean): boolean {
   if (!value.every(validator)) return false
   return value.reduce<number>((characters, entry) => {
-     const item = entry as { id?: string; name?: string; providerID?: string; description?: string; uri?: string; client?: string; status?: string; releaseDate?: string; variants?: string[] }
-     return characters + (item.id?.length ?? 0) + (item.name?.length ?? 0) +
-       (item.providerID?.length ?? 0) + (item.description?.length ?? 0) + (item.uri?.length ?? 0) + (item.client?.length ?? 0) +
-       (item.status?.length ?? 0) + (item.releaseDate?.length ?? 0) + (item.variants?.reduce((total, variant) => total + variant.length, 0) ?? 0)
+    const item = entry as {
+      id?: string
+      name?: string
+      providerID?: string
+      description?: string
+      uri?: string
+      client?: string
+      status?: string
+      releaseDate?: string
+      variants?: string[]
+    }
+    return characters + (item.id?.length ?? 0) + (item.name?.length ?? 0) +
+      (item.providerID?.length ?? 0) + (item.description?.length ?? 0) + (item.uri?.length ?? 0) +
+      (item.client?.length ?? 0) +
+      (item.status?.length ?? 0) + (item.releaseDate?.length ?? 0) + (item.variants?.reduce((total, variant) =>
+        total + variant.length, 0) ?? 0)
   }, 0) <= 2_000_000
 }
 
 function validSessionOption(value: unknown): boolean {
   return record(value) && boundedString(value.id) && boundedString(value.title, 2_000) &&
-    validStatus(value.status) && Number.isSafeInteger(value.unread) && Number(value.unread) >= 0 && Number(value.unread) <= 1_000_000 &&
+    validStatus(value.status) && Number.isSafeInteger(value.unread) && Number(value.unread) >= 0 &&
+    Number(value.unread) <= 1_000_000 &&
     boundedOptionalString(value.directory, 8_192) && boundedOptionalString(value.parentID) &&
     (value.updatedAt === undefined || (Number.isSafeInteger(value.updatedAt) && Number(value.updatedAt) >= 0)) &&
-    [value.attention, value.questionCount, value.permissionCount, value.queued, value.changeCount].every((count) => count === undefined || (Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000)) &&
-    (value.todo === undefined || (record(value.todo) && Number.isSafeInteger(value.todo.completed) && Number(value.todo.completed) >= 0 &&
-      Number.isSafeInteger(value.todo.total) && Number(value.todo.total) >= Number(value.todo.completed) && Number(value.todo.total) <= 10_000)) &&
+    [value.attention, value.questionCount, value.permissionCount, value.queued, value.changeCount].every((count) =>
+      count === undefined || (Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000)
+    ) &&
+    (value.todo === undefined ||
+      (record(value.todo) && Number.isSafeInteger(value.todo.completed) && Number(value.todo.completed) >= 0 &&
+        Number.isSafeInteger(value.todo.total) && Number(value.todo.total) >= Number(value.todo.completed) &&
+        Number(value.todo.total) <= 10_000)) &&
     [value.pinned, value.archived, value.shared].every((flag) => flag === undefined || typeof flag === "boolean") &&
-    boundedOptionalString(value.shareUrl, 8_192) && boundedOptionalString(value.model) && boundedOptionalString(value.agent) &&
-    (value.tokens === undefined || (Number.isSafeInteger(value.tokens) && Number(value.tokens) >= 0)) && boundedOptionalString(value.branch, 2_000) && boundedOptionalString(value.worktree, 8_192) &&
+    boundedOptionalString(value.shareUrl, 8_192) && boundedOptionalString(value.model) &&
+    boundedOptionalString(value.agent) &&
+    (value.tokens === undefined || (Number.isSafeInteger(value.tokens) && Number(value.tokens) >= 0)) &&
+    boundedOptionalString(value.branch, 2_000) && boundedOptionalString(value.worktree, 8_192) &&
     (value.cost === undefined || (typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0)) &&
-    (value.summary === undefined || (record(value.summary) && exactKeys(value.summary, ["additions", "deletions", "files"]) && [value.summary.additions, value.summary.deletions, value.summary.files]
-      .every((entry) => Number.isSafeInteger(entry) && Number(entry) >= 0 && Number(entry) <= 1_000_000_000))) &&
-    boundedOptionalString(value.rootID) && (value.depth === undefined || (Number.isSafeInteger(value.depth) && Number(value.depth) >= 0 && Number(value.depth) <= 100))
+    (value.summary === undefined ||
+      (record(value.summary) && exactKeys(value.summary, ["additions", "deletions", "files"]) &&
+        [value.summary.additions, value.summary.deletions, value.summary.files]
+          .every((entry) => Number.isSafeInteger(entry) && Number(entry) >= 0 && Number(entry) <= 1_000_000_000))) &&
+    boundedOptionalString(value.rootID) &&
+    (value.depth === undefined ||
+      (Number.isSafeInteger(value.depth) && Number(value.depth) >= 0 && Number(value.depth) <= 100))
 }
 
 function validSessionOptions(value: unknown[]): boolean {
   if (value.length > 5_000 || !value.every(validSessionOption)) return false
   return value.reduce<number>((characters, session) => {
-    const option = session as { id: string; title: string; directory?: string; parentID?: string; status: { message?: string } }
-    return characters + option.id.length + option.title.length + (option.directory?.length ?? 0) + (option.parentID?.length ?? 0) +
+    const option = session as {
+      id: string
+      title: string
+      directory?: string
+      parentID?: string
+      status: { message?: string }
+    }
+    return characters + option.id.length + option.title.length + (option.directory?.length ?? 0) +
+      (option.parentID?.length ?? 0) +
       (option.status.message?.length ?? 0)
   }, 0) <= 2_000_000
 }
@@ -830,27 +1379,57 @@ function validLineage(value: unknown): value is SessionLineageNode[] {
   const ids = new Set<string>()
   let characters = 0
   return value.every((node) => {
-    if (!record(node) || !exactKeys(node, [
-      "sessionID", "parentID", "rootID", "depth", "relation", "title", "status", "updatedAt", "directory", "model", "agent", "tokens", "cost",
-      "attention", "questionCount", "permissionCount", "archived", "shared", "branch", "worktree", "runGroupID", "runID", "worktreeID",
-    ]) || !validID(node.sessionID) || ids.has(node.sessionID) || !boundedOptionalString(node.parentID) || !validID(node.rootID) ||
+    if (
+      !record(node) || !exactKeys(node, [
+        "sessionID",
+        "parentID",
+        "rootID",
+        "depth",
+        "relation",
+        "title",
+        "status",
+        "updatedAt",
+        "directory",
+        "model",
+        "agent",
+        "tokens",
+        "cost",
+        "attention",
+        "questionCount",
+        "permissionCount",
+        "archived",
+        "shared",
+        "branch",
+        "worktree",
+        "runGroupID",
+        "runID",
+        "worktreeID",
+      ]) || !validID(node.sessionID) || ids.has(node.sessionID) || !boundedOptionalString(node.parentID) ||
+      !validID(node.rootID) ||
       !Number.isSafeInteger(node.depth) || Number(node.depth) < 0 || Number(node.depth) > 100 ||
-      !["root", "child", "run", "fusion", "recovery"].includes(String(node.relation)) || !boundedString(node.title, 2_000) || !validStatus(node.status) ||
-      !Number.isSafeInteger(node.updatedAt) || Number(node.updatedAt) < 0 || !boundedOptionalString(node.directory, 8_192) ||
+      !["root", "child", "run", "fusion", "recovery"].includes(String(node.relation)) ||
+      !boundedString(node.title, 2_000) || !validStatus(node.status) ||
+      !Number.isSafeInteger(node.updatedAt) || Number(node.updatedAt) < 0 ||
+      !boundedOptionalString(node.directory, 8_192) ||
       !boundedOptionalString(node.model) || !boundedOptionalString(node.agent) ||
       (node.tokens !== undefined && (!Number.isSafeInteger(node.tokens) || Number(node.tokens) < 0)) ||
       (node.cost !== undefined && (typeof node.cost !== "number" || !Number.isFinite(node.cost) || node.cost < 0)) ||
-      ![node.attention, node.questionCount, node.permissionCount].every((count) => count === undefined || (Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000)) ||
+      ![node.attention, node.questionCount, node.permissionCount].every((count) =>
+        count === undefined || (Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000)
+      ) ||
       ![node.archived, node.shared].every((flag) => flag === undefined || typeof flag === "boolean") ||
-      !boundedOptionalString(node.branch, 2_000) || !boundedOptionalString(node.worktree, 8_192) || !boundedOptionalString(node.runGroupID) ||
-      !boundedOptionalString(node.runID) || !boundedOptionalString(node.worktreeID)) return false
+      !boundedOptionalString(node.branch, 2_000) || !boundedOptionalString(node.worktree, 8_192) ||
+      !boundedOptionalString(node.runGroupID) ||
+      !boundedOptionalString(node.runID) || !boundedOptionalString(node.worktreeID)
+    ) return false
     ids.add(node.sessionID)
     const status: unknown = node.status
     const statusMessage = record(status) && typeof status.message === "string" ? status.message : ""
     characters += node.sessionID.length + (node.parentID?.length ?? 0) + node.rootID.length + node.title.length +
       statusMessage.length +
       (node.directory?.length ?? 0) + (node.model?.length ?? 0) + (node.agent?.length ?? 0) +
-      (node.branch?.length ?? 0) + (node.worktree?.length ?? 0) + (node.runGroupID?.length ?? 0) + (node.runID?.length ?? 0) + (node.worktreeID?.length ?? 0)
+      (node.branch?.length ?? 0) + (node.worktree?.length ?? 0) + (node.runGroupID?.length ?? 0) +
+      (node.runID?.length ?? 0) + (node.worktreeID?.length ?? 0)
     return characters <= 2_000_000
   })
 }
@@ -860,24 +1439,50 @@ function validReviewFindingSnapshots(value: unknown, sessionID: string): value i
   const ids = new Set<string>()
   let characters = 0
   return value.every((entry) => {
-    if (!record(entry) || !exactKeys(entry, [
-      "sessionID", "artifactID", "artifactRevision", "artifactUpdatedAt", "stale", "diffHash", "findingID", "title", "detail", "category", "severity", "anchors", "disposition",
-    ]) || entry.sessionID !== sessionID || !validID(entry.artifactID) || !Number.isSafeInteger(entry.artifactRevision) || Number(entry.artifactRevision) < 1 ||
-      !Number.isSafeInteger(entry.artifactUpdatedAt) || Number(entry.artifactUpdatedAt) < 0 || typeof entry.stale !== "boolean" ||
-      typeof entry.diffHash !== "string" || !/^sha256:[0-9a-f]{64}$/.test(entry.diffHash) || !validID(entry.findingID) ||
+    if (
+      !record(entry) || !exactKeys(entry, [
+        "sessionID",
+        "artifactID",
+        "artifactRevision",
+        "artifactUpdatedAt",
+        "stale",
+        "diffHash",
+        "findingID",
+        "title",
+        "detail",
+        "category",
+        "severity",
+        "anchors",
+        "disposition",
+      ]) || entry.sessionID !== sessionID || !validID(entry.artifactID) ||
+      !Number.isSafeInteger(entry.artifactRevision) || Number(entry.artifactRevision) < 1 ||
+      !Number.isSafeInteger(entry.artifactUpdatedAt) || Number(entry.artifactUpdatedAt) < 0 ||
+      typeof entry.stale !== "boolean" ||
+      typeof entry.diffHash !== "string" || !/^sha256:[0-9a-f]{64}$/.test(entry.diffHash) ||
+      !validID(entry.findingID) ||
       !boundedString(entry.title, 500) || !boundedString(entry.detail, 10_000) ||
-      !["correctness", "security", "performance", "maintainability", "tests", "regression"].includes(String(entry.category)) ||
+      !["correctness", "security", "performance", "maintainability", "tests", "regression"].includes(
+        String(entry.category),
+      ) ||
       !["critical", "high", "medium", "low"].includes(String(entry.severity)) ||
-      !["open", "fixed", "dismissed", "accepted-risk"].includes(String(entry.disposition)) || !Array.isArray(entry.anchors) ||
-      entry.anchors.length < 1 || entry.anchors.length > 20) return false
+      !["open", "fixed", "dismissed", "accepted-risk"].includes(String(entry.disposition)) ||
+      !Array.isArray(entry.anchors) ||
+      entry.anchors.length < 1 || entry.anchors.length > 20
+    ) return false
     const key = `${entry.artifactID}\0${entry.findingID}`
     if (ids.has(key)) return false
     ids.add(key)
-    characters += entry.sessionID.length + entry.artifactID.length + entry.diffHash.length + entry.findingID.length + entry.title.length + entry.detail.length
+    characters += entry.sessionID.length + entry.artifactID.length + entry.diffHash.length + entry.findingID.length +
+      entry.title.length + entry.detail.length
     for (const anchor of entry.anchors) {
-      if (!record(anchor) || !exactKeys(anchor, ["file", "side", "startLine", "endLine", "hunkHeader"]) || !boundedString(anchor.file, 8_192) || !anchor.file ||
-        !["base", "modified"].includes(String(anchor.side)) || !Number.isSafeInteger(anchor.startLine) || Number(anchor.startLine) < 1 ||
-        !Number.isSafeInteger(anchor.endLine) || Number(anchor.endLine) < Number(anchor.startLine) || !boundedOptionalString(anchor.hunkHeader, 2_000)) return false
+      if (
+        !record(anchor) || !exactKeys(anchor, ["file", "side", "startLine", "endLine", "hunkHeader"]) ||
+        !boundedString(anchor.file, 8_192) || !anchor.file ||
+        !["base", "modified"].includes(String(anchor.side)) || !Number.isSafeInteger(anchor.startLine) ||
+        Number(anchor.startLine) < 1 ||
+        !Number.isSafeInteger(anchor.endLine) || Number(anchor.endLine) < Number(anchor.startLine) ||
+        !boundedOptionalString(anchor.hunkHeader, 2_000)
+      ) return false
       characters += anchor.file.length + (anchor.hunkHeader?.length ?? 0)
     }
     return characters <= 2_000_000
@@ -887,7 +1492,9 @@ function validReviewFindingSnapshots(value: unknown, sessionID: string): value i
 function validMessage(value: unknown): boolean {
   if (!record(value) || !record(value.info) || !Array.isArray(value.parts) || value.parts.length > 2_000) return false
   const info = value.info
-  if (!boundedString(info.id) || !boundedString(info.sessionID) || (info.role !== "user" && info.role !== "assistant")) return false
+  if (
+    !boundedString(info.id) || !boundedString(info.sessionID) || (info.role !== "user" && info.role !== "assistant")
+  ) return false
   return value.parts.every((part) =>
     record(part) &&
     boundedString(part.id) &&
@@ -906,7 +1513,7 @@ function validMessage(value: unknown): boolean {
       boundedOptionalString(part.state.output, 500_000) &&
       boundedOptionalString(part.state.error, 500_000) &&
       (part.state.input === undefined || validJson(part.state.input)) &&
-      (part.state.metadata === undefined || validJson(part.state.metadata)))),
+      (part.state.metadata === undefined || validJson(part.state.metadata))))
   )
 }
 
@@ -915,7 +1522,17 @@ function validMessages(value: unknown[]): boolean {
   let parts = 0
   let characters = 0
   for (const message of value) {
-    const bundle = message as { parts: Array<{ text?: string; mime?: string; filename?: string; metadata?: unknown; state?: { title?: string; output?: string; error?: string; input?: unknown; metadata?: unknown } }> }
+    const bundle = message as {
+      parts: Array<
+        {
+          text?: string
+          mime?: string
+          filename?: string
+          metadata?: unknown
+          state?: { title?: string; output?: string; error?: string; input?: unknown; metadata?: unknown }
+        }
+      >
+    }
     parts += bundle.parts.length
     for (const part of bundle.parts) {
       characters += (part.text?.length ?? 0) + (part.state?.title?.length ?? 0) +
@@ -937,7 +1554,10 @@ function jsonCharacters(value: unknown, depth = 0): number {
     return value.reduce((total, entry) => total + jsonCharacters(entry, depth + 1), 0)
   }
   if (record(value)) {
-    return Object.entries(value).reduce((total, [key, entry]) => total + key.length + jsonCharacters(entry, depth + 1), 0)
+    return Object.entries(value).reduce(
+      (total, [key, entry]) => total + key.length + jsonCharacters(entry, depth + 1),
+      0,
+    )
   }
   return 0
 }
@@ -947,15 +1567,18 @@ function validDelegations(value: unknown): value is DelegationProgress[] {
   let characters = 0
   let parts = 0
   return value.every((delegation) => {
-    if (!record(delegation) || !exactKeys(delegation, ["partID", "sessionID", "title", "status", "messages", "revision"]) ||
+    if (
+      !record(delegation) ||
+      !exactKeys(delegation, ["partID", "sessionID", "title", "status", "messages", "revision"]) ||
       !validID(delegation.partID) || !validID(delegation.sessionID) || !boundedString(delegation.title, 2_000) ||
       !validStatus(delegation.status) || !Array.isArray(delegation.messages) || !validMessages(delegation.messages) ||
-      !Number.isSafeInteger(delegation.revision) || Number(delegation.revision) < 0) return false
+      !Number.isSafeInteger(delegation.revision) || Number(delegation.revision) < 0
+    ) return false
     for (const message of delegation.messages as MessageBundle[]) {
       parts += message.parts.length
       for (const part of message.parts) {
         characters += (part.text?.length ?? 0) + (part.state?.title?.length ?? 0) +
-        (part.state?.output?.length ?? 0) + (part.state?.error?.length ?? 0)
+          (part.state?.output?.length ?? 0) + (part.state?.error?.length ?? 0)
       }
     }
     return parts <= 10_000 && characters <= 2_000_000
@@ -965,25 +1588,49 @@ function validDelegations(value: unknown): value is DelegationProgress[] {
 function validMessageRevisions(value: unknown, messages: unknown[]): boolean {
   if (!record(value)) return false
   const entries = Object.entries(value)
-  const messageIDs = new Set(messages.flatMap((message) => record(message) && record(message.info) && typeof message.info.id === "string" ? [message.info.id] : []))
+  const messageIDs = new Set(
+    messages.flatMap((message) =>
+      record(message) && record(message.info) && typeof message.info.id === "string" ? [message.info.id] : []
+    ),
+  )
   if (entries.length > messages.length) return false
-  return entries.every(([messageID, revision]) => messageIDs.has(messageID) && messageID.length <= 1_024 && Number.isInteger(revision) && Number(revision) >= 0)
+  return entries.every(([messageID, revision]) =>
+    messageIDs.has(messageID) && messageID.length <= 1_024 && Number.isInteger(revision) && Number(revision) >= 0
+  )
 }
 
 function validTranscriptHistory(value: unknown): value is TranscriptHistoryState {
-  if (!record(value) || !exactKeys(value, ["totalMessages", "visibleMessages", "hasOlder", "limitedBy", "sourceMayBeTruncated"])) return false
-  return Number.isSafeInteger(value.totalMessages) && Number(value.totalMessages) >= 0 && Number(value.totalMessages) <= 1_000_000 &&
-    Number.isSafeInteger(value.visibleMessages) && Number(value.visibleMessages) >= 0 && Number(value.visibleMessages) <= Number(value.totalMessages) &&
-    typeof value.hasOlder === "boolean" && (value.limitedBy === undefined || ["messages", "parts", "characters"].includes(String(value.limitedBy))) &&
+  if (
+    !record(value) ||
+    !exactKeys(value, ["totalMessages", "visibleMessages", "hasOlder", "limitedBy", "sourceMayBeTruncated"])
+  ) return false
+  return Number.isSafeInteger(value.totalMessages) && Number(value.totalMessages) >= 0 &&
+    Number(value.totalMessages) <= 1_000_000 &&
+    Number.isSafeInteger(value.visibleMessages) && Number(value.visibleMessages) >= 0 &&
+    Number(value.visibleMessages) <= Number(value.totalMessages) &&
+    typeof value.hasOlder === "boolean" &&
+    (value.limitedBy === undefined || ["messages", "parts", "characters"].includes(String(value.limitedBy))) &&
     (value.sourceMayBeTruncated === undefined || typeof value.sourceMayBeTruncated === "boolean")
 }
 
 function validTranscriptHistoryPage(value: unknown): value is TranscriptHistoryPage {
-  if (!record(value) || !exactKeys(value, ["sessionID", "messages", "messageRevisions", "hasOlder", "totalMessages", "sourceMayBeTruncated"]) ||
-    !validID(value.sessionID) || !Array.isArray(value.messages) || value.messages.length > 1_000 || !validMessages(value.messages) ||
+  if (
+    !record(value) ||
+    !exactKeys(value, [
+      "sessionID",
+      "messages",
+      "messageRevisions",
+      "hasOlder",
+      "totalMessages",
+      "sourceMayBeTruncated",
+    ]) ||
+    !validID(value.sessionID) || !Array.isArray(value.messages) || value.messages.length > 1_000 ||
+    !validMessages(value.messages) ||
     !validMessageRevisions(value.messageRevisions, value.messages) || typeof value.hasOlder !== "boolean" ||
-    !Number.isSafeInteger(value.totalMessages) || Number(value.totalMessages) < value.messages.length || Number(value.totalMessages) > 1_000_000 ||
-    (value.sourceMayBeTruncated !== undefined && typeof value.sourceMayBeTruncated !== "boolean")) return false
+    !Number.isSafeInteger(value.totalMessages) || Number(value.totalMessages) < value.messages.length ||
+    Number(value.totalMessages) > 1_000_000 ||
+    (value.sourceMayBeTruncated !== undefined && typeof value.sourceMayBeTruncated !== "boolean")
+  ) return false
   return value.messages.every((message) => (message as MessageBundle).info.sessionID === value.sessionID)
 }
 
@@ -1007,7 +1654,8 @@ function validJson(
   if (!record(value) || Object.keys(value).length > 100) return false
   return Object.entries(value).every(([key, entry]) => {
     budget.characters += key.length
-    return key.length <= 1_024 && budget.characters <= characterLimit && validJson(entry, depth + 1, budget, characterLimit)
+    return key.length <= 1_024 && budget.characters <= characterLimit &&
+      validJson(entry, depth + 1, budget, characterLimit)
   })
 }
 
@@ -1018,35 +1666,64 @@ function validQueue(value: unknown): value is QueuedPrompt[] {
   const ids = new Set<string>()
   let characters = 0
   return value.every((prompt) => {
-    if (!record(prompt) || !exactKeys(prompt, ["id", "text", "delivery", "agent", "model", "variant", "attachments", "createdAt"]) || !validID(prompt.id) || ids.has(prompt.id) ||
-      !boundedString(prompt.text, PROMPT_TEXT_CHARACTER_LIMIT) || (!prompt.text.trim() && (!Array.isArray(prompt.attachments) || prompt.attachments.length === 0)) || !boundedOptionalString(prompt.agent) ||
+    if (
+      !record(prompt) ||
+      !exactKeys(prompt, ["id", "text", "delivery", "agent", "model", "variant", "attachments", "createdAt"]) ||
+      !validID(prompt.id) || ids.has(prompt.id) ||
+      !boundedString(prompt.text, PROMPT_TEXT_CHARACTER_LIMIT) ||
+      (!prompt.text.trim() && (!Array.isArray(prompt.attachments) || prompt.attachments.length === 0)) ||
+      !boundedOptionalString(prompt.agent) ||
       !boundedOptionalString(prompt.model) || !boundedOptionalString(prompt.variant) ||
       (prompt.delivery !== undefined && !["follow-up", "steer", "replace"].includes(String(prompt.delivery))) ||
-      !Number.isSafeInteger(prompt.createdAt) || Number(prompt.createdAt) < 0) return false
-    if (prompt.attachments !== undefined && (!Array.isArray(prompt.attachments) || prompt.attachments.length > 20 || prompt.attachments.some((attachment) =>
-      !record(attachment) || !exactKeys(attachment, ["name", "mime"]) || !boundedString(attachment.name, 255) || !boundedString(attachment.mime, 100)))) return false
+      !Number.isSafeInteger(prompt.createdAt) || Number(prompt.createdAt) < 0
+    ) return false
+    if (
+      prompt.attachments !== undefined &&
+      (!Array.isArray(prompt.attachments) || prompt.attachments.length > 20 ||
+        prompt.attachments.some((attachment) =>
+          !record(attachment) || !exactKeys(attachment, ["name", "mime"]) || !boundedString(attachment.name, 255) ||
+          !boundedString(attachment.mime, 100)
+        ))
+    ) return false
     ids.add(prompt.id)
-    characters += prompt.id.length + prompt.text.length + (prompt.agent?.length ?? 0) + (prompt.model?.length ?? 0) + (prompt.variant?.length ?? 0)
+    characters += prompt.id.length + prompt.text.length + (prompt.agent?.length ?? 0) + (prompt.model?.length ?? 0) +
+      (prompt.variant?.length ?? 0)
     return characters <= PROMPT_QUEUE_CHARACTER_LIMIT
   })
 }
 
 function validContextReceipts(value: unknown): value is ContextReceipt[] {
   if (!Array.isArray(value) || value.length > 2_000) return false
-  return value.every((receipt) => record(receipt) && boundedString(receipt.id) && boundedString(receipt.sessionID) && boundedString(receipt.promptID) &&
-    Number.isSafeInteger(receipt.admittedAt) && Number(receipt.admittedAt) >= 0 && ["none", "explicit", "unknown"].includes(String(receipt.truncation)) &&
-    (receipt.estimatedTokens === undefined || (Number.isSafeInteger(receipt.estimatedTokens) && Number(receipt.estimatedTokens) >= 0)) &&
-    Array.isArray(receipt.items) && receipt.items.length <= 100 && receipt.items.every((item) => record(item) && boundedString(item.id) && boundedString(item.kind, 64) && boundedString(item.label) &&
-      (item.uri === undefined || boundedString(item.uri, 4_096)) && (item.revision === undefined || boundedString(item.revision, 256)) &&
-      (item.contentHash === undefined || boundedString(item.contentHash, 256)) && (item.bytes === undefined || (Number.isSafeInteger(item.bytes) && Number(item.bytes) >= 0)) &&
-      (item.estimatedTokens === undefined || (Number.isSafeInteger(item.estimatedTokens) && Number(item.estimatedTokens) >= 0)) && (item.truncated === undefined || typeof item.truncated === "boolean")))
+  return value.every((receipt) =>
+    record(receipt) && boundedString(receipt.id) && boundedString(receipt.sessionID) &&
+    boundedString(receipt.promptID) &&
+    Number.isSafeInteger(receipt.admittedAt) && Number(receipt.admittedAt) >= 0 &&
+    ["none", "explicit", "unknown"].includes(String(receipt.truncation)) &&
+    (receipt.estimatedTokens === undefined ||
+      (Number.isSafeInteger(receipt.estimatedTokens) && Number(receipt.estimatedTokens) >= 0)) &&
+    Array.isArray(receipt.items) && receipt.items.length <= 100 && receipt.items.every((item) =>
+      record(item) && boundedString(item.id) && boundedString(item.kind, 64) && boundedString(item.label) &&
+      (item.uri === undefined || boundedString(item.uri, 4_096)) &&
+      (item.revision === undefined || boundedString(item.revision, 256)) &&
+      (item.contentHash === undefined || boundedString(item.contentHash, 256)) &&
+      (item.bytes === undefined || (Number.isSafeInteger(item.bytes) && Number(item.bytes) >= 0)) &&
+      (item.estimatedTokens === undefined ||
+        (Number.isSafeInteger(item.estimatedTokens) && Number(item.estimatedTokens) >= 0)) &&
+      (item.truncated === undefined || typeof item.truncated === "boolean")
+    )
+  )
 }
 
 function validAttentionItems(value: unknown): value is AttentionItem[] {
   if (!Array.isArray(value) || value.length > 500) return false
-  return value.every((item) => record(item) && boundedString(item.id) && boundedString(item.kind, 64) && boundedOptionalString(item.sessionID) &&
-    boundedString(item.title, 1_024) && boundedOptionalString(item.detail, 2_000) && Number.isSafeInteger(item.createdAt) && Number(item.createdAt) >= 0 &&
-    record(item.target) && ["conversation", "goal", "runs", "health"].includes(String(item.target.surface)) && boundedOptionalString(item.target.itemID))
+  return value.every((item) =>
+    record(item) && boundedString(item.id) && boundedString(item.kind, 64) && boundedOptionalString(item.sessionID) &&
+    boundedString(item.title, 1_024) && boundedOptionalString(item.detail, 2_000) &&
+    (item.acknowledged === undefined || typeof item.acknowledged === "boolean") &&
+    Number.isSafeInteger(item.createdAt) && Number(item.createdAt) >= 0 &&
+    record(item.target) && ["conversation", "goal", "runs", "health"].includes(String(item.target.surface)) &&
+    boundedOptionalString(item.target.itemID)
+  )
 }
 
 const TASK_ARTIFACT_STATES: Readonly<Record<TaskArtifactSummary["kind"], ReadonlySet<string>>> = {
@@ -1056,8 +1733,22 @@ const TASK_ARTIFACT_STATES: Readonly<Record<TaskArtifactSummary["kind"], Readonl
   "run-comparison": new Set(["complete", "incomplete"]),
   "context-capture": new Set(["complete", "limited"]),
 }
-const TASK_ARTIFACT_ITEM_LIMITS: Readonly<Record<TaskArtifactSummary["kind"], number>> = { plan: 100, review: 100, "goal-verification": 500, "run-comparison": 5, "context-capture": 100 }
-const EVIDENCE_KINDS = new Set<EvidenceReference["kind"]>(["task", "terminal", "test", "diagnostics", "diff", "todo", "criterion"])
+const TASK_ARTIFACT_ITEM_LIMITS: Readonly<Record<TaskArtifactSummary["kind"], number>> = {
+  plan: 100,
+  review: 100,
+  "goal-verification": 500,
+  "run-comparison": 5,
+  "context-capture": 100,
+}
+const EVIDENCE_KINDS = new Set<EvidenceReference["kind"]>([
+  "task",
+  "terminal",
+  "test",
+  "diagnostics",
+  "diff",
+  "todo",
+  "criterion",
+])
 const EVIDENCE_STATUSES = new Set<EvidenceReference["status"]>(["passed", "failed", "warning", "unknown"])
 
 function validDurableMetadataString(value: unknown, limit: number, label: string): value is string {
@@ -1074,17 +1765,40 @@ function validTaskArtifactSummaries(value: unknown, selectedSessionID: string): 
   const ids = new Set<string>()
   let characters = 0
   return value.every((summary) => {
-    if (!record(summary) || !exactKeys(summary, ["schemaVersion", "id", "kind", "sessionID", "lifecycle", "revision", "createdAt", "updatedAt", "state", "itemCount", "stale"]) ||
-      summary.schemaVersion !== 1 || !validDurableMetadataString(summary.id, 1_024, "Task artifact ID") || ids.has(summary.id) ||
-      !validDurableMetadataString(summary.sessionID, 1_024, "Task artifact session ID") || summary.sessionID !== selectedSessionID ||
-      !Object.hasOwn(TASK_ARTIFACT_STATES, String(summary.kind)) || !["active", "archived"].includes(String(summary.lifecycle)) ||
-      !Number.isSafeInteger(summary.revision) || Number(summary.revision) < 1 || !Number.isSafeInteger(summary.createdAt) || Number(summary.createdAt) < 0 ||
-      !Number.isSafeInteger(summary.updatedAt) || Number(summary.updatedAt) < Number(summary.createdAt)) return false
+    if (
+      !record(summary) ||
+      !exactKeys(summary, [
+        "schemaVersion",
+        "id",
+        "kind",
+        "sessionID",
+        "lifecycle",
+        "revision",
+        "createdAt",
+        "updatedAt",
+        "state",
+        "itemCount",
+        "stale",
+      ]) ||
+      summary.schemaVersion !== 1 || !validDurableMetadataString(summary.id, 1_024, "Task artifact ID") ||
+      ids.has(summary.id) ||
+      !validDurableMetadataString(summary.sessionID, 1_024, "Task artifact session ID") ||
+      summary.sessionID !== selectedSessionID ||
+      !Object.hasOwn(TASK_ARTIFACT_STATES, String(summary.kind)) ||
+      !["active", "archived"].includes(String(summary.lifecycle)) ||
+      !Number.isSafeInteger(summary.revision) || Number(summary.revision) < 1 ||
+      !Number.isSafeInteger(summary.createdAt) || Number(summary.createdAt) < 0 ||
+      !Number.isSafeInteger(summary.updatedAt) || Number(summary.updatedAt) < Number(summary.createdAt)
+    ) return false
     const kind = summary.kind as TaskArtifactSummary["kind"]
-    if (!TASK_ARTIFACT_STATES[kind].has(String(summary.state)) || (summary.itemCount !== undefined && (!Number.isSafeInteger(summary.itemCount) ||
-      Number(summary.itemCount) < 0 || Number(summary.itemCount) > TASK_ARTIFACT_ITEM_LIMITS[kind])) ||
-      (summary.stale !== undefined && typeof summary.stale !== "boolean") || (!["review", "goal-verification"].includes(kind) && summary.stale !== undefined) ||
-      ((summary.state === "stale") !== (summary.stale === true))) return false
+    if (
+      !TASK_ARTIFACT_STATES[kind].has(String(summary.state)) ||
+      (summary.itemCount !== undefined && (!Number.isSafeInteger(summary.itemCount) ||
+        Number(summary.itemCount) < 0 || Number(summary.itemCount) > TASK_ARTIFACT_ITEM_LIMITS[kind])) ||
+      (summary.stale !== undefined && typeof summary.stale !== "boolean") ||
+      (!["review", "goal-verification"].includes(kind) && summary.stale !== undefined) ||
+      ((summary.state === "stale") !== (summary.stale === true))
+    ) return false
     ids.add(summary.id)
     characters += summary.id.length + summary.sessionID.length +
       String(summary.state).length
@@ -1097,35 +1811,90 @@ function validEvidenceReferences(value: unknown, selectedSessionID: string): val
   const ids = new Set<string>()
   let characters = 0
   return value.every((evidence) => {
-    if (!record(evidence) || !exactKeys(evidence, ["id", "kind", "label", "status", "observedAt", "sourceID", "sessionID", "runGroupID", "runID", "repository", "summary"]) ||
-      !validDurableMetadataString(evidence.id, 1_024, "Evidence ID") || ids.has(evidence.id) || !EVIDENCE_KINDS.has(evidence.kind as EvidenceReference["kind"]) ||
-      !validDurableMetadataString(evidence.label, 1_024, "Evidence label") || !EVIDENCE_STATUSES.has(evidence.status as EvidenceReference["status"]) ||
-      !Number.isSafeInteger(evidence.observedAt) || Number(evidence.observedAt) < 0 || !validDurableMetadataString(evidence.sessionID, 1_024, "Evidence session ID") ||
-      evidence.sessionID !== selectedSessionID || !validDurableMetadataString(evidence.summary, 4_000, "Evidence summary")) return false
-    for (const [candidate, limit, label] of [[evidence.sourceID, 1_024, "Evidence source ID"], [evidence.runGroupID, 1_024, "Evidence run-group ID"], [evidence.runID, 1_024, "Evidence run ID"], [evidence.repository, 8_192, "Evidence repository"]] as const) {
+    if (
+      !record(evidence) ||
+      !exactKeys(evidence, [
+        "id",
+        "kind",
+        "label",
+        "status",
+        "observedAt",
+        "sourceID",
+        "sessionID",
+        "runGroupID",
+        "runID",
+        "repository",
+        "summary",
+      ]) ||
+      !validDurableMetadataString(evidence.id, 1_024, "Evidence ID") || ids.has(evidence.id) ||
+      !EVIDENCE_KINDS.has(evidence.kind as EvidenceReference["kind"]) ||
+      !validDurableMetadataString(evidence.label, 1_024, "Evidence label") ||
+      !EVIDENCE_STATUSES.has(evidence.status as EvidenceReference["status"]) ||
+      !Number.isSafeInteger(evidence.observedAt) || Number(evidence.observedAt) < 0 ||
+      !validDurableMetadataString(evidence.sessionID, 1_024, "Evidence session ID") ||
+      evidence.sessionID !== selectedSessionID ||
+      !validDurableMetadataString(evidence.summary, 4_000, "Evidence summary")
+    ) return false
+    for (
+      const [candidate, limit, label] of [
+        [evidence.sourceID, 1_024, "Evidence source ID"],
+        [evidence.runGroupID, 1_024, "Evidence run-group ID"],
+        [evidence.runID, 1_024, "Evidence run ID"],
+        [evidence.repository, 8_192, "Evidence repository"],
+      ] as const
+    ) {
       if (candidate !== undefined && !validDurableMetadataString(candidate, limit, label)) return false
     }
     ids.add(evidence.id)
     characters += evidence.id.length + evidence.label.length +
       evidence.sessionID.length + evidence.summary.length +
       (typeof evidence.sourceID === "string" ? evidence.sourceID.length : 0) +
-      (typeof evidence.runGroupID === "string"
-        ? evidence.runGroupID.length
-        : 0) +
+      (typeof evidence.runGroupID === "string" ? evidence.runGroupID.length : 0) +
       (typeof evidence.runID === "string" ? evidence.runID.length : 0) +
-      (typeof evidence.repository === "string"
-        ? evidence.repository.length
-        : 0)
+      (typeof evidence.repository === "string" ? evidence.repository.length : 0)
     return characters <= 32_000_000
   })
 }
 
 function validRunComparisonRow(value: unknown): value is RunComparisonRow {
-  if (!record(value) || !exactKeys(value, ["runID", "status", "model", "agent", "variant", "elapsedMilliseconds", "changedFiles", "additions", "deletions", "taskOutcomes", "diagnostics", "verifierState", "tokens", "cost", "blocker", "complete", "limitation"]) ||
-    !validDurableMetadataString(value.runID, 1_024, "Run comparison run ID") || !["pending", "preparing", "admitting", "working", "needs-input", "completed", "failed", "cancelled"].includes(String(value.status)) ||
-    !validDurableMetadataString(value.model, 1_024, "Run comparison model") || !["not-recorded", "passed", "failed", "mixed"].includes(String(value.taskOutcomes)) ||
-    !["not-recorded", "clean", "has-errors"].includes(String(value.diagnostics)) || typeof value.complete !== "boolean") return false
-  for (const [candidate, limit, label] of [[value.agent, 1_024, "Run comparison agent"], [value.variant, 1_024, "Run comparison variant"], [value.verifierState, 2_000, "Run comparison verifier state"], [value.blocker, 4_000, "Run comparison blocker"], [value.limitation, 4_000, "Run comparison limitation"]] as const) {
+  if (
+    !record(value) ||
+    !exactKeys(value, [
+      "runID",
+      "status",
+      "model",
+      "agent",
+      "variant",
+      "elapsedMilliseconds",
+      "changedFiles",
+      "additions",
+      "deletions",
+      "taskOutcomes",
+      "diagnostics",
+      "verifierState",
+      "tokens",
+      "cost",
+      "blocker",
+      "complete",
+      "limitation",
+    ]) ||
+    !validDurableMetadataString(value.runID, 1_024, "Run comparison run ID") ||
+    !["pending", "preparing", "admitting", "working", "needs-input", "completed", "failed", "cancelled"].includes(
+      String(value.status),
+    ) ||
+    !validDurableMetadataString(value.model, 1_024, "Run comparison model") ||
+    !["not-recorded", "passed", "failed", "mixed"].includes(String(value.taskOutcomes)) ||
+    !["not-recorded", "clean", "has-errors"].includes(String(value.diagnostics)) || typeof value.complete !== "boolean"
+  ) return false
+  for (
+    const [candidate, limit, label] of [
+      [value.agent, 1_024, "Run comparison agent"],
+      [value.variant, 1_024, "Run comparison variant"],
+      [value.verifierState, 2_000, "Run comparison verifier state"],
+      [value.blocker, 4_000, "Run comparison blocker"],
+      [value.limitation, 4_000, "Run comparison limitation"],
+    ] as const
+  ) {
     if (candidate !== undefined && !validDurableMetadataString(candidate, limit, label)) return false
   }
   for (const candidate of [value.elapsedMilliseconds, value.tokens]) {
@@ -1134,18 +1903,27 @@ function validRunComparisonRow(value: unknown): value is RunComparisonRow {
   for (const candidate of [value.changedFiles, value.additions, value.deletions]) {
     if (!Number.isSafeInteger(candidate) || Number(candidate) < 0) return false
   }
-  return value.cost === undefined || (typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0 && value.cost <= 1_000_000_000_000)
+  return value.cost === undefined ||
+    (typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0 &&
+      value.cost <= 1_000_000_000_000)
 }
 
 function validRunComparisonSnapshots(value: unknown): value is RunComparisonSnapshot[] {
   if (!Array.isArray(value) || value.length > 20) return false
   const artifactIDs = new Set<string>()
   return value.every((comparison) => {
-    if (!record(comparison) || !exactKeys(comparison, ["artifactID", "revision", "groupID", "rows", "updatedAt", "stale"]) ||
-      !validDurableMetadataString(comparison.artifactID, 1_024, "Run comparison artifact ID") || artifactIDs.has(comparison.artifactID) ||
-      !Number.isSafeInteger(comparison.revision) || Number(comparison.revision) < 1 || !validDurableMetadataString(comparison.groupID, 1_024, "Run comparison group ID") ||
-      !Number.isSafeInteger(comparison.updatedAt) || Number(comparison.updatedAt) < 0 || !Array.isArray(comparison.rows) || comparison.rows.length > 100 ||
-      !comparison.rows.every(validRunComparisonRow) || (comparison.stale !== undefined && typeof comparison.stale !== "boolean")) return false
+    if (
+      !record(comparison) ||
+      !exactKeys(comparison, ["artifactID", "revision", "groupID", "rows", "updatedAt", "stale"]) ||
+      !validDurableMetadataString(comparison.artifactID, 1_024, "Run comparison artifact ID") ||
+      artifactIDs.has(comparison.artifactID) ||
+      !Number.isSafeInteger(comparison.revision) || Number(comparison.revision) < 1 ||
+      !validDurableMetadataString(comparison.groupID, 1_024, "Run comparison group ID") ||
+      !Number.isSafeInteger(comparison.updatedAt) || Number(comparison.updatedAt) < 0 ||
+      !Array.isArray(comparison.rows) || comparison.rows.length > 100 ||
+      !comparison.rows.every(validRunComparisonRow) ||
+      (comparison.stale !== undefined && typeof comparison.stale !== "boolean")
+    ) return false
     const runIDs = comparison.rows.map((row) => row.runID)
     if (new Set(runIDs).size !== runIDs.length) return false
     artifactIDs.add(comparison.artifactID)
@@ -1155,26 +1933,105 @@ function validRunComparisonSnapshots(value: unknown): value is RunComparisonSnap
 
 function validRunGroups(value: unknown): value is RunGroup[] {
   if (!Array.isArray(value) || value.length > 500) return false
-  return value.every((group) => record(group) && boundedString(group.id) && boundedOptionalString(group.ownerSessionID) && boundedString(group.title, 500) && boundedString(group.repository, 8_192) && boundedString(group.baseRef) && boundedString(group.promptReceiptID) &&
-    ["shared", "worktree"].includes(String(group.isolation)) && Number.isSafeInteger(group.createdAt) && Number(group.createdAt) >= 0 && Array.isArray(group.runs) && group.runs.length <= 100 &&
-    group.runs.every((run) => record(run) && boundedString(run.id) && boundedString(run.model) && boundedOptionalString(run.agent) && boundedOptionalString(run.variant) && (run.retained === undefined || typeof run.retained === "boolean") && (run.discarded === undefined || typeof run.discarded === "boolean") && ["pending", "preparing", "admitting", "working", "needs-input", "completed", "failed", "cancelled"].includes(String(run.phase)) && record(run.session) && boundedString(run.session.sessionID) && boundedString(run.session.directory, 8_192)))
+  return value.every((group) =>
+    record(group) && boundedString(group.id) && boundedOptionalString(group.ownerSessionID) &&
+    boundedString(group.title, 500) && boundedString(group.repository, 8_192) && boundedString(group.baseRef) &&
+    boundedString(group.promptReceiptID) &&
+    ["shared", "worktree"].includes(String(group.isolation)) && Number.isSafeInteger(group.createdAt) &&
+    Number(group.createdAt) >= 0 && Array.isArray(group.runs) && group.runs.length <= 100 &&
+    group.runs.every((run) =>
+      record(run) && boundedString(run.id) && boundedString(run.model) && boundedOptionalString(run.agent) &&
+      boundedOptionalString(run.variant) && (run.retained === undefined || typeof run.retained === "boolean") &&
+      (run.discarded === undefined || typeof run.discarded === "boolean") &&
+      ["pending", "preparing", "admitting", "working", "needs-input", "completed", "failed", "cancelled"].includes(
+        String(run.phase),
+      ) && record(run.session) && boundedString(run.session.sessionID) && boundedString(run.session.directory, 8_192)
+    )
+  )
 }
 
 function validWorktrees(value: unknown): value is WorktreeJournalEntry[] {
-  const phases = ["requested", "creating", "ready", "setup-running", "session-creating", "session-ready", "prompt-admitting", "prompt-admitted", "failed", "cleanup-pending", "retained-dirty", "removed"]
-  return Array.isArray(value) && value.length <= 1_000 && value.every((entry) => record(entry) &&
-    exactKeys(entry, ["id", "mutationID", "owner", "repository", "repositoryID", "path", "branch", "baseRef", "phase", "sessionID", "promptID", "createdAt", "updatedAt", "error"]) &&
-    validID(entry.id) && boundedString(entry.mutationID) && ["native-agent-host", "workbench"].includes(String(entry.owner)) &&
-    boundedString(entry.repository, 8_192) && boundedString(entry.repositoryID) && boundedString(entry.path, 8_192) && boundedString(entry.branch, 1_024) &&
-    boundedString(entry.baseRef) && phases.includes(String(entry.phase)) && boundedOptionalString(entry.sessionID) && boundedOptionalString(entry.promptID) &&
-    Number.isSafeInteger(entry.createdAt) && Number(entry.createdAt) >= 0 && Number.isSafeInteger(entry.updatedAt) && Number(entry.updatedAt) >= 0 &&
-    (entry.error === undefined || (record(entry.error) && exactKeys(entry.error, ["code", "message", "retryable"]) && boundedString(entry.error.code, 256) && boundedString(entry.error.message, 2_000) && typeof entry.error.retryable === "boolean")))
+  const phases = [
+    "requested",
+    "creating",
+    "ready",
+    "setup-running",
+    "session-creating",
+    "session-ready",
+    "prompt-admitting",
+    "prompt-admitted",
+    "failed",
+    "cleanup-pending",
+    "retained-dirty",
+    "removed",
+  ]
+  return Array.isArray(value) && value.length <= 1_000 && value.every((entry) =>
+    record(entry) &&
+    exactKeys(entry, [
+      "id",
+      "mutationID",
+      "owner",
+      "repository",
+      "repositoryID",
+      "path",
+      "branch",
+      "baseRef",
+      "phase",
+      "sessionID",
+      "promptID",
+      "createdAt",
+      "updatedAt",
+      "error",
+    ]) &&
+    validID(entry.id) && boundedString(entry.mutationID) &&
+    ["native-agent-host", "workbench"].includes(String(entry.owner)) &&
+    boundedString(entry.repository, 8_192) && boundedString(entry.repositoryID) && boundedString(entry.path, 8_192) &&
+    boundedString(entry.branch, 1_024) &&
+    boundedString(entry.baseRef) && phases.includes(String(entry.phase)) && boundedOptionalString(entry.sessionID) &&
+    boundedOptionalString(entry.promptID) &&
+    Number.isSafeInteger(entry.createdAt) && Number(entry.createdAt) >= 0 && Number.isSafeInteger(entry.updatedAt) &&
+    Number(entry.updatedAt) >= 0 &&
+    (entry.error === undefined ||
+      (record(entry.error) && exactKeys(entry.error, ["code", "message", "retryable"]) &&
+        boundedString(entry.error.code, 256) && boundedString(entry.error.message, 2_000) &&
+        typeof entry.error.retryable === "boolean"))
+  )
 }
 
 function validWalkthroughs(value: unknown): value is WalkthroughDocument[] {
   if (!Array.isArray(value) || value.length > 100) return false
-  return value.every((document) => record(document) && exactKeys(document, ["id", "diffHash", "model", "promptVersion", "language", "generatedAt", "stops", "coverage", "uncoveredFiles"]) && validID(document.id) && boundedString(document.diffHash, 256) && boundedString(document.model) && boundedString(document.promptVersion, 100) && boundedString(document.language, 100) && Number.isSafeInteger(document.generatedAt) && Number(document.generatedAt) >= 0 && ["complete", "partial"].includes(String(document.coverage)) &&
-    (document.uncoveredFiles === undefined || (Array.isArray(document.uncoveredFiles) && document.uncoveredFiles.length <= 500 && document.uncoveredFiles.every((file) => boundedString(file, 8_192)))) && Array.isArray(document.stops) && document.stops.length <= 500 && document.stops.every((stop) => record(stop) && exactKeys(stop, ["id", "title", "explanation", "importance", "anchors"]) && validID(stop.id) && boundedString(stop.title, 2_000) && boundedString(stop.explanation, 20_000) && ["key-change", "normal", "context"].includes(String(stop.importance)) && Array.isArray(stop.anchors) && stop.anchors.length > 0 && stop.anchors.length <= 100 && stop.anchors.every((anchor) => record(anchor) && exactKeys(anchor, ["file", "side", "startLine", "endLine", "hunkHeader"]) && boundedString(anchor.file, 8_192) && ["base", "modified"].includes(String(anchor.side)) && Number.isSafeInteger(anchor.startLine) && Number(anchor.startLine) >= 1 && Number.isSafeInteger(anchor.endLine) && Number(anchor.endLine) >= Number(anchor.startLine) && boundedOptionalString(anchor.hunkHeader, 2_000))))
+  return value.every((document) =>
+    record(document) &&
+    exactKeys(document, [
+      "id",
+      "diffHash",
+      "model",
+      "promptVersion",
+      "language",
+      "generatedAt",
+      "stops",
+      "coverage",
+      "uncoveredFiles",
+    ]) && validID(document.id) && boundedString(document.diffHash, 256) && boundedString(document.model) &&
+    boundedString(document.promptVersion, 100) && boundedString(document.language, 100) &&
+    Number.isSafeInteger(document.generatedAt) && Number(document.generatedAt) >= 0 &&
+    ["complete", "partial"].includes(String(document.coverage)) &&
+    (document.uncoveredFiles === undefined ||
+      (Array.isArray(document.uncoveredFiles) && document.uncoveredFiles.length <= 500 &&
+        document.uncoveredFiles.every((file) => boundedString(file, 8_192)))) &&
+    Array.isArray(document.stops) && document.stops.length <= 500 && document.stops.every((stop) =>
+      record(stop) && exactKeys(stop, ["id", "title", "explanation", "importance", "anchors"]) && validID(stop.id) &&
+      boundedString(stop.title, 2_000) && boundedString(stop.explanation, 20_000) &&
+      ["key-change", "normal", "context"].includes(String(stop.importance)) && Array.isArray(stop.anchors) &&
+      stop.anchors.length > 0 && stop.anchors.length <= 100 && stop.anchors.every((anchor) =>
+        record(anchor) && exactKeys(anchor, ["file", "side", "startLine", "endLine", "hunkHeader"]) &&
+        boundedString(anchor.file, 8_192) && ["base", "modified"].includes(String(anchor.side)) &&
+        Number.isSafeInteger(anchor.startLine) && Number(anchor.startLine) >= 1 &&
+        Number.isSafeInteger(anchor.endLine) && Number(anchor.endLine) >= Number(anchor.startLine) &&
+        boundedOptionalString(anchor.hunkHeader, 2_000)
+      )
+    )
+  )
 }
 
 const SNAPSHOT_OMISSION_KEYS = [
@@ -1203,20 +2060,29 @@ const SNAPSHOT_OMISSION_KEYS = [
 ] as const
 
 function validSnapshotProjection(value: unknown): value is ChatSnapshotProjection {
-  if (!record(value) || !exactKeys(value, ["truncated", "limitBytes", "encodedBytes", "omitted", "message"]) || value.truncated !== true ||
+  if (
+    !record(value) || !exactKeys(value, ["truncated", "limitBytes", "encodedBytes", "omitted", "message"]) ||
+    value.truncated !== true ||
     !Number.isSafeInteger(value.limitBytes) || Number(value.limitBytes) < 1 || Number(value.limitBytes) > 33_554_432 ||
-    !Number.isSafeInteger(value.encodedBytes) || Number(value.encodedBytes) < 1 || Number(value.encodedBytes) > Number(value.limitBytes) ||
-    !boundedString(value.message, 2_000) || !record(value.omitted) || !exactKeys(value.omitted, SNAPSHOT_OMISSION_KEYS)) return false
+    !Number.isSafeInteger(value.encodedBytes) || Number(value.encodedBytes) < 1 ||
+    Number(value.encodedBytes) > Number(value.limitBytes) ||
+    !boundedString(value.message, 2_000) || !record(value.omitted) || !exactKeys(value.omitted, SNAPSHOT_OMISSION_KEYS)
+  ) return false
   const entries = Object.entries(value.omitted)
-  return entries.length > 0 && entries.every(([, count]) => Number.isSafeInteger(count) && Number(count) > 0 && Number(count) <= 1_000_000)
+  return entries.length > 0 &&
+    entries.every(([, count]) => Number.isSafeInteger(count) && Number(count) > 0 && Number(count) <= 1_000_000)
 }
 
 function validTodos(value: unknown): value is TodoItem[] {
   if (!Array.isArray(value) || value.length > 1_000) return false
   let characters = 0
   return value.every((todo) => {
-    if (!record(todo) || !exactKeys(todo, ["id", "content", "status", "priority"]) || (todo.id !== undefined && !validID(todo.id)) ||
-      !boundedString(todo.content, 20_000) || !boundedString(todo.status, 100) || !boundedOptionalString(todo.priority, 100)) return false
+    if (
+      !record(todo) || !exactKeys(todo, ["id", "content", "status", "priority"]) ||
+      (todo.id !== undefined && !validID(todo.id)) ||
+      !boundedString(todo.content, 20_000) || !boundedString(todo.status, 100) ||
+      !boundedOptionalString(todo.priority, 100)
+    ) return false
     characters += (todo.id?.length ?? 0) + todo.content.length + todo.status.length + (todo.priority?.length ?? 0)
     return characters <= 1_000_000
   })
@@ -1226,10 +2092,16 @@ function validChanges(value: unknown): value is FileChange[] {
   if (!Array.isArray(value) || value.length > 500) return false
   let characters = 0
   return value.every((change) => {
-    if (!record(change) || !exactKeys(change, ["file", "patch", "additions", "deletions", "status"]) ||
+    if (
+      !record(change) ||
+      !exactKeys(change, ["file", "patch", "additions", "deletions", "status", "reviewed", "reviewScope"]) ||
       !boundedString(change.file, 8_192) || change.file.length === 0 || !boundedOptionalString(change.patch, 500_000) ||
-      !Number.isSafeInteger(change.additions) || Number(change.additions) < 0 || !Number.isSafeInteger(change.deletions) || Number(change.deletions) < 0 ||
-      (change.status !== undefined && !["added", "deleted", "modified"].includes(String(change.status)))) return false
+      !Number.isSafeInteger(change.additions) || Number(change.additions) < 0 ||
+      !Number.isSafeInteger(change.deletions) || Number(change.deletions) < 0 ||
+      (change.status !== undefined && !["added", "deleted", "modified"].includes(String(change.status))) ||
+      (change.reviewed !== undefined && typeof change.reviewed !== "boolean") ||
+      (change.reviewScope !== undefined && !["workspace", "external"].includes(String(change.reviewScope)))
+    ) return false
     characters += change.file.length + (change.patch?.length ?? 0)
     return characters <= 4_000_000
   })
@@ -1239,18 +2111,26 @@ function validQuestions(value: unknown): value is QuestionRequest[] {
   if (!Array.isArray(value) || value.length > 100) return false
   let characters = 0
   return value.every((request) => {
-    if (!record(request) || !exactKeys(request, ["id", "sessionID", "questions", "protocol"]) || !validID(request.id) ||
-      !validID(request.sessionID) || !["legacy", "v2"].includes(String(request.protocol)) || !Array.isArray(request.questions) ||
-      request.questions.length === 0 || request.questions.length > 20) return false
+    if (
+      !record(request) || !exactKeys(request, ["id", "sessionID", "questions", "protocol"]) || !validID(request.id) ||
+      !validID(request.sessionID) || !["legacy", "v2"].includes(String(request.protocol)) ||
+      !Array.isArray(request.questions) ||
+      request.questions.length === 0 || request.questions.length > 20
+    ) return false
     return request.questions.every((question) => {
-      if (!record(question) || !exactKeys(question, ["question", "header", "options", "multiple", "custom"]) ||
-        !boundedString(question.question, 20_000) || !boundedString(question.header, 1_000) || !Array.isArray(question.options) ||
+      if (
+        !record(question) || !exactKeys(question, ["question", "header", "options", "multiple", "custom"]) ||
+        !boundedString(question.question, 20_000) || !boundedString(question.header, 1_000) ||
+        !Array.isArray(question.options) ||
         question.options.length > 50 || (question.multiple !== undefined && typeof question.multiple !== "boolean") ||
-        (question.custom !== undefined && typeof question.custom !== "boolean")) return false
+        (question.custom !== undefined && typeof question.custom !== "boolean")
+      ) return false
       characters += question.question.length + question.header.length
       return characters <= 1_000_000 && question.options.every((option) => {
-        if (!record(option) || !exactKeys(option, ["label", "description"]) || !boundedString(option.label, 2_000) ||
-          !boundedString(option.description, 20_000)) return false
+        if (
+          !record(option) || !exactKeys(option, ["label", "description"]) || !boundedString(option.label, 2_000) ||
+          !boundedString(option.description, 20_000)
+        ) return false
         characters += option.label.length + option.description.length
         return characters <= 1_000_000
       })
@@ -1262,36 +2142,85 @@ function validPermissions(value: unknown): value is PermissionRequest[] {
   if (!Array.isArray(value) || value.length > 100) return false
   let characters = 0
   return value.every((request) => {
-    if (!record(request) || !exactKeys(request, ["id", "sessionID", "title", "type", "pattern", "metadata", "always", "protocol", "truncated"]) ||
+    if (
+      !record(request) ||
+      !exactKeys(request, [
+        "id",
+        "sessionID",
+        "title",
+        "type",
+        "pattern",
+        "metadata",
+        "always",
+        "protocol",
+        "truncated",
+      ]) ||
       !validID(request.id) || !validID(request.sessionID) || !boundedString(request.title, 8_000) ||
       !boundedOptionalString(request.type) || !["legacy", "current", "v2"].includes(String(request.protocol)) ||
       (request.pattern !== undefined && !(boundedString(request.pattern, 20_000) ||
-        (Array.isArray(request.pattern) && request.pattern.length <= 100 && request.pattern.every((item) => boundedString(item, 20_000))))) ||
-      (request.always !== undefined && (!Array.isArray(request.always) || request.always.length > 100 || !request.always.every((item) => boundedString(item, 20_000)))) ||
+        (Array.isArray(request.pattern) && request.pattern.length <= 100 &&
+          request.pattern.every((item) => boundedString(item, 20_000))))) ||
+      (request.always !== undefined &&
+        (!Array.isArray(request.always) || request.always.length > 100 ||
+          !request.always.every((item) => boundedString(item, 20_000)))) ||
       (request.metadata !== undefined && !validJson(request.metadata)) ||
-      (request.truncated !== undefined && typeof request.truncated !== "boolean")) return false
+      (request.truncated !== undefined && typeof request.truncated !== "boolean")
+    ) return false
     characters += permissionRequestCharacters(request as unknown as PermissionRequest)
     return characters <= PERMISSION_AGGREGATE_CHARACTER_LIMIT
   })
 }
 
 function validContext(value: unknown): value is ContextSummary {
-  if (!record(value) || !exactKeys(value, ["inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens", "contextLimit", "inputLimit", "outputLimit", "model", "usageReported", "usagePercent", "cost"])) return false
-  const counts = [value.inputTokens, value.outputTokens, value.reasoningTokens, value.cacheReadTokens, value.cacheWriteTokens, value.totalTokens]
-  return counts.every((count) => Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000_000_000) &&
+  if (
+    !record(value) ||
+    !exactKeys(value, [
+      "inputTokens",
+      "outputTokens",
+      "reasoningTokens",
+      "cacheReadTokens",
+      "cacheWriteTokens",
+      "totalTokens",
+      "contextLimit",
+      "inputLimit",
+      "outputLimit",
+      "model",
+      "usageReported",
+      "usagePercent",
+      "cost",
+    ])
+  ) return false
+  const counts = [
+    value.inputTokens,
+    value.outputTokens,
+    value.reasoningTokens,
+    value.cacheReadTokens,
+    value.cacheWriteTokens,
+    value.totalTokens,
+  ]
+  return counts.every((count) =>
+    Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000_000_000
+  ) &&
     Number(value.totalTokens) === counts.slice(0, 5).reduce<number>((total, count) => total + Number(count), 0) &&
-    (value.contextLimit === undefined || (Number.isSafeInteger(value.contextLimit) && Number(value.contextLimit) > 0)) &&
+    (value.contextLimit === undefined ||
+      (Number.isSafeInteger(value.contextLimit) && Number(value.contextLimit) > 0)) &&
     (value.inputLimit === undefined || (Number.isSafeInteger(value.inputLimit) && Number(value.inputLimit) > 0)) &&
-    (value.outputLimit === undefined || (Number.isSafeInteger(value.outputLimit) && Number(value.outputLimit) > 0)) && boundedOptionalString(value.model, 2_049) &&
+    (value.outputLimit === undefined || (Number.isSafeInteger(value.outputLimit) && Number(value.outputLimit) > 0)) &&
+    boundedOptionalString(value.model, 2_049) &&
     (value.usageReported === undefined || typeof value.usageReported === "boolean") &&
     (value.usageReported !== false || value.usagePercent === undefined) &&
-    (value.usagePercent === undefined || (typeof value.usagePercent === "number" && Number.isFinite(value.usagePercent) && value.usagePercent >= 0 && value.usagePercent <= 100)) &&
+    (value.usagePercent === undefined ||
+      (typeof value.usagePercent === "number" && Number.isFinite(value.usagePercent) && value.usagePercent >= 0 &&
+        value.usagePercent <= 100)) &&
     typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0 && value.cost <= 1_000_000_000_000
 }
 
 function validSessionMetrics(value: unknown): value is SessionMetrics {
-  if (!record(value) || !exactKeys(value, ["tokensUsed", "timeUsedSeconds", "turnsUsed", "turnsTruncated", "sampledAt"])) return false
-  return (value.tokensUsed === undefined || (Number.isSafeInteger(value.tokensUsed) && Number(value.tokensUsed) >= 0)) &&
+  if (
+    !record(value) || !exactKeys(value, ["tokensUsed", "timeUsedSeconds", "turnsUsed", "turnsTruncated", "sampledAt"])
+  ) return false
+  return (value.tokensUsed === undefined ||
+    (Number.isSafeInteger(value.tokensUsed) && Number(value.tokensUsed) >= 0)) &&
     Number.isSafeInteger(value.timeUsedSeconds) && Number(value.timeUsedSeconds) >= 0 &&
     Number.isSafeInteger(value.turnsUsed) && Number(value.turnsUsed) >= 0 &&
     (value.turnsTruncated === undefined || typeof value.turnsTruncated === "boolean") &&
@@ -1299,45 +2228,146 @@ function validSessionMetrics(value: unknown): value is SessionMetrics {
 }
 
 function validGoalMetric(value: unknown): value is GoalMetricSummary {
-  if (!record(value) || !exactKeys(value, ["id", "sequence", "objective", "status", "tokensUsed", "timeUsedSeconds", "turnsUsed", "autoTurns", "createdAt", "closedAt"])) return false
+  if (
+    !record(value) ||
+    !exactKeys(value, [
+      "id",
+      "sequence",
+      "objective",
+      "status",
+      "tokensUsed",
+      "timeUsedSeconds",
+      "turnsUsed",
+      "autoTurns",
+      "createdAt",
+      "closedAt",
+    ])
+  ) return false
   return boundedString(value.id) && Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1 &&
     boundedString(value.objective, 400) && boundedString(value.status, 100) &&
     [value.tokensUsed, value.timeUsedSeconds, value.turnsUsed, value.autoTurns, value.createdAt]
       .every((metric) => Number.isSafeInteger(metric) && Number(metric) >= 0) &&
-    (value.closedAt === undefined || (Number.isSafeInteger(value.closedAt) && Number(value.closedAt) >= Number(value.createdAt)))
+    (value.closedAt === undefined ||
+      (Number.isSafeInteger(value.closedAt) && Number(value.closedAt) >= Number(value.createdAt)))
 }
 
 function validGoal(value: unknown): value is GoalSummary {
-  if (!record(value) || !exactKeys(value, ["id", "sequence", "objective", "status", "sourceTool", "tokenBudget", "tokensUsed", "remainingTokens", "timeUsedSeconds", "maxDurationSeconds", "turnsUsed", "autoTurns", "maxAutoTurns", "lastStatus", "stopReason", "checkpoint", "completionEvidence", "blocker", "acceptanceCriteria", "verifier", "latestVerdict", "evidenceReferences", "consecutiveBlockedVerdicts", "pendingContinuation", "settlementGeneration", "planReference", "runGroupReference", "createdAt", "closedAt", "archivedGoals", "sampledAt"]) ||
-    !boundedOptionalString(value.objective, 20_000) || !boundedOptionalString(value.status, 100) || !boundedString(value.sourceTool, 100)) return false
-  return boundedOptionalString(value.id) && (value.sequence === undefined || (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1)) &&
-    [value.tokenBudget, value.tokensUsed, value.remainingTokens, value.timeUsedSeconds, value.maxDurationSeconds, value.turnsUsed, value.autoTurns, value.maxAutoTurns, value.createdAt, value.closedAt, value.sampledAt]
+  if (
+    !record(value) ||
+    !exactKeys(value, [
+      "id",
+      "sequence",
+      "objective",
+      "status",
+      "sourceTool",
+      "tokenBudget",
+      "tokensUsed",
+      "remainingTokens",
+      "timeUsedSeconds",
+      "maxDurationSeconds",
+      "turnsUsed",
+      "autoTurns",
+      "maxAutoTurns",
+      "lastStatus",
+      "stopReason",
+      "checkpoint",
+      "completionEvidence",
+      "blocker",
+      "acceptanceCriteria",
+      "verifier",
+      "latestVerdict",
+      "evidenceReferences",
+      "consecutiveBlockedVerdicts",
+      "pendingContinuation",
+      "settlementGeneration",
+      "planReference",
+      "runGroupReference",
+      "createdAt",
+      "closedAt",
+      "archivedGoals",
+      "sampledAt",
+    ]) ||
+    !boundedOptionalString(value.objective, 20_000) || !boundedOptionalString(value.status, 100) ||
+    !boundedString(value.sourceTool, 100)
+  ) return false
+  return boundedOptionalString(value.id) &&
+    (value.sequence === undefined || (Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1)) &&
+    [
+      value.tokenBudget,
+      value.tokensUsed,
+      value.remainingTokens,
+      value.timeUsedSeconds,
+      value.maxDurationSeconds,
+      value.turnsUsed,
+      value.autoTurns,
+      value.maxAutoTurns,
+      value.createdAt,
+      value.closedAt,
+      value.sampledAt,
+    ]
       .every((metric) => metric === undefined || (Number.isSafeInteger(metric) && Number(metric) >= 0)) &&
-    [value.lastStatus, value.stopReason, value.checkpoint, value.completionEvidence, value.blocker].every((text) => boundedOptionalString(text, 20_000)) &&
-    (value.acceptanceCriteria === undefined || (Array.isArray(value.acceptanceCriteria) && value.acceptanceCriteria.length <= 100 && value.acceptanceCriteria.every((item) => boundedString(item, 2_000)))) &&
-    (value.verifier === undefined || (record(value.verifier) && exactKeys(value.verifier, ["model", "agent", "timeoutMilliseconds", "repeatedBlockThreshold", "enabled"]) && boundedOptionalString(value.verifier.model) && boundedOptionalString(value.verifier.agent) && Number.isSafeInteger(value.verifier.timeoutMilliseconds) && Number(value.verifier.timeoutMilliseconds) >= 1_000 && Number(value.verifier.timeoutMilliseconds) <= 300_000 && Number.isSafeInteger(value.verifier.repeatedBlockThreshold) && Number(value.verifier.repeatedBlockThreshold) >= 1 && Number(value.verifier.repeatedBlockThreshold) <= 10 && typeof value.verifier.enabled === "boolean")) &&
-    (value.evidenceReferences === undefined || (Array.isArray(value.evidenceReferences) && value.evidenceReferences.length <= 500 && value.evidenceReferences.every((item) => boundedString(item)))) &&
-    (value.consecutiveBlockedVerdicts === undefined || (Number.isSafeInteger(value.consecutiveBlockedVerdicts) && Number(value.consecutiveBlockedVerdicts) >= 0)) &&
+    [value.lastStatus, value.stopReason, value.checkpoint, value.completionEvidence, value.blocker].every((text) =>
+      boundedOptionalString(text, 20_000)
+    ) &&
+    (value.acceptanceCriteria === undefined ||
+      (Array.isArray(value.acceptanceCriteria) && value.acceptanceCriteria.length <= 100 &&
+        value.acceptanceCriteria.every((item) => boundedString(item, 2_000)))) &&
+    (value.verifier === undefined ||
+      (record(value.verifier) &&
+        exactKeys(value.verifier, ["model", "agent", "timeoutMilliseconds", "repeatedBlockThreshold", "enabled"]) &&
+        boundedOptionalString(value.verifier.model) && boundedOptionalString(value.verifier.agent) &&
+        Number.isSafeInteger(value.verifier.timeoutMilliseconds) &&
+        Number(value.verifier.timeoutMilliseconds) >= 1_000 && Number(value.verifier.timeoutMilliseconds) <= 300_000 &&
+        Number.isSafeInteger(value.verifier.repeatedBlockThreshold) &&
+        Number(value.verifier.repeatedBlockThreshold) >= 1 && Number(value.verifier.repeatedBlockThreshold) <= 10 &&
+        typeof value.verifier.enabled === "boolean")) &&
+    (value.evidenceReferences === undefined ||
+      (Array.isArray(value.evidenceReferences) && value.evidenceReferences.length <= 500 &&
+        value.evidenceReferences.every((item) => boundedString(item)))) &&
+    (value.consecutiveBlockedVerdicts === undefined ||
+      (Number.isSafeInteger(value.consecutiveBlockedVerdicts) && Number(value.consecutiveBlockedVerdicts) >= 0)) &&
     (value.pendingContinuation === undefined || typeof value.pendingContinuation === "boolean") &&
-    (value.settlementGeneration === undefined || (Number.isSafeInteger(value.settlementGeneration) && Number(value.settlementGeneration) >= 0)) &&
+    (value.settlementGeneration === undefined ||
+      (Number.isSafeInteger(value.settlementGeneration) && Number(value.settlementGeneration) >= 0)) &&
     boundedOptionalString(value.planReference, 8_192) && boundedOptionalString(value.runGroupReference) &&
-    (value.archivedGoals === undefined || (Array.isArray(value.archivedGoals) && value.archivedGoals.length <= 100 && value.archivedGoals.every(validGoalMetric))) &&
-    (value.latestVerdict === undefined || (record(value.latestVerdict) && ["continue", "complete", "blocked", "needs-user"].includes(String(value.latestVerdict.verdict)) && boundedString(value.latestVerdict.reason, 4_000) && Array.isArray(value.latestVerdict.missingCriteria) && value.latestVerdict.missingCriteria.length <= 100 && value.latestVerdict.missingCriteria.every((item) => boundedString(item, 2_000)) && ["low", "medium", "high"].includes(String(value.latestVerdict.confidence))))
+    (value.archivedGoals === undefined ||
+      (Array.isArray(value.archivedGoals) && value.archivedGoals.length <= 100 &&
+        value.archivedGoals.every(validGoalMetric))) &&
+    (value.latestVerdict === undefined ||
+      (record(value.latestVerdict) &&
+        ["continue", "complete", "blocked", "needs-user"].includes(String(value.latestVerdict.verdict)) &&
+        boundedString(value.latestVerdict.reason, 4_000) && Array.isArray(value.latestVerdict.missingCriteria) &&
+        value.latestVerdict.missingCriteria.length <= 100 &&
+        value.latestVerdict.missingCriteria.every((item) => boundedString(item, 2_000)) &&
+        ["low", "medium", "high"].includes(String(value.latestVerdict.confidence))))
 }
 
 function validRuntimeService(value: unknown): boolean {
-  return record(value) && exactKeys(value, ["id", "name", "status", "root", "error", "extensions", "enabled"]) && validID(value.id) &&
-    boundedOptionalString(value.name, 2_000) && boundedOptionalString(value.status, 100) && boundedOptionalString(value.root, 8_192) &&
-    boundedOptionalString(value.error, 20_000) && (value.extensions === undefined || (Array.isArray(value.extensions) && value.extensions.length <= 200 &&
-      value.extensions.every((extension) => boundedString(extension, 100)))) && (value.enabled === undefined || typeof value.enabled === "boolean")
+  return record(value) && exactKeys(value, ["id", "name", "status", "root", "error", "extensions", "enabled"]) &&
+    validID(value.id) &&
+    boundedOptionalString(value.name, 2_000) && boundedOptionalString(value.status, 100) &&
+    boundedOptionalString(value.root, 8_192) &&
+    boundedOptionalString(value.error, 20_000) &&
+    (value.extensions === undefined || (Array.isArray(value.extensions) && value.extensions.length <= 200 &&
+      value.extensions.every((extension) => boundedString(extension, 100)))) &&
+    (value.enabled === undefined || typeof value.enabled === "boolean")
 }
 
 function validRuntime(value: unknown): value is RuntimeStatus {
-  if (!record(value) || !exactKeys(value, ["path", "vcs", "lsp", "formatters", "mcp", "updatedAt"]) ||
-    !Number.isSafeInteger(value.updatedAt) || Number(value.updatedAt) < 0) return false
-  if (value.path !== undefined && (!record(value.path) || !exactKeys(value.path, ["home", "state", "config", "worktree", "directory"]) || ![value.path.home, value.path.state, value.path.config, value.path.worktree, value.path.directory]
-    .every((entry) => boundedOptionalString(entry, 8_192)))) return false
-  if (value.vcs !== undefined && (!record(value.vcs) || !exactKeys(value.vcs, ["branch"]) || !boundedOptionalString(value.vcs.branch, 2_000))) return false
+  if (
+    !record(value) || !exactKeys(value, ["path", "vcs", "lsp", "formatters", "mcp", "updatedAt"]) ||
+    !Number.isSafeInteger(value.updatedAt) || Number(value.updatedAt) < 0
+  ) return false
+  if (
+    value.path !== undefined &&
+    (!record(value.path) || !exactKeys(value.path, ["home", "state", "config", "worktree", "directory"]) ||
+      ![value.path.home, value.path.state, value.path.config, value.path.worktree, value.path.directory]
+        .every((entry) => boundedOptionalString(entry, 8_192)))
+  ) return false
+  if (
+    value.vcs !== undefined &&
+    (!record(value.vcs) || !exactKeys(value.vcs, ["branch"]) || !boundedOptionalString(value.vcs.branch, 2_000))
+  ) return false
   return [value.lsp, value.formatters, value.mcp].every((services) =>
     Array.isArray(services) && services.length <= 500 && services.every(validRuntimeService)
   )
@@ -1497,7 +2527,8 @@ function validRecoveryPreview(value: unknown): value is RecoveryPreview {
     typeof value.canRevert === "boolean" &&
     typeof value.canFork === "boolean" && typeof value.canRedo === "boolean" &&
     (Number(value.removedTurns) >= 1 ||
-      (Number(value.removedTurns) === 0 && value.removedMessageIDs.length === 0 && value.canRedo && !value.canRevert && !value.canFork))
+      (Number(value.removedTurns) === 0 && value.removedMessageIDs.length === 0 && value.canRedo && !value.canRevert &&
+        !value.canFork))
 }
 
 export function parseHostMessage(
@@ -1508,46 +2539,62 @@ export function parseHostMessage(
     return typeof value.message === "string" ? { type: "error", message: value.message } : undefined
   }
   if (value.type === "insertText") {
-    return exactKeys(value, ["type", "sessionID", "text"]) && validID(value.sessionID) && boundedString(value.text, 100_000)
+    return exactKeys(value, ["type", "sessionID", "text"]) && validID(value.sessionID) &&
+        boundedString(value.text, 100_000)
       ? { type: "insertText", sessionID: value.sessionID, text: value.text }
       : undefined
   }
   if (value.type === "fileSuggestions") {
-    return exactKeys(value, ["type", "sessionID", "requestID", "files"]) && validID(value.sessionID) && Number.isSafeInteger(value.requestID) && Number(value.requestID) >= 0 &&
-        Array.isArray(value.files) && value.files.length <= 20 && value.files.every((file) => boundedString(file, 8_192))
+    return exactKeys(value, ["type", "sessionID", "requestID", "files"]) && validID(value.sessionID) &&
+        Number.isSafeInteger(value.requestID) && Number(value.requestID) >= 0 &&
+        Array.isArray(value.files) && value.files.length <= 20 && value.files.every((file) =>
+          boundedString(file, 8_192)
+        )
       ? { type: "fileSuggestions", sessionID: value.sessionID, requestID: Number(value.requestID), files: value.files }
       : undefined
   }
   if (value.type === "editorContextChanged") {
     if (!exactKeys(value, ["type", "context"])) return undefined
     if (value.context === undefined) return { type: "editorContextChanged" }
-    return record(value.context) && exactKeys(value.context, ["name", "detail", "dirty", "attached"]) && boundedString(value.context.name, 255) &&
-        boundedOptionalString(value.context.detail, 255) && (value.context.dirty === undefined || typeof value.context.dirty === "boolean") &&
+    return record(value.context) && exactKeys(value.context, ["name", "detail", "dirty", "attached"]) &&
+        boundedString(value.context.name, 255) &&
+        boundedOptionalString(value.context.detail, 255) &&
+        (value.context.dirty === undefined || typeof value.context.dirty === "boolean") &&
         (value.context.attached === undefined || typeof value.context.attached === "boolean")
       ? { type: "editorContextChanged", context: value.context as unknown as EditorContextSummary }
       : undefined
   }
   if (value.type === "contextAttachmentsChanged") {
-    const valid = exactKeys(value, ["type", "sessionID", "attachments"]) && validID(value.sessionID) && Array.isArray(value.attachments) && value.attachments.length <= 20 &&
-      value.attachments.every((attachment) => record(attachment) && exactKeys(attachment, ["id", "name", "detail", "kind"]) && validID(attachment.id) &&
-        boundedString(attachment.name, 255) && boundedOptionalString(attachment.detail, 255) && ["file", "folder", "selection", "buffer", "resource", "notebook"].includes(String(attachment.kind)))
+    const valid = exactKeys(value, ["type", "sessionID", "attachments"]) && validID(value.sessionID) &&
+      Array.isArray(value.attachments) && value.attachments.length <= 20 &&
+      value.attachments.every((attachment) =>
+        record(attachment) && exactKeys(attachment, ["id", "name", "detail", "kind"]) && validID(attachment.id) &&
+        boundedString(attachment.name, 255) && boundedOptionalString(attachment.detail, 255) &&
+        ["file", "folder", "selection", "buffer", "resource", "notebook"].includes(String(attachment.kind))
+      )
     return valid ? value as unknown as HostToWebviewMessage : undefined
   }
   if (value.type === "composerPayloadChanged") {
-    return exactKeys(value, ["type", "sessionID", "revision", "attachments", "pastedText", "conflict", "mutationID"]) && validID(value.sessionID) && Number.isSafeInteger(value.revision) && Number(value.revision) >= 0 &&
-        (value.conflict === undefined || typeof value.conflict === "boolean") && (value.mutationID === undefined || (typeof value.mutationID === "string" && /^cmp_[a-f0-9]{32}$/.test(value.mutationID))) &&
+    return exactKeys(value, ["type", "sessionID", "revision", "attachments", "pastedText", "conflict", "mutationID"]) &&
+        validID(value.sessionID) && Number.isSafeInteger(value.revision) && Number(value.revision) >= 0 &&
+        (value.conflict === undefined || typeof value.conflict === "boolean") &&
+        (value.mutationID === undefined ||
+          (typeof value.mutationID === "string" && /^cmp_[a-f0-9]{32}$/.test(value.mutationID))) &&
         validInlineAttachments(value.attachments, false) && validPastedText(value.pastedText)
       ? value as unknown as HostToWebviewMessage
       : undefined
   }
   if (value.type === "draftChanged") {
-    return exactKeys(value, ["type", "sessionID", "draft", "revision"]) && validID(value.sessionID) && boundedString(value.draft, PROMPT_TEXT_CHARACTER_LIMIT) &&
+    return exactKeys(value, ["type", "sessionID", "draft", "revision"]) && validID(value.sessionID) &&
+        boundedString(value.draft, PROMPT_TEXT_CHARACTER_LIMIT) &&
         Number.isSafeInteger(value.revision) && Number(value.revision) >= 0
       ? value as unknown as HostToWebviewMessage
       : undefined
   }
   if (value.type === "sessionRemoved") {
-    return exactKeys(value, ["type", "sessionID"]) && validID(value.sessionID) ? { type: "sessionRemoved", sessionID: value.sessionID } : undefined
+    return exactKeys(value, ["type", "sessionID"]) && validID(value.sessionID)
+      ? { type: "sessionRemoved", sessionID: value.sessionID }
+      : undefined
   }
   if (value.type === "navigateWorkbench") {
     return exactKeys(value, ["type", "tab", "itemID", "focus"]) &&
@@ -1563,7 +2610,8 @@ export function parseHostMessage(
       : undefined
   }
   if (value.type === "workbenchControl") {
-    return exactKeys(value, ["type", "target", "action"]) && ["sessions", "jobs", "attention"].includes(String(value.target)) &&
+    return exactKeys(value, ["type", "target", "action"]) &&
+        ["sessions", "jobs", "attention"].includes(String(value.target)) &&
         ["show", "toggle"].includes(String(value.action))
       ? value as HostToWebviewMessage
       : undefined
@@ -1575,13 +2623,25 @@ export function parseHostMessage(
       : undefined
   }
   if (value.type === "messagePatches") {
-    if (!exactKeys(value, ["type", "patches"]) || !Array.isArray(value.patches) || value.patches.length > 100) return undefined
-    const valid = value.patches.every((patch) => record(patch) && exactKeys(patch, ["sessionID", "messageID", "message", "revision", "active", "append", "afterMessageID"]) &&
-      validID(patch.sessionID) && validID(patch.messageID) && Number.isSafeInteger(patch.revision) && Number(patch.revision) >= 0 &&
-      typeof patch.active === "boolean" && typeof patch.append === "boolean" && boundedOptionalString(patch.afterMessageID) && (patch.message === undefined || (validMessages([patch.message]) &&
-        (patch.message as MessageBundle).info.id === patch.messageID && (patch.message as MessageBundle).info.sessionID === patch.sessionID &&
-        (patch.message as MessageBundle).parts.every((part) => part.messageID === patch.messageID && part.sessionID === patch.sessionID))))
-    const messages = value.patches.flatMap((patch) => record(patch) && patch.message !== undefined ? [patch.message] : [])
+    if (!exactKeys(value, ["type", "patches"]) || !Array.isArray(value.patches) || value.patches.length > 100) {
+      return undefined
+    }
+    const valid = value.patches.every((patch) =>
+      record(patch) &&
+      exactKeys(patch, ["sessionID", "messageID", "message", "revision", "active", "append", "afterMessageID"]) &&
+      validID(patch.sessionID) && validID(patch.messageID) && Number.isSafeInteger(patch.revision) &&
+      Number(patch.revision) >= 0 &&
+      typeof patch.active === "boolean" && typeof patch.append === "boolean" &&
+      boundedOptionalString(patch.afterMessageID) && (patch.message === undefined || (validMessages([patch.message]) &&
+        (patch.message as MessageBundle).info.id === patch.messageID &&
+        (patch.message as MessageBundle).info.sessionID === patch.sessionID &&
+        (patch.message as MessageBundle).parts.every((part) =>
+          part.messageID === patch.messageID && part.sessionID === patch.sessionID
+        )))
+    )
+    const messages = value.patches.flatMap((patch) =>
+      record(patch) && patch.message !== undefined ? [patch.message] : []
+    )
     if (valid && !validMessages(messages)) return undefined
     return valid ? value as HostToWebviewMessage : undefined
   }
@@ -1599,6 +2659,7 @@ export function parseHostMessage(
     ) ||
     snapshot.connected !== (snapshot.connectionState === "connected") ||
     !boundedOptionalString(snapshot.connectionError, 20_000) ||
+    !boundedOptionalString(snapshot.workspaceDirectory, 8_192) ||
     !Array.isArray(snapshot.sessions) ||
     !validSessionOptions(snapshot.sessions) ||
     (snapshot.lineage !== undefined && !validLineage(snapshot.lineage)) ||
@@ -1673,9 +2734,7 @@ export function parseHostMessage(
       !boundedOptionalString(session.inFlightPromptID) ||
       (session.inFlightPromptID !== undefined &&
         (!Array.isArray(session.queue) ||
-          !session.queue.some((prompt) =>
-            record(prompt) && prompt.id === session.inFlightPromptID
-          ))) ||
+          !session.queue.some((prompt) => record(prompt) && prompt.id === session.inFlightPromptID))) ||
       (session.permissions !== undefined &&
         !validPermissions(session.permissions)) ||
       (session.questions !== undefined && !validQuestions(session.questions)) ||
@@ -1684,7 +2743,9 @@ export function parseHostMessage(
       (session.context !== undefined && !validContext(session.context)) ||
       (session.metrics !== undefined && !validSessionMetrics(session.metrics)) ||
       (session.goal !== undefined && !validGoal(session.goal)) ||
-      (session.goalHistory !== undefined && (!Array.isArray(session.goalHistory) || session.goalHistory.length > 100 || !session.goalHistory.every(validGoalMetric))) ||
+      (session.goalHistory !== undefined &&
+        (!Array.isArray(session.goalHistory) || session.goalHistory.length > 100 ||
+          !session.goalHistory.every(validGoalMetric))) ||
       (session.delegations !== undefined &&
         !validDelegations(session.delegations)) ||
       (session.contextReceipts !== undefined &&

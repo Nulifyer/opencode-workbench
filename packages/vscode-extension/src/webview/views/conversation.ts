@@ -1,8 +1,12 @@
 /// <reference lib="dom" />
 
-import { isNativeCompactionContinuationMessage, type ChatSnapshot, type MessageBundle } from "@opencode-workbench/shared"
+import {
+  type ChatSnapshot,
+  isNativeCompactionContinuationMessage,
+  type MessageBundle,
+} from "@opencode-workbench/shared"
 import { activityCollapsed, activityWorking, turnContent } from "../presentation.js"
-import { ScrollController, type ScrollAnchor, type ScrollViewport } from "../controllers/scroll-controller.js"
+import { type ScrollAnchor, ScrollController, type ScrollViewport } from "../controllers/scroll-controller.js"
 
 type Session = NonNullable<ChatSnapshot["session"]>
 
@@ -40,11 +44,16 @@ export interface ConversationTurnGroup {
 }
 
 function visibleReasoningOnly(message: MessageBundle): boolean {
-  const visible = message.parts.filter((part) => !part.synthetic && part.type !== "step-start" && part.type !== "step-finish")
+  const visible = message.parts.filter((part) =>
+    !part.synthetic && part.type !== "step-start" && part.type !== "step-finish"
+  )
   return message.info.role === "assistant" && visible.length > 0 && visible.every((part) => part.type === "reasoning")
 }
 
-function groupedConversationTurns(session: Session, active: boolean): { turns: ConversationTurnGroup[]; lastAssistantID?: string } {
+function groupedConversationTurns(
+  session: Session,
+  active: boolean,
+): { turns: ConversationTurnGroup[]; lastAssistantID?: string } {
   let lastAssistantID: string | undefined
   for (let index = session.messages.length - 1; index >= 0; index -= 1) {
     if (session.messages[index]?.info.role !== "assistant") continue
@@ -66,7 +75,8 @@ function groupedConversationTurns(session: Session, active: boolean): { turns: C
       order.push(turnKey)
       grouped.set(turnKey, [])
     }
-    const live = message.info.role === "assistant" && active && !message.info.time?.completed && message.info.id === lastAssistantID
+    const live = message.info.role === "assistant" && active && !message.info.time?.completed &&
+      message.info.id === lastAssistantID
     grouped.get(turnKey!)!.push({ message, live })
   }
   return {
@@ -91,7 +101,10 @@ function projectConversationTurnsWithCache(
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index]!
       if (!visibleReasoningOnly(entry.message)) {
-        displayEntries.push({ ...entry, revisionKey: `${entry.message.info.id}:${session.messageRevisions[entry.message.info.id] ?? 0}` })
+        displayEntries.push({
+          ...entry,
+          revisionKey: `${entry.message.info.id}:${session.messageRevisions[entry.message.info.id] ?? 0}`,
+        })
         continue
       }
       const run = [entry]
@@ -100,7 +113,10 @@ function projectConversationTurnsWithCache(
         index += 1
       }
       if (run.length === 1) {
-        displayEntries.push({ ...entry, revisionKey: `${entry.message.info.id}:${session.messageRevisions[entry.message.info.id] ?? 0}` })
+        displayEntries.push({
+          ...entry,
+          revisionKey: `${entry.message.info.id}:${session.messageRevisions[entry.message.info.id] ?? 0}`,
+        })
         continue
       }
       const first = run[0]!.message
@@ -113,10 +129,13 @@ function projectConversationTurnsWithCache(
             role: "assistant",
             time: { created: first.info.time?.created, completed: last.info.time?.completed },
           },
-          parts: run.flatMap((item) => item.message.parts.filter((part) => !part.synthetic && part.type === "reasoning")),
+          parts: run.flatMap((item) =>
+            item.message.parts.filter((part) => !part.synthetic && part.type === "reasoning")
+          ),
         },
         live: run.some((item) => item.live),
-        revisionKey: run.map((item) => `${item.message.info.id}:${session.messageRevisions[item.message.info.id] ?? 0}`).join(","),
+        revisionKey: run.map((item) => `${item.message.info.id}:${session.messageRevisions[item.message.info.id] ?? 0}`)
+          .join(","),
       })
     }
 
@@ -135,7 +154,11 @@ function projectConversationTurnsWithCache(
       contentSignature,
       finalTextPartKeys: content.finalTextPartKeys,
       hasActivity: content.hasActivity,
-      working: activityWorking(active, grouped.lastAssistantID, entries.filter((entry) => entry.message.info.role === "assistant").map((entry) => entry.message.info.id)),
+      working: activityWorking(
+        active,
+        grouped.lastAssistantID,
+        entries.filter((entry) => entry.message.info.role === "assistant").map((entry) => entry.message.info.id),
+      ),
     }
   })
 }
@@ -266,18 +289,26 @@ export class ConversationView {
           divider.className = "turn-activity-divider"
           activityHeader.append(activityToggle, divider)
         }
-        turn.classList.toggle("activity-collapsed", activityCollapsed(projected.working, wasWorking, this.collapsePreferences.get(activityKey), existingCollapse))
+        turn.classList.toggle(
+          "activity-collapsed",
+          activityCollapsed(projected.working, wasWorking, this.collapsePreferences.get(activityKey), existingCollapse),
+        )
         activityToggle.dataset.activityKey = activityKey
         activityToggle.dataset.working = String(projected.working)
         activityToggle.setAttribute("aria-disabled", String(projected.working))
         activityToggle.classList.toggle("working", projected.working)
-        const timingMarkup = turnTiming || `<span>Activity</span><span class="activity-chevron" aria-hidden="true">›</span>`
+        const timingMarkup = turnTiming ||
+          `<span>Activity</span><span class="activity-chevron" aria-hidden="true">›</span>`
         if (activityToggle.dataset.renderSignature !== timingMarkup) {
           activityToggle.innerHTML = timingMarkup
           activityToggle.dataset.renderSignature = timingMarkup
         }
         activityToggle.setAttribute("aria-expanded", String(!turn.classList.contains("activity-collapsed")))
-        activityToggle.title = projected.working ? "Work activity stays expanded while OpenCode is working" : turn.classList.contains("activity-collapsed") ? "Show work activity" : "Hide work activity"
+        activityToggle.title = projected.working
+          ? "Work activity stays expanded while OpenCode is working"
+          : turn.classList.contains("activity-collapsed")
+          ? "Show work activity"
+          : "Hide work activity"
         const expectedHeader = turn.children.item(projected.firstAssistant)
         if (expectedHeader !== activityHeader) turn.insertBefore(activityHeader!, expectedHeader)
       } else {
@@ -292,16 +323,24 @@ export class ConversationView {
           const delegation = session.delegations?.find((item) => item.partID === part.id)
           return delegation ? [`${part.id}:${delegation.revision}:${delegation.status.type}`] : []
         }).join(",")
-        const receiptSignature = message.info.role === "user" ? JSON.stringify(session.contextReceipts?.find((receipt) => receipt.promptID === message.info.id) ?? null) : ""
+        const receiptSignature = message.info.role === "user"
+          ? JSON.stringify(session.contextReceipts?.find((receipt) => receipt.promptID === message.info.id) ?? null)
+          : ""
         const dependencySignature = this.options.renderDependencySignature?.(message) ?? ""
-        const signature = `${revisionKey}:${message.info.time?.completed ?? ""}:${live}:${classificationSignature}:${delegationSignature}:${dependencySignature}:${receiptSignature}`
+        const signature = `${revisionKey}:${
+          message.info.time?.completed ?? ""
+        }:${live}:${classificationSignature}:${delegationSignature}:${dependencySignature}:${receiptSignature}`
         let rendered = this.messages.get(message.info.id)
         if (!rendered) {
-          const html = message.info.role === "user" ? this.options.renderUser(message) : this.options.renderAssistant(message, live, finalTextParts)
+          const html = message.info.role === "user"
+            ? this.options.renderUser(message)
+            : this.options.renderAssistant(message, live, finalTextParts)
           rendered = { node: this.htmlNode(html), signature }
           this.messages.set(message.info.id, rendered)
         } else if (rendered.signature !== signature) {
-          const html = message.info.role === "user" ? this.options.renderUser(message) : this.options.renderAssistant(message, live, finalTextParts)
+          const html = message.info.role === "user"
+            ? this.options.renderUser(message)
+            : this.options.renderAssistant(message, live, finalTextParts)
           rendered = { node: this.replaceMessage(rendered.node, html), signature }
           this.messages.set(message.info.id, rendered)
         }
@@ -342,7 +381,10 @@ export class ConversationView {
     const show = !this.options.container.hidden && !this.nearBottom()
     this.options.jumpLatest.hidden = !show
     this.options.jumpLatestCount.textContent = show && this.unseenMessages ? String(this.unseenMessages) : ""
-    this.options.jumpLatest.setAttribute("aria-label", this.unseenMessages ? `Jump to latest message, ${this.unseenMessages} new` : "Jump to latest message")
+    this.options.jumpLatest.setAttribute(
+      "aria-label",
+      this.unseenMessages ? `Jump to latest message, ${this.unseenMessages} new` : "Jump to latest message",
+    )
   }
 
   private htmlNode(html: string): HTMLElement {
@@ -354,8 +396,15 @@ export class ConversationView {
   }
 
   private replaceMessage(node: HTMLElement, html: string): HTMLElement {
-    const detailStates = new Map(Array.from(node.querySelectorAll<HTMLDetailsElement>("details[data-detail-key]"), (detail) => [detail.dataset.detailKey || "", detail.open]))
-    const active = document.activeElement instanceof HTMLElement && node.contains(document.activeElement) ? document.activeElement : undefined
+    const detailStates = new Map(
+      Array.from(
+        node.querySelectorAll<HTMLDetailsElement>("details[data-detail-key]"),
+        (detail) => [detail.dataset.detailKey || "", detail.open],
+      ),
+    )
+    const active = document.activeElement instanceof HTMLElement && node.contains(document.activeElement)
+      ? document.activeElement
+      : undefined
     const focusedDetail = active?.closest<HTMLDetailsElement>("details[data-detail-key]")?.dataset.detailKey
     const focusedUrl = active?.closest<HTMLElement>("[data-url]")?.dataset.url
     const replacement = this.htmlNode(html)
@@ -364,8 +413,14 @@ export class ConversationView {
       if (open !== undefined) detail.open = open
     }
     node.replaceWith(replacement)
-    if (focusedDetail) replacement.querySelector<HTMLDetailsElement>(`details[data-detail-key="${CSS.escape(focusedDetail)}"]`)?.querySelector("summary")?.focus()
-    else if (focusedUrl) Array.from(replacement.querySelectorAll<HTMLElement>("[data-url]")).find((candidate) => candidate.dataset.url === focusedUrl)?.focus()
+    if (focusedDetail) {
+      replacement.querySelector<HTMLDetailsElement>(`details[data-detail-key="${CSS.escape(focusedDetail)}"]`)
+        ?.querySelector("summary")?.focus()
+    } else if (focusedUrl) {
+      Array.from(replacement.querySelectorAll<HTMLElement>("[data-url]")).find((candidate) =>
+        candidate.dataset.url === focusedUrl
+      )?.focus()
+    }
     return replacement
   }
 }

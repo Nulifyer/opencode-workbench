@@ -11,4 +11,10 @@ export function queueProjection(session: Session) {
   }
 }
 
-export function deliveryLabel(delivery?: "follow-up" | "steer" | "replace"): string { return delivery === "steer" ? "Steer current work" : delivery === "replace" ? "Replace queued instruction" : "Follow up after completion" }
+export function deliveryLabel(delivery?: "follow-up" | "steer" | "replace"): string {
+  return delivery === "steer"
+    ? "Steer current work"
+    : delivery === "replace"
+    ? "Replace queued instruction"
+    : "Follow up after completion"
+}

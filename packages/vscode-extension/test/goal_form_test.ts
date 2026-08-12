@@ -4,14 +4,14 @@ import {
   applyGoalFormPreset,
   createGoalFormDraft,
   GOAL_FORM_LIMITS,
-  GoalFormValidationError,
+  type GoalFormDraft,
   goalFormMarkup,
+  GoalFormValidationError,
   moveGoalCriterion,
   normalizeGoalCriteria,
   removeGoalCriterion,
   serializeGoalFormDraft,
   validateGoalFormDraft,
-  type GoalFormDraft,
 } from "../src/webview/views/goal-form.ts"
 
 Deno.test("goal form imports row or newline criteria and serializes a bounded host payload", () => {
@@ -93,7 +93,10 @@ Deno.test("goal form presets and criterion row helpers remain immutable and boun
   assertEquals(removeGoalCriterion(one, "criterion-1"), one)
   const full: GoalFormDraft = {
     ...one,
-    criteria: Array.from({ length: GOAL_FORM_LIMITS.criteria }, (_, index) => ({ id: `row-${index}`, value: `Criterion ${index}` })),
+    criteria: Array.from(
+      { length: GOAL_FORM_LIMITS.criteria },
+      (_, index) => ({ id: `row-${index}`, value: `Criterion ${index}` }),
+    ),
   }
   assertEquals(addGoalCriterion(full, "Overflow"), full)
 })
@@ -118,18 +121,20 @@ Deno.test("goal form validation reports every bounded field and rejects stale se
   const validation = validateGoalFormDraft(invalid)
   const fields = new Set(validation.errors.map((error) => error.field))
   assertEquals(validation.valid, false)
-  for (const field of [
-    "objective",
-    "criterion:duplicate",
-    "tokenBudget",
-    "maxAutoTurns",
-    "maxDurationSeconds",
-    "verifierModel",
-    "verifierAgent",
-    "verifierTimeoutMilliseconds",
-    "repeatedBlockThreshold",
-    "expectedSettlementGeneration",
-  ]) assert(fields.has(field), `Expected validation error for ${field}`)
+  for (
+    const field of [
+      "objective",
+      "criterion:duplicate",
+      "tokenBudget",
+      "maxAutoTurns",
+      "maxDurationSeconds",
+      "verifierModel",
+      "verifierAgent",
+      "verifierTimeoutMilliseconds",
+      "repeatedBlockThreshold",
+      "expectedSettlementGeneration",
+    ]
+  ) assert(fields.has(field), `Expected validation error for ${field}`)
 
   assertThrows(
     () => serializeGoalFormDraft(invalid),

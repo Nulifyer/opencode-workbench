@@ -9,7 +9,9 @@ export function structuredPlanPrompt(objective: string): string {
 
 export function planArtifact(objective: string, result?: string, sessionID?: string): string {
   const body = result?.trim() || "_OpenCode is preparing the plan…_"
-  return `# Implementation Plan\n\n> Objective: ${objective.trim()}\n${sessionID ? `> OpenCode session: ${sessionID}\n` : ""}\n${body}\n\n---\n\nEdit and save this artifact, approve the saved revision from the session's Plan card, then run **OpenCode: Handoff Approved Plan**.\n`
+  return `# Implementation Plan\n\n> Objective: ${objective.trim()}\n${
+    sessionID ? `> OpenCode session: ${sessionID}\n` : ""
+  }\n${body}\n\n---\n\nEdit and save this artifact, approve the saved revision from the session's Plan card, then run **OpenCode: Handoff Approved Plan**.\n`
 }
 
 export function createPlanReference(uri: string, content: string, approvedAt?: number): PlanReference {
@@ -17,7 +19,13 @@ export function createPlanReference(uri: string, content: string, approvedAt?: n
   return { id: randomUUID(), uri, revision: `sha256:${createHash("sha256").update(content).digest("hex")}`, approvedAt }
 }
 
-export function generatedPlanDisposition(initialDocumentVersion: number, currentDocumentVersion: number): "replace-placeholder" | "preserve-user-draft" {
-  if (!Number.isSafeInteger(initialDocumentVersion) || !Number.isSafeInteger(currentDocumentVersion) || initialDocumentVersion < 1 || currentDocumentVersion < 1) throw new Error("Invalid plan document version")
+export function generatedPlanDisposition(
+  initialDocumentVersion: number,
+  currentDocumentVersion: number,
+): "replace-placeholder" | "preserve-user-draft" {
+  if (
+    !Number.isSafeInteger(initialDocumentVersion) || !Number.isSafeInteger(currentDocumentVersion) ||
+    initialDocumentVersion < 1 || currentDocumentVersion < 1
+  ) throw new Error("Invalid plan document version")
   return initialDocumentVersion === currentDocumentVersion ? "replace-placeholder" : "preserve-user-draft"
 }

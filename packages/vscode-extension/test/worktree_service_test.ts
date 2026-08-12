@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "jsr:@std/assert"
 import type { WorktreeJournalEntry, WorktreePhase } from "@opencode-workbench/shared"
-import { WorktreeService, type GitRunner } from "../src/application/worktree-service.ts"
+import { type GitRunner, WorktreeService } from "../src/application/worktree-service.ts"
 
 class FakeGit implements GitRunner {
   calls: string[][] = []
@@ -26,8 +26,16 @@ class FakeGit implements GitRunner {
 Deno.test("typed worktree creation is idempotent and never invokes a shell string", async () => {
   const git = new FakeGit()
   const phases: WorktreePhase[] = []
-  const service = new WorktreeService(git, [], (entries) => { if (entries[0]) phases.push(entries[0].phase) })
-  const input = { directory: Deno.cwd(), path: `${Deno.cwd()}/../worktree-one`, branch: "workbench/one", baseRef: "HEAD", mutationID: "mutation" }
+  const service = new WorktreeService(git, [], (entries) => {
+    if (entries[0]) phases.push(entries[0].phase)
+  })
+  const input = {
+    directory: Deno.cwd(),
+    path: `${Deno.cwd()}/../worktree-one`,
+    branch: "workbench/one",
+    baseRef: "HEAD",
+    mutationID: "mutation",
+  }
   const first = await service.create(input)
   const second = await service.create(input)
   assertEquals(first.id, second.id)
@@ -40,13 +48,21 @@ Deno.test("typed worktree creation is idempotent and never invokes a shell strin
 Deno.test("worktree side effects wait for a durable creating journal checkpoint", async () => {
   const git = new FakeGit()
   let release!: () => void
-  const gate = new Promise<void>((resolve) => { release = resolve })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
   const persisted: WorktreePhase[] = []
   const service = new WorktreeService(git, [], async (entries) => {
     if (entries[0]) persisted.push(entries[0].phase)
     await gate
   })
-  const creating = service.create({ directory: Deno.cwd(), path: `${Deno.cwd()}/../worktree-durable`, branch: "workbench/durable", baseRef: "HEAD", mutationID: "durable" })
+  const creating = service.create({
+    directory: Deno.cwd(),
+    path: `${Deno.cwd()}/../worktree-durable`,
+    branch: "workbench/durable",
+    baseRef: "HEAD",
+    mutationID: "durable",
+  })
   while (persisted.length < 2) await new Promise((resolve) => setTimeout(resolve, 0))
   assertEquals(persisted.slice(0, 2), ["requested", "creating"])
   assertEquals(git.calls.some((call) => call.includes("check-ref-format") || call.includes("add")), false)
@@ -58,8 +74,12 @@ Deno.test("worktree side effects wait for a durable creating journal checkpoint"
 Deno.test("concurrent duplicate worktree creation shares one in-flight operation", async () => {
   let release!: () => void
   let started!: () => void
-  const gate = new Promise<void>((resolve) => { release = resolve })
-  const addStarted = new Promise<void>((resolve) => { started = resolve })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const addStarted = new Promise<void>((resolve) => {
+    started = resolve
+  })
   class BlockingGit extends FakeGit {
     override async run(args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
       const result = await super.run(args, cwd)
@@ -72,7 +92,13 @@ Deno.test("concurrent duplicate worktree creation shares one in-flight operation
   }
   const git = new BlockingGit()
   const service = new WorktreeService(git)
-  const input = { directory: Deno.cwd(), path: `${Deno.cwd()}/../worktree-concurrent`, branch: "workbench/concurrent", baseRef: "HEAD", mutationID: "concurrent" }
+  const input = {
+    directory: Deno.cwd(),
+    path: `${Deno.cwd()}/../worktree-concurrent`,
+    branch: "workbench/concurrent",
+    baseRef: "HEAD",
+    mutationID: "concurrent",
+  }
   const first = service.create(input)
   await addStarted
   const second = service.create(input)
@@ -85,7 +111,13 @@ Deno.test("concurrent duplicate worktree creation shares one in-flight operation
 Deno.test("dirty worktrees are retained and branch deletion remains separate", async () => {
   const git = new FakeGit()
   const service = new WorktreeService(git)
-  const entry = await service.create({ directory: Deno.cwd(), path: `${Deno.cwd()}/../worktree-two`, branch: "workbench/two", baseRef: "HEAD", mutationID: "two" })
+  const entry = await service.create({
+    directory: Deno.cwd(),
+    path: `${Deno.cwd()}/../worktree-two`,
+    branch: "workbench/two",
+    baseRef: "HEAD",
+    mutationID: "two",
+  })
   git.dirty = true
   await assertRejects(() => service.remove(entry.id), Error, "Dirty worktree retained")
   assertEquals(service.journal()[0]?.phase, "retained-dirty")
@@ -95,7 +127,13 @@ Deno.test("dirty worktrees are retained and branch deletion remains separate", a
 Deno.test("failed worktree cleanup reconciles an already missing Git registration", async () => {
   const git = new FakeGit()
   const service = new WorktreeService(git)
-  const entry = await service.create({ directory: Deno.cwd(), path: `${Deno.cwd()}/../worktree-missing`, branch: "workbench/missing", baseRef: "HEAD", mutationID: "missing" })
+  const entry = await service.create({
+    directory: Deno.cwd(),
+    path: `${Deno.cwd()}/../worktree-missing`,
+    branch: "workbench/missing",
+    baseRef: "HEAD",
+    mutationID: "missing",
+  })
   service.fail(entry.id, { code: "INTERNAL", message: "Prompt failed", retryable: true })
   git.listed = ""
   await service.remove(entry.id)
@@ -105,9 +143,35 @@ Deno.test("failed worktree cleanup reconciles an already missing Git registratio
 
 Deno.test("worktree recovery reconciles crashes after every journal phase", async () => {
   const git = new FakeGit()
-  const phases: WorktreePhase[] = ["requested", "creating", "ready", "setup-running", "session-creating", "session-ready", "prompt-admitting", "prompt-admitted", "cleanup-pending"]
-  const entries: WorktreeJournalEntry[] = phases.map((phase, index) => ({ id: String(index), mutationID: `mutation-${index}`, owner: "workbench", repository: Deno.cwd(), repositoryID: "repo", path: `${Deno.cwd()}/../recovery-${index}`, branch: `workbench/recovery-${index}`, baseRef: "HEAD", phase, createdAt: 1, updatedAt: 1 }))
-  git.listed = [`worktree ${entries[0]!.path}`, `worktree ${entries[1]!.path}`, ...entries.slice(2, -1).map((entry) => `worktree ${entry.path}`)].join("\n")
+  const phases: WorktreePhase[] = [
+    "requested",
+    "creating",
+    "ready",
+    "setup-running",
+    "session-creating",
+    "session-ready",
+    "prompt-admitting",
+    "prompt-admitted",
+    "cleanup-pending",
+  ]
+  const entries: WorktreeJournalEntry[] = phases.map((phase, index) => ({
+    id: String(index),
+    mutationID: `mutation-${index}`,
+    owner: "workbench",
+    repository: Deno.cwd(),
+    repositoryID: "repo",
+    path: `${Deno.cwd()}/../recovery-${index}`,
+    branch: `workbench/recovery-${index}`,
+    baseRef: "HEAD",
+    phase,
+    createdAt: 1,
+    updatedAt: 1,
+  }))
+  git.listed = [
+    `worktree ${entries[0]!.path}`,
+    `worktree ${entries[1]!.path}`,
+    ...entries.slice(2, -1).map((entry) => `worktree ${entry.path}`),
+  ].join("\n")
   const service = new WorktreeService(git, entries)
   const recovered = await service.recover()
   assertEquals(recovered.find((entry) => entry.phase === "ready" && entry.id === "0")?.id, "0")
@@ -122,7 +186,10 @@ Deno.test("worktree recovery reconciles crashes after every journal phase", asyn
   }
   assertEquals(recovered.find((entry) => entry.id === String(phases.indexOf("ready")))?.phase, "ready")
   assertEquals(recovered.find((entry) => entry.id === String(phases.indexOf("session-ready")))?.phase, "session-ready")
-  assertEquals(recovered.find((entry) => entry.id === String(phases.indexOf("prompt-admitted")))?.phase, "prompt-admitted")
+  assertEquals(
+    recovered.find((entry) => entry.id === String(phases.indexOf("prompt-admitted")))?.phase,
+    "prompt-admitted",
+  )
   assertEquals(recovered.filter((entry) => entry.phase === "failed").length, 3)
 })
 
@@ -137,9 +204,15 @@ Deno.test("worktree subscriptions are bounded, isolated, disposable, and sanitiz
     current.phase = "removed"
     if (current.error) current.error.message = "listener mutation"
   })
-  const throwing = service.subscribe(() => { throw new Error("listener failed") })
+  const throwing = service.subscribe(() => {
+    throw new Error("listener failed")
+  })
   const entry = await service.create({
-    directory: Deno.cwd(), path: `${Deno.cwd()}/../worktree-subscription`, branch: "workbench/subscription", baseRef: "HEAD", mutationID: "subscription",
+    directory: Deno.cwd(),
+    path: `${Deno.cwd()}/../worktree-subscription`,
+    branch: "workbench/subscription",
+    baseRef: "HEAD",
+    mutationID: "subscription",
   })
   assertEquals(observed, ["requested", "creating", "ready"])
   assertEquals(service.get(entry.id)?.phase, "ready")
@@ -189,24 +262,42 @@ Deno.test("worktree journal prunes only the oldest terminal history and retains 
     createdAt: updatedAt,
     updatedAt,
   })
-  const protectedEntries = [entry("ready", "ready", 0), entry("cleanup", "cleanup-pending", 0), entry("dirty", "retained-dirty", 0)]
-  const terminalEntries = Array.from({ length: 1_000 }, (_, index) => entry(`terminal-${index}`, index % 2 ? "failed" : "removed", index + 1))
+  const protectedEntries = [
+    entry("ready", "ready", 0),
+    entry("cleanup", "cleanup-pending", 0),
+    entry("dirty", "retained-dirty", 0),
+  ]
+  const terminalEntries = Array.from(
+    { length: 1_000 },
+    (_, index) => entry(`terminal-${index}`, index % 2 ? "failed" : "removed", index + 1),
+  )
   let persisted: WorktreeJournalEntry[] = []
-  const service = new WorktreeService(git, [...protectedEntries, ...terminalEntries], (entries) => { persisted = entries })
+  const service = new WorktreeService(git, [...protectedEntries, ...terminalEntries], (entries) => {
+    persisted = entries
+  })
 
   assertEquals(service.journal().length, 1_000)
   assertEquals(persisted.length, 1_000)
   assertEquals(protectedEntries.every((candidate) => service.get(candidate.id)?.phase === candidate.phase), true)
-  assertEquals(["terminal-0", "terminal-2", "terminal-4"].map((id) => service.get(id)), [undefined, undefined, undefined])
+  assertEquals(["terminal-0", "terminal-2", "terminal-4"].map((id) => service.get(id)), [
+    undefined,
+    undefined,
+    undefined,
+  ])
   assertEquals(service.get("terminal-1")?.phase, "failed")
   const retained = terminalEntries.at(-1)!
-  await assertRejects(() => service.create({
-    directory: repository.root,
-    path: retained.path,
-    branch: retained.branch,
-    baseRef: retained.baseRef,
-    mutationID: retained.mutationID,
-  }), Error, `already ${retained.phase}`)
+  await assertRejects(
+    () =>
+      service.create({
+        directory: repository.root,
+        path: retained.path,
+        branch: retained.branch,
+        baseRef: retained.baseRef,
+        mutationID: retained.mutationID,
+      }),
+    Error,
+    `already ${retained.phase}`,
+  )
   assertEquals(git.calls.filter((call) => call.includes("add")).length, 0)
 })
 
@@ -222,17 +313,28 @@ Deno.test("worktree journal rejects new creation when protected entries consume 
     path: `${repository.root}/../active-${index}`,
     branch: `workbench/active-${index}`,
     baseRef: "HEAD",
-    phase: index === 997 ? "cleanup-pending" : index === 998 ? "retained-dirty" : index === 999 ? "prompt-admitted" : "ready",
+    phase: index === 997
+      ? "cleanup-pending"
+      : index === 998
+      ? "retained-dirty"
+      : index === 999
+      ? "prompt-admitted"
+      : "ready",
     createdAt: index,
     updatedAt: index,
   }))
-  assertThrows(() => new WorktreeService(git, [...entries, {
-    ...entries[0]!,
-    id: "protected-overflow",
-    mutationID: "protected-overflow",
-    path: `${repository.root}/../protected-overflow`,
-    branch: "workbench/protected-overflow",
-  }]), Error, "limit exceeded")
+  assertThrows(
+    () =>
+      new WorktreeService(git, [...entries, {
+        ...entries[0]!,
+        id: "protected-overflow",
+        mutationID: "protected-overflow",
+        path: `${repository.root}/../protected-overflow`,
+        branch: "workbench/protected-overflow",
+      }]),
+    Error,
+    "limit exceeded",
+  )
   const service = new WorktreeService(git, entries)
   const duplicate = await service.create({
     directory: repository.root,
@@ -244,13 +346,18 @@ Deno.test("worktree journal rejects new creation when protected entries consume 
   assertEquals(duplicate.id, entries[0]!.id)
   let notifications = 0
   service.subscribe(() => notifications++)
-  await assertRejects(() => service.create({
-    directory: repository.root,
-    path: `${repository.root}/../active-overflow`,
-    branch: "workbench/active-overflow",
-    baseRef: "HEAD",
-    mutationID: "active-overflow",
-  }), Error, "journal limit reached")
+  await assertRejects(
+    () =>
+      service.create({
+        directory: repository.root,
+        path: `${repository.root}/../active-overflow`,
+        branch: "workbench/active-overflow",
+        baseRef: "HEAD",
+        mutationID: "active-overflow",
+      }),
+    Error,
+    "journal limit reached",
+  )
   assertEquals(service.journal().length, 1_000)
   assertEquals(entries.every((candidate) => service.get(candidate.id)?.phase === candidate.phase), true)
   assertEquals(notifications, 0)
@@ -261,12 +368,30 @@ Deno.test("worktree journal pruning remains visible as bounded subscription snap
   const git = new FakeGit()
   const repository = await new WorktreeService(git).repository(Deno.cwd())
   const entries: WorktreeJournalEntry[] = Array.from({ length: 999 }, (_, index) => ({
-    id: `protected-${index}`, mutationID: `protected-${index}`, owner: "workbench", repository: repository.root, repositoryID: repository.id,
-    path: `${repository.root}/../protected-${index}`, branch: `workbench/protected-${index}`, baseRef: "HEAD", phase: "ready", createdAt: index, updatedAt: index,
+    id: `protected-${index}`,
+    mutationID: `protected-${index}`,
+    owner: "workbench",
+    repository: repository.root,
+    repositoryID: repository.id,
+    path: `${repository.root}/../protected-${index}`,
+    branch: `workbench/protected-${index}`,
+    baseRef: "HEAD",
+    phase: "ready",
+    createdAt: index,
+    updatedAt: index,
   }))
   entries.push({
-    id: "old-terminal", mutationID: "old-terminal", owner: "workbench", repository: repository.root, repositoryID: repository.id,
-    path: `${repository.root}/../old-terminal`, branch: "workbench/old-terminal", baseRef: "HEAD", phase: "removed", createdAt: 0, updatedAt: 0,
+    id: "old-terminal",
+    mutationID: "old-terminal",
+    owner: "workbench",
+    repository: repository.root,
+    repositoryID: repository.id,
+    path: `${repository.root}/../old-terminal`,
+    branch: "workbench/old-terminal",
+    baseRef: "HEAD",
+    phase: "removed",
+    createdAt: 0,
+    updatedAt: 0,
   })
   const service = new WorktreeService(git, entries)
   const snapshots: WorktreeJournalEntry[][] = []

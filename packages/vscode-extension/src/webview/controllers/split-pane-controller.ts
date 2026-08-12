@@ -110,8 +110,12 @@ export class SplitPaneController {
 
   constructor(private readonly options: SplitPaneControllerOptions) {
     for (const definition of options.panes) {
-      if (!definition.key || this.definitions.has(definition.key)) throw new Error(`Duplicate split pane: ${definition.key || "<empty>"}`)
-      if (!definition.cssProperty.startsWith("--")) throw new Error(`Split pane ${definition.key} requires a CSS custom property`)
+      if (!definition.key || this.definitions.has(definition.key)) {
+        throw new Error(`Duplicate split pane: ${definition.key || "<empty>"}`)
+      }
+      if (!definition.cssProperty.startsWith("--")) {
+        throw new Error(`Split pane ${definition.key} requires a CSS custom property`)
+      }
       this.definitions.set(definition.key, definition)
       this.widths[definition.key] = clampSplitPaneWidth(definition.initialWidth, {
         minimum: definition.minimumWidth,
@@ -168,7 +172,12 @@ export class SplitPaneController {
     const pointerDown = (event: PointerEvent): void => {
       if (event.button !== 0 || this.disposed) return
       event.preventDefault()
-      this.active = { id: event.pointerId, key: definition.key, startX: event.clientX, startWidth: this.renderedWidths[definition.key]! }
+      this.active = {
+        id: event.pointerId,
+        key: definition.key,
+        startX: event.clientX,
+        startWidth: this.renderedWidths[definition.key]!,
+      }
       definition.separator.setPointerCapture?.(event.pointerId)
     }
     const pointerMove = (event: PointerEvent): void => {
@@ -183,7 +192,9 @@ export class SplitPaneController {
       if (!this.active || this.active.id !== event.pointerId || this.active.key !== definition.key) return
       this.flushPointerWidth(true)
       this.active = undefined
-      if (definition.separator.hasPointerCapture?.(event.pointerId)) definition.separator.releasePointerCapture?.(event.pointerId)
+      if (definition.separator.hasPointerCapture?.(event.pointerId)) {
+        definition.separator.releasePointerCapture?.(event.pointerId)
+      }
       this.persist()
     }
     const keyDown = (event: KeyboardEvent): void => {

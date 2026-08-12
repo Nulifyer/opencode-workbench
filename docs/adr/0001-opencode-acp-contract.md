@@ -105,26 +105,26 @@ contract. `session/cancel` is a notification, not a request.
 
 ## Capability classification
 
-| Capability | Classification | Reason |
-| --- | --- | --- |
-| Initialize/capabilities | Supported | Exact response recorded |
-| Session new/list/load/resume/fork/close | Supported | Provider-free probes, including restart |
-| Working-directory filtering and concurrent subprocesses | Supported | Two isolated cwd probes |
-| Agent/mode and model selection | Supported | Config options and setters recorded |
-| Variant/effort selection | Unknown | Default isolated model exposed no `effort` option |
-| Slash-command and companion-command discovery | Supported | `available_commands_update` |
-| Tool and companion-tool schema discovery | Missing | No provider-free ACP operation/update |
-| MCP registration | Supported | Initialized capabilities and session setup input |
-| MCP tool discovery | Unknown | No provider-free inventory update |
-| Permission request/choices | Unknown | Requires a tool/model turn |
-| Questions/user input | Unknown | No provider-free trigger |
-| Prompt, reasoning, tools, diffs, usage/cost | Unknown | Default recorder forbids model requests |
-| Idle cancellation | Mapped | `session/cancel` notification accepted |
-| Active cancellation | Unknown | Requires opt-in prompt |
-| Queue/steer/follow-up/replace | Missing | No distinct method or capability |
-| `/undo` and `/redo` | Missing | Not advertised |
-| Malformed input recovery | Supported | Later `session/list` succeeds |
-| Process restart/crash | Mapped | Persistence proven; in-flight outcome unknown |
+| Capability                                              | Classification | Reason                                            |
+| ------------------------------------------------------- | -------------- | ------------------------------------------------- |
+| Initialize/capabilities                                 | Supported      | Exact response recorded                           |
+| Session new/list/load/resume/fork/close                 | Supported      | Provider-free probes, including restart           |
+| Working-directory filtering and concurrent subprocesses | Supported      | Two isolated cwd probes                           |
+| Agent/mode and model selection                          | Supported      | Config options and setters recorded               |
+| Variant/effort selection                                | Unknown        | Default isolated model exposed no `effort` option |
+| Slash-command and companion-command discovery           | Supported      | `available_commands_update`                       |
+| Tool and companion-tool schema discovery                | Missing        | No provider-free ACP operation/update             |
+| MCP registration                                        | Supported      | Initialized capabilities and session setup input  |
+| MCP tool discovery                                      | Unknown        | No provider-free inventory update                 |
+| Permission request/choices                              | Unknown        | Requires a tool/model turn                        |
+| Questions/user input                                    | Unknown        | No provider-free trigger                          |
+| Prompt, reasoning, tools, diffs, usage/cost             | Unknown        | Default recorder forbids model requests           |
+| Idle cancellation                                       | Mapped         | `session/cancel` notification accepted            |
+| Active cancellation                                     | Unknown        | Requires opt-in prompt                            |
+| Queue/steer/follow-up/replace                           | Missing        | No distinct method or capability                  |
+| `/undo` and `/redo`                                     | Missing        | Not advertised                                    |
+| Malformed input recovery                                | Supported      | Later `session/list` succeeds                     |
+| Process restart/crash                                   | Mapped         | Persistence proven; in-flight outcome unknown     |
 
 The fixture at
 `packages/vscode-extension/test/fixtures/acp/opencode-1.18.15.json` is the

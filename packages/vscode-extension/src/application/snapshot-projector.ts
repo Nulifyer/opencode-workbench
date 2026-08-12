@@ -1,17 +1,33 @@
-import type { ContextSummary, GoalMetricSummary, GoalSummary, MessageBundle, MessagePart, ModelOption, RuntimeService, RuntimeStatus, TranscriptHistoryState, WorkbenchState } from "@opencode-workbench/shared"
+import type {
+  ContextSummary,
+  GoalMetricSummary,
+  GoalSummary,
+  MessageBundle,
+  MessagePart,
+  ModelOption,
+  RuntimeService,
+  RuntimeStatus,
+  TranscriptHistoryState,
+  WorkbenchState,
+} from "@opencode-workbench/shared"
 
 type JsonRecord = Record<string, unknown>
-function record(value: unknown): value is JsonRecord { return typeof value === "object" && value !== null && !Array.isArray(value) }
+function record(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
 
 const OMIT = Symbol("omit")
-
 
 interface JsonBudget {
   nodes: number
   characters: number
 }
 
-function boundedJson(value: unknown, depth = 0, budget: JsonBudget = { nodes: 0, characters: 0 }): unknown | typeof OMIT {
+function boundedJson(
+  value: unknown,
+  depth = 0,
+  budget: JsonBudget = { nodes: 0, characters: 0 },
+): unknown | typeof OMIT {
   if (budget.nodes >= 900 || budget.characters >= 100_000) return OMIT
   budget.nodes += 1
   if (value === null || typeof value === "boolean") return value
@@ -54,16 +70,20 @@ export function boundedText(value: unknown, limit: number): string | undefined {
 
 function boundedTime(value: unknown): { start?: number; end?: number } | undefined {
   if (!record(value)) return undefined
-  const start = typeof value.start === "number" && Number.isFinite(value.start) && value.start >= 0 ? value.start : undefined
+  const start = typeof value.start === "number" && Number.isFinite(value.start) && value.start >= 0
+    ? value.start
+    : undefined
   const end = typeof value.end === "number" && Number.isFinite(value.end) && value.end >= 0 ? value.end : undefined
   return start === undefined && end === undefined ? undefined : { start, end }
 }
 
 function snapshotPart(part: MessagePart): MessagePart | undefined {
-  if (typeof part.id !== "string" || !part.id || part.id.length > 1_024 ||
+  if (
+    typeof part.id !== "string" || !part.id || part.id.length > 1_024 ||
     typeof part.sessionID !== "string" || !part.sessionID || part.sessionID.length > 1_024 ||
     typeof part.messageID !== "string" || !part.messageID || part.messageID.length > 1_024 ||
-    typeof part.type !== "string" || !part.type || part.type.length > 100) return undefined
+    typeof part.type !== "string" || !part.type || part.type.length > 100
+  ) return undefined
   const output: MessagePart = {
     id: part.id,
     sessionID: part.sessionID,
@@ -110,7 +130,8 @@ function snapshotPart(part: MessagePart): MessagePart | undefined {
 }
 
 export function snapshotPartCharacters(part: MessagePart): number {
-  return (part.text?.length ?? 0) + (typeof part.mime === "string" ? part.mime.length : 0) + (typeof part.filename === "string" ? part.filename.length : 0) +
+  return (part.text?.length ?? 0) + (typeof part.mime === "string" ? part.mime.length : 0) +
+    (typeof part.filename === "string" ? part.filename.length : 0) +
     (part.metadata === undefined ? 0 : JSON.stringify(part.metadata).length) +
     (part.state?.title?.length ?? 0) + (part.state?.output?.length ?? 0) +
     (part.state?.error?.length ?? 0) + (part.state?.input === undefined ? 0 : JSON.stringify(part.state.input).length) +
@@ -119,13 +140,21 @@ export function snapshotPartCharacters(part: MessagePart): number {
 
 export function snapshotMessage(message: MessageBundle, pendingText?: string): MessageBundle | undefined {
   const info = message.info
-  if (typeof info.id !== "string" || !info.id || info.id.length > 1_024 ||
+  if (
+    typeof info.id !== "string" || !info.id || info.id.length > 1_024 ||
     typeof info.sessionID !== "string" || !info.sessionID || info.sessionID.length > 1_024 ||
-    (info.role !== "user" && info.role !== "assistant")) return undefined
+    (info.role !== "user" && info.role !== "assistant")
+  ) return undefined
   const safeInfo: MessageBundle["info"] = { id: info.id, sessionID: info.sessionID, role: info.role }
   if (record(info.time)) {
-    const created = typeof info.time.created === "number" && Number.isFinite(info.time.created) && info.time.created >= 0 ? info.time.created : undefined
-    const completed = typeof info.time.completed === "number" && Number.isFinite(info.time.completed) && info.time.completed >= 0 ? info.time.completed : undefined
+    const created =
+      typeof info.time.created === "number" && Number.isFinite(info.time.created) && info.time.created >= 0
+        ? info.time.created
+        : undefined
+    const completed =
+      typeof info.time.completed === "number" && Number.isFinite(info.time.completed) && info.time.completed >= 0
+        ? info.time.completed
+        : undefined
     if (created !== undefined || completed !== undefined) safeInfo.time = { created, completed }
   }
   if (info.error !== undefined) {
@@ -144,9 +173,17 @@ export function snapshotMessage(message: MessageBundle, pendingText?: string): M
   }
   parts.reverse()
   const fallbackText = boundedText(pendingText, 500_000)
-  if (info.role === "user" && fallbackText && characters + fallbackText.length <= 1_500_000 &&
-    !parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text))) {
-    parts.push({ id: `${info.id}-pending-text`, sessionID: info.sessionID, messageID: info.id, type: "text", text: fallbackText })
+  if (
+    info.role === "user" && fallbackText && characters + fallbackText.length <= 1_500_000 &&
+    !parts.some((part) => part.type === "text" && !part.synthetic && Boolean(part.text))
+  ) {
+    parts.push({
+      id: `${info.id}-pending-text`,
+      sessionID: info.sessionID,
+      messageID: info.id,
+      type: "text",
+      text: fallbackText,
+    })
   }
   return { info: safeInfo, parts }
 }
@@ -193,7 +230,6 @@ export function snapshotTranscript(
   }
 }
 
-
 export function boundedRuntimeString(value: unknown, limit: number): string | undefined {
   return typeof value === "string" && value.length <= limit ? value : undefined
 }
@@ -208,7 +244,8 @@ function runtimeServices(value: unknown, objectEntries = false): RuntimeService[
   let characters = 0
   for (const [key, entry] of entries) {
     if (!record(entry)) continue
-    const id = boundedRuntimeString(entry.id, 1_024) ?? boundedRuntimeString(entry.name, 1_024) ?? boundedRuntimeString(key, 1_024)
+    const id = boundedRuntimeString(entry.id, 1_024) ?? boundedRuntimeString(entry.name, 1_024) ??
+      boundedRuntimeString(key, 1_024)
     if (!id) continue
     const extensions = Array.isArray(entry.extensions)
       ? entry.extensions.slice(0, 200).filter((item): item is string => typeof item === "string" && item.length <= 100)
@@ -231,21 +268,29 @@ function runtimeServices(value: unknown, objectEntries = false): RuntimeService[
 }
 
 function runtimeFormatters(value: unknown): RuntimeService[] {
-  return runtimeServices(value).filter((formatter) => typeof formatter.enabled === "boolean" && Boolean(formatter.extensions))
+  return runtimeServices(value).filter((formatter) =>
+    typeof formatter.enabled === "boolean" && Boolean(formatter.extensions)
+  )
 }
 
-export function normalizeRuntime(path: unknown, vcs: unknown, lsp: unknown, formatter: unknown, mcp: unknown): RuntimeStatus {
+export function normalizeRuntime(
+  path: unknown,
+  vcs: unknown,
+  lsp: unknown,
+  formatter: unknown,
+  mcp: unknown,
+): RuntimeStatus {
   const pathRecord = record(path) ? path : undefined
   const vcsRecord = record(vcs) ? vcs : undefined
   return {
     path: pathRecord
       ? {
-          home: boundedRuntimeString(pathRecord.home, 8_192),
-          state: boundedRuntimeString(pathRecord.state, 8_192),
-          config: boundedRuntimeString(pathRecord.config, 8_192),
-          worktree: boundedRuntimeString(pathRecord.worktree, 8_192),
-          directory: boundedRuntimeString(pathRecord.directory, 8_192),
-        }
+        home: boundedRuntimeString(pathRecord.home, 8_192),
+        state: boundedRuntimeString(pathRecord.state, 8_192),
+        config: boundedRuntimeString(pathRecord.config, 8_192),
+        worktree: boundedRuntimeString(pathRecord.worktree, 8_192),
+        directory: boundedRuntimeString(pathRecord.directory, 8_192),
+      }
       : undefined,
     vcs: vcsRecord ? { branch: boundedRuntimeString(vcsRecord.branch, 2_000) } : undefined,
     lsp: runtimeServices(lsp),
@@ -259,7 +304,9 @@ function count(value: unknown): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Math.min(Number(value), 1_000_000_000_000) : 0
 }
 
-function tokenCounts(value: unknown): Omit<ContextSummary, "contextLimit" | "inputLimit" | "outputLimit" | "model" | "usagePercent" | "cost"> | undefined {
+function tokenCounts(
+  value: unknown,
+): Omit<ContextSummary, "contextLimit" | "inputLimit" | "outputLimit" | "model" | "usagePercent" | "cost"> | undefined {
   if (!record(value)) return undefined
   const cache = record(value.cache) ? value.cache : undefined
   const inputTokens = count(value.input)
@@ -278,26 +325,42 @@ function tokenCounts(value: unknown): Omit<ContextSummary, "contextLimit" | "inp
 }
 
 function finiteCost(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.min(value, 1_000_000_000_000) : undefined
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.min(value, 1_000_000_000_000)
+    : undefined
 }
 
-export function deriveContext(messages: WorkbenchState["sessions"][string]["messages"], models: ModelOption[], fallbackModel?: ModelOption, sessionCost?: number): ContextSummary | undefined {
-  const assistant = messages.slice().reverse().find((entry) => entry.info.role === "assistant" &&
-    (entry.info.time?.completed !== undefined || tokenCounts(entry.info.tokens) !== undefined || entry.parts.some((part) => part.type === "step-finish" && tokenCounts(part.tokens) !== undefined)))
+export function deriveContext(
+  messages: WorkbenchState["sessions"][string]["messages"],
+  models: ModelOption[],
+  fallbackModel?: ModelOption,
+  sessionCost?: number,
+): ContextSummary | undefined {
+  const assistant = messages.slice().reverse().find((entry) =>
+    entry.info.role === "assistant" &&
+    (entry.info.time?.completed !== undefined || tokenCounts(entry.info.tokens) !== undefined ||
+      entry.parts.some((part) => part.type === "step-finish" && tokenCounts(part.tokens) !== undefined))
+  )
   if (!assistant) return undefined
   const finish = assistant.parts.slice().reverse().find((part) => part.type === "step-finish")
   const tokens = tokenCounts(finish?.tokens) ?? tokenCounts(assistant.info.tokens)
   if (!tokens) return undefined
   let cost = finiteCost(sessionCost) ?? 0
-  if (finiteCost(sessionCost) === undefined) for (const entry of messages) {
-    if (entry.info.role !== "assistant") continue
-    const messageCost = finiteCost(entry.info.cost)
-    if (messageCost !== undefined) cost = Math.min(1_000_000_000_000, cost + messageCost)
-    else for (const part of entry.parts) if (part.type === "step-finish") cost = Math.min(1_000_000_000_000, cost + (finiteCost(part.cost) ?? 0))
+  if (finiteCost(sessionCost) === undefined) {
+    for (const entry of messages) {
+      if (entry.info.role !== "assistant") continue
+      const messageCost = finiteCost(entry.info.cost)
+      if (messageCost !== undefined) cost = Math.min(1_000_000_000_000, cost + messageCost)
+      else {for (const part of entry.parts) {
+          if (part.type === "step-finish") cost = Math.min(1_000_000_000_000, cost + (finiteCost(part.cost) ?? 0))
+        }}
+    }
   }
   const providerID = typeof assistant.info.providerID === "string" ? assistant.info.providerID : undefined
   const modelID = typeof assistant.info.modelID === "string" ? assistant.info.modelID : undefined
-  const model = providerID && modelID ? models.find((candidate) => candidate.providerID === providerID && candidate.id === modelID) : fallbackModel
+  const model = providerID && modelID
+    ? models.find((candidate) => candidate.providerID === providerID && candidate.id === modelID)
+    : fallbackModel
   const contextLimit = model?.contextLimit
   const usageReported = tokens.totalTokens > 0
   return {
@@ -311,7 +374,6 @@ export function deriveContext(messages: WorkbenchState["sessions"][string]["mess
     usagePercent: usageReported && contextLimit ? Math.min(100, tokens.totalTokens / contextLimit * 100) : undefined,
   }
 }
-
 
 export const GOAL_TOOLS = new Set([
   "get_goal",
@@ -337,15 +399,34 @@ function parsedGoal(output: unknown): GoalSummary | undefined {
   }
   if (!record(value)) return undefined
   const goal = record(value.goal) ? value.goal : value
-  const text = (key: string, limit = 20_000) => typeof goal[key] === "string" && goal[key].length <= limit ? goal[key] : undefined
-  const integer = (key: string) => Number.isSafeInteger(goal[key]) && Number(goal[key]) >= 0 ? Number(goal[key]) : undefined
+  const text = (key: string, limit = 20_000) =>
+    typeof goal[key] === "string" && goal[key].length <= limit ? goal[key] : undefined
+  const integer = (key: string) =>
+    Number.isSafeInteger(goal[key]) && Number(goal[key]) >= 0 ? Number(goal[key]) : undefined
   const checkpoint = record(goal.lastCheckpoint) ? textFromRecord(goal.lastCheckpoint, "summary", 20_000) : undefined
-  const latestVerdict = record(goal.latestVerdict) && ["continue", "complete", "blocked", "needs-user"].includes(String(goal.latestVerdict.verdict)) && typeof goal.latestVerdict.reason === "string" && Array.isArray(goal.latestVerdict.missingCriteria) && ["low", "medium", "high"].includes(String(goal.latestVerdict.confidence))
-    ? { verdict: goal.latestVerdict.verdict as "continue" | "complete" | "blocked" | "needs-user", reason: goal.latestVerdict.reason.slice(0, 4_000), missingCriteria: goal.latestVerdict.missingCriteria.filter((item): item is string => typeof item === "string").slice(0, 100), confidence: goal.latestVerdict.confidence as "low" | "medium" | "high" }
+  const latestVerdict = record(goal.latestVerdict) &&
+      ["continue", "complete", "blocked", "needs-user"].includes(String(goal.latestVerdict.verdict)) &&
+      typeof goal.latestVerdict.reason === "string" && Array.isArray(goal.latestVerdict.missingCriteria) &&
+      ["low", "medium", "high"].includes(String(goal.latestVerdict.confidence))
+    ? {
+      verdict: goal.latestVerdict.verdict as "continue" | "complete" | "blocked" | "needs-user",
+      reason: goal.latestVerdict.reason.slice(0, 4_000),
+      missingCriteria: goal.latestVerdict.missingCriteria.filter((item): item is string => typeof item === "string")
+        .slice(0, 100),
+      confidence: goal.latestVerdict.confidence as "low" | "medium" | "high",
+    }
     : undefined
   const verifierValue = record(goal.verifier) ? goal.verifier : undefined
-  const verifier = verifierValue && typeof verifierValue.enabled === "boolean" && Number.isSafeInteger(verifierValue.timeoutMilliseconds) && Number.isSafeInteger(verifierValue.repeatedBlockThreshold)
-    ? { enabled: verifierValue.enabled, model: textFromRecord(verifierValue, "model", 1_024), agent: textFromRecord(verifierValue, "agent", 1_024), timeoutMilliseconds: Number(verifierValue.timeoutMilliseconds), repeatedBlockThreshold: Number(verifierValue.repeatedBlockThreshold) }
+  const verifier = verifierValue && typeof verifierValue.enabled === "boolean" &&
+      Number.isSafeInteger(verifierValue.timeoutMilliseconds) &&
+      Number.isSafeInteger(verifierValue.repeatedBlockThreshold)
+    ? {
+      enabled: verifierValue.enabled,
+      model: textFromRecord(verifierValue, "model", 1_024),
+      agent: textFromRecord(verifierValue, "agent", 1_024),
+      timeoutMilliseconds: Number(verifierValue.timeoutMilliseconds),
+      repeatedBlockThreshold: Number(verifierValue.repeatedBlockThreshold),
+    }
     : undefined
   const result: GoalSummary = {
     id: text("id", 256),
@@ -366,10 +447,14 @@ function parsedGoal(output: unknown): GoalSummary | undefined {
     checkpoint,
     completionEvidence: text("completionEvidence"),
     blocker: text("blocker"),
-    acceptanceCriteria: Array.isArray(goal.acceptanceCriteria) ? goal.acceptanceCriteria.filter((item): item is string => typeof item === "string").slice(0, 100) : undefined,
+    acceptanceCriteria: Array.isArray(goal.acceptanceCriteria)
+      ? goal.acceptanceCriteria.filter((item): item is string => typeof item === "string").slice(0, 100)
+      : undefined,
     verifier,
     latestVerdict,
-    evidenceReferences: Array.isArray(goal.evidenceReferences) ? goal.evidenceReferences.filter((item): item is string => typeof item === "string").slice(0, 500) : undefined,
+    evidenceReferences: Array.isArray(goal.evidenceReferences)
+      ? goal.evidenceReferences.filter((item): item is string => typeof item === "string").slice(0, 500)
+      : undefined,
     consecutiveBlockedVerdicts: integer("consecutiveBlockedVerdicts"),
     pendingContinuation: goal.pendingContinuation === true,
     settlementGeneration: integer("settlementGeneration"),
@@ -387,8 +472,10 @@ function parseGoalMetrics(value: unknown): GoalMetricSummary[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.flatMap((candidate) => {
     if (!record(candidate)) return []
-    const text = (key: string, limit: number) => typeof candidate[key] === "string" && candidate[key].length <= limit ? candidate[key] as string : undefined
-    const number = (key: string) => Number.isSafeInteger(candidate[key]) && Number(candidate[key]) >= 0 ? Number(candidate[key]) : undefined
+    const text = (key: string, limit: number) =>
+      typeof candidate[key] === "string" && candidate[key].length <= limit ? candidate[key] as string : undefined
+    const number = (key: string) =>
+      Number.isSafeInteger(candidate[key]) && Number(candidate[key]) >= 0 ? Number(candidate[key]) : undefined
     const id = text("id", 256)
     const sequence = number("sequence")
     const objective = text("objective", 400)
@@ -399,7 +486,8 @@ function parseGoalMetrics(value: unknown): GoalMetricSummary[] | undefined {
     const autoTurns = number("autoTurns")
     const createdAt = number("createdAt")
     const closedAt = number("closedAt")
-    return id && sequence && objective && status && tokensUsed !== undefined && timeUsedSeconds !== undefined && turnsUsed !== undefined && autoTurns !== undefined && createdAt !== undefined && closedAt !== undefined
+    return id && sequence && objective && status && tokensUsed !== undefined && timeUsedSeconds !== undefined &&
+        turnsUsed !== undefined && autoTurns !== undefined && createdAt !== undefined && closedAt !== undefined
       ? [{ id, sequence, objective, status, tokensUsed, timeUsedSeconds, turnsUsed, autoTurns, createdAt, closedAt }]
       : []
   }).slice(-100)
@@ -427,8 +515,10 @@ export function deriveGoal(messages: WorkbenchState["sessions"][string]["message
   for (const message of messages) {
     if (message.info.role !== "assistant") continue
     for (const part of message.parts) {
-      if (part.type !== "tool" || !part.tool || !GOAL_TOOLS.has(part.tool) ||
-        (part.state?.status !== "completed" && part.state?.status !== "complete")) continue
+      if (
+        part.type !== "tool" || !part.tool || !GOAL_TOOLS.has(part.tool) ||
+        (part.state?.status !== "completed" && part.state?.status !== "complete")
+      ) continue
       if (part.tool === "clear_goal") {
         summary = undefined
         continue
@@ -450,8 +540,10 @@ export function deriveGoalHistory(messages: WorkbenchState["sessions"][string]["
   for (const message of messages) {
     if (message.info.role !== "assistant") continue
     for (const part of message.parts) {
-      if (part.type !== "tool" || !part.tool || !GOAL_TOOLS.has(part.tool) ||
-        (part.state?.status !== "completed" && part.state?.status !== "complete")) continue
+      if (
+        part.type !== "tool" || !part.tool || !GOAL_TOOLS.has(part.tool) ||
+        (part.state?.status !== "completed" && part.state?.status !== "complete")
+      ) continue
       const parsed = outputGoalMetrics(part.state?.output)
       if (parsed) history = parsed
     }

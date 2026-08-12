@@ -33,7 +33,9 @@ function eventSessionID(update: ControllerUpdate): string | undefined {
   const properties = update.event.properties
   if (typeof properties.sessionID === "string") return properties.sessionID
   const info = properties.info
-  return typeof info === "object" && info !== null && "sessionID" in info && typeof info.sessionID === "string" ? info.sessionID : undefined
+  return typeof info === "object" && info !== null && "sessionID" in info && typeof info.sessionID === "string"
+    ? info.sessionID
+    : undefined
 }
 
 function terminalUpdate(update: ControllerUpdate, sessionID: string): boolean {
@@ -58,11 +60,20 @@ export class DeferredOpenCodeReload {
 
   request(request: OpenCodeReloadRequest): ReloadRequestReceipt {
     if (this.disposed) throw new Error("OpenCode reload coordinator is unavailable")
-    if (!Object.hasOwn(this.controller.snapshot.sessions, request.sessionID)) throw new Error("OpenCode reload request used an unknown session")
+    if (!Object.hasOwn(this.controller.snapshot.sessions, request.sessionID)) {
+      throw new Error("OpenCode reload request used an unknown session")
+    }
     const existing = this.pending ?? this.running
     if (existing) {
-      if (existing.sessionID !== request.sessionID || existing.reason !== request.reason) throw new Error("Another OpenCode reload is already pending")
-      return { scheduled: true, when: this.running ? "reloading" : "session-idle", sessionID: request.sessionID, deduplicated: true }
+      if (existing.sessionID !== request.sessionID || existing.reason !== request.reason) {
+        throw new Error("Another OpenCode reload is already pending")
+      }
+      return {
+        scheduled: true,
+        when: this.running ? "reloading" : "session-idle",
+        sessionID: request.sessionID,
+        deduplicated: true,
+      }
     }
     this.pending = request
     let idleSessionID = request.sessionID

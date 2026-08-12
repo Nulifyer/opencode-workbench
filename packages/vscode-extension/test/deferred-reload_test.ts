@@ -57,13 +57,20 @@ Deno.test("deferred reload waits for terminal session event and deduplicates req
       conflicting = true
     }
     if (!conflicting) throw new Error("Conflicting reload request was accepted")
-    for (const listener of listeners) listener({ type: "event", event: { type: "session.status", properties: { sessionID: "one", status: { type: "idle" } } } })
+    for (const listener of listeners) {
+      listener({
+        type: "event",
+        event: { type: "session.status", properties: { sessionID: "one", status: { type: "idle" } } },
+      })
+    }
     await started.promise
     if (pauses.join(",") !== "true") throw new Error("Prompt admission resumed before reload completed")
     release.resolve(undefined)
     await release.promise
     await Promise.resolve()
-    if (completed !== 1 || pauses.join(",") !== "true,false") throw new Error("Reload completion did not resume prompt admission exactly once")
+    if (completed !== 1 || pauses.join(",") !== "true,false") {
+      throw new Error("Reload completion did not resume prompt admission exactly once")
+    }
   } finally {
     coordinator.dispose()
   }
@@ -108,12 +115,22 @@ Deno.test("delegated reload waits for root session to become idle", async () => 
   const coordinator = new DeferredOpenCodeReload(controller, { reload: async () => started.resolve(undefined) })
   try {
     coordinator.request({ sessionID: "child", reason: "skill-activation" })
-    for (const listener of listeners) listener({ type: "event", event: { type: "session.status", properties: { sessionID: "child", status: { type: "idle" } } } })
+    for (const listener of listeners) {
+      listener({
+        type: "event",
+        event: { type: "session.status", properties: { sessionID: "child", status: { type: "idle" } } },
+      })
+    }
     let began = false
     void started.promise.then(() => began = true)
     await Promise.resolve()
     if (began) throw new Error("Child session idle triggered reload before root completed")
-    for (const listener of listeners) listener({ type: "event", event: { type: "session.status", properties: { sessionID: "root", status: { type: "idle" } } } })
+    for (const listener of listeners) {
+      listener({
+        type: "event",
+        event: { type: "session.status", properties: { sessionID: "root", status: { type: "idle" } } },
+      })
+    }
     await started.promise
   } finally {
     coordinator.dispose()

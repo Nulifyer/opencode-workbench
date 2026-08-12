@@ -46,7 +46,9 @@ export class NodeAtomicAdapter implements AtomicAdapter {
   }
 
   async writeExclusive(path: string, contents: string): Promise<void> {
-    if (Buffer.byteLength(contents) > MAX_STATE_BYTES) throw new Error("opencode-workbench state exceeds the size limit")
+    if (Buffer.byteLength(contents) > MAX_STATE_BYTES) {
+      throw new Error("opencode-workbench state exceeds the size limit")
+    }
     await this.prepare(path)
     const file = await open(path, "wx", 0o600)
     try {

@@ -19,7 +19,9 @@ async function within<T>(promise: Promise<T>, milliseconds = 10_000): Promise<T>
   try {
     return await Promise.race([
       promise,
-      new Promise<T>((_resolve, reject) => timer = setTimeout(() => reject(new Error(`Timed out after ${milliseconds}ms`)), milliseconds)),
+      new Promise<T>((_resolve, reject) =>
+        timer = setTimeout(() => reject(new Error(`Timed out after ${milliseconds}ms`)), milliseconds)
+      ),
     ])
   } finally {
     if (timer) clearTimeout(timer)
@@ -86,10 +88,16 @@ Deno.test("synthetic event pipeline preserves interleaved streams under backpres
     if (request.method === "GET" && ["/lsp", "/formatter", "/mcp"].includes(url.pathname)) return json([])
     if (request.method === "GET" && ["/path", "/vcs"].includes(url.pathname)) return json({})
     if (request.method === "GET" && ["/question", "/permission"].includes(url.pathname)) return json([])
-    if (request.method === "GET" && ["/api/question/request", "/api/permission/request"].includes(url.pathname)) return json({ data: [] })
-    if (request.method === "GET" && url.pathname === "/api/session/ses_stress/message") return json({ data: [], cursor: {} })
+    if (request.method === "GET" && ["/api/question/request", "/api/permission/request"].includes(url.pathname)) {
+      return json({ data: [] })
+    }
+    if (request.method === "GET" && url.pathname === "/api/session/ses_stress/message") {
+      return json({ data: [], cursor: {} })
+    }
     if (request.method === "GET" && url.pathname === "/session/ses_stress/message") return json([])
-    if (request.method === "GET" && ["/session/ses_stress/todo", "/session/ses_stress/diff"].includes(url.pathname)) return json([])
+    if (request.method === "GET" && ["/session/ses_stress/todo", "/session/ses_stress/diff"].includes(url.pathname)) {
+      return json([])
+    }
     response.writeHead(404).end()
   })
 
@@ -99,7 +107,12 @@ Deno.test("synthetic event pipeline preserves interleaved streams under backpres
   })
   const address = server.address()
   if (!address || typeof address === "string") throw new Error("Stress server did not bind a TCP port")
-  const client = new OpenCodeClient({ baseUrl: `http://127.0.0.1:${address.port}`, username: "", password: "", directory: "/workspace" })
+  const client = new OpenCodeClient({
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    username: "",
+    password: "",
+    directory: "/workspace",
+  })
   const errors: string[] = []
   const controller = new SessionController(client, { error: (error) => errors.push(error) })
   const connected = deferred<void>()
@@ -114,8 +127,14 @@ Deno.test("synthetic event pipeline preserves interleaved streams under backpres
     eventStream = stream
     await within(connected.promise)
     for (const id of ["assistant-a", "assistant-b"]) {
-      await writeEvent(stream, { type: "message.updated", properties: { info: { id, sessionID: session.id, role: "assistant" } } })
-      await writeEvent(stream, { type: "message.part.updated", properties: { part: { id: `${id}-text`, messageID: id, sessionID: session.id, type: "text", text: "" } } })
+      await writeEvent(stream, {
+        type: "message.updated",
+        properties: { info: { id, sessionID: session.id, role: "assistant" } },
+      })
+      await writeEvent(stream, {
+        type: "message.part.updated",
+        properties: { part: { id: `${id}-text`, messageID: id, sessionID: session.id, type: "text", text: "" } },
+      })
     }
     const expectedParts = { a: [] as string[], b: [] as string[] }
     const goalContinuationCount = 1_000
@@ -123,23 +142,37 @@ Deno.test("synthetic event pipeline preserves interleaved streams under backpres
       if (index % 20 === 0) {
         const sequence = index / 20
         const messageID = `goal-${sequence}`
-        await writeEvent(stream, { type: "message.updated", properties: { info: { id: messageID, sessionID: session.id, role: "user" } } })
-        await writeEvent(stream, { type: "message.part.updated", properties: { part: {
-          id: `${messageID}-text`,
-          messageID,
-          sessionID: session.id,
-          type: "text",
-          text: `Continue goal turn ${sequence}`,
-          synthetic: true,
-          metadata: { "opencode-workbench": { kind: "goal-continuation", version: 1 } },
-        } } })
+        await writeEvent(stream, {
+          type: "message.updated",
+          properties: { info: { id: messageID, sessionID: session.id, role: "user" } },
+        })
+        await writeEvent(stream, {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: `${messageID}-text`,
+              messageID,
+              sessionID: session.id,
+              type: "text",
+              text: `Continue goal turn ${sequence}`,
+              synthetic: true,
+              metadata: { "opencode-workbench": { kind: "goal-continuation", version: 1 } },
+            },
+          },
+        })
       }
       const suffix = index % 2 === 0 ? "a" : "b"
       const delta = `${suffix}${Math.floor(index / 2).toString(36).padStart(3, "0")}|`
       expectedParts[suffix].push(delta)
       await writeEvent(stream, {
         type: "message.part.delta",
-        properties: { sessionID: session.id, messageID: `assistant-${suffix}`, partID: `assistant-${suffix}-text`, field: "text", delta },
+        properties: {
+          sessionID: session.id,
+          messageID: `assistant-${suffix}`,
+          partID: `assistant-${suffix}-text`,
+          field: "text",
+          delta,
+        },
       })
     }
     await writeEvent(stream, { type: "session.idle", properties: { sessionID: session.id } })
@@ -152,19 +185,38 @@ Deno.test("synthetic event pipeline preserves interleaved streams under backpres
         messages.filter((message) => message.info.id.startsWith("goal-")).length === goalContinuationCount &&
         controller.snapshot.sessions[session.id]?.status.type === "idle"
     })
-    const goalContinuations = controller.chatSnapshot().session?.messages.filter((message) => message.info.id.startsWith("goal-")) ?? []
-    if (goalContinuations.length !== goalContinuationCount || goalContinuations.some((message) => !isGoalContinuationMessage(message))) {
-      throw new Error(`Goal continuation markers were lost or corrupted under event-bus pressure: ${goalContinuations.length}/${goalContinuationCount}`)
+    const goalContinuations = controller.chatSnapshot().session?.messages.filter((message) =>
+      message.info.id.startsWith("goal-")
+    ) ?? []
+    if (
+      goalContinuations.length !== goalContinuationCount ||
+      goalContinuations.some((message) => !isGoalContinuationMessage(message))
+    ) {
+      throw new Error(
+        `Goal continuation markers were lost or corrupted under event-bus pressure: ${goalContinuations.length}/${goalContinuationCount}`,
+      )
     }
     const patches = controller.messagePatches([
       { sessionID: session.id, messageID: "assistant-a" },
       { sessionID: session.id, messageID: "assistant-b" },
     ])
-    if (patches?.length !== 2 || patches.some((patch) => {
-      const suffix = patch.messageID.endsWith("a") ? "a" : "b"
-      return patch.active || patch.message?.parts[0]?.text !== expected[suffix] || patch.revision < 10_002
-    })) {
-      throw new Error(`Final patches did not preserve the stress stream: ${JSON.stringify(patches?.map((patch) => ({ revision: patch.revision, active: patch.active, length: patch.message?.parts[0]?.text?.length })))}`)
+    if (
+      patches?.length !== 2 || patches.some((patch) => {
+        const suffix = patch.messageID.endsWith("a") ? "a" : "b"
+        return patch.active || patch.message?.parts[0]?.text !== expected[suffix] || patch.revision < 10_002
+      })
+    ) {
+      throw new Error(
+        `Final patches did not preserve the stress stream: ${
+          JSON.stringify(
+            patches?.map((patch) => ({
+              revision: patch.revision,
+              active: patch.active,
+              length: patch.message?.parts[0]?.text?.length,
+            })),
+          )
+        }`,
+      )
     }
     if (errors.length) throw new Error(`Synthetic event pipeline reported errors: ${errors.join(", ")}`)
   } finally {

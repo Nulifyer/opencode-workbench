@@ -3,25 +3,84 @@ import { boundedVerifierEvidence, GoalVerifierService } from "../src/application
 
 Deno.test("independent verifier is bounded, schema-driven, and evidence-only", async () => {
   let observed = ""
-  const verifier = new GoalVerifierService(async (prompt) => { observed = prompt; return { verdict: "complete", reason: "All deterministic checks passed", missingCriteria: [], confidence: "high" } })
-  const result = await verifier.verify({ objective: "Ship", acceptanceCriteria: ["Tests pass"], evidence: [{ id: "e", kind: "test", label: "unit", status: "passed", observedAt: 1, summary: "10 passed" }] })
+  const verifier = new GoalVerifierService(async (prompt) => {
+    observed = prompt
+    return { verdict: "complete", reason: "All deterministic checks passed", missingCriteria: [], confidence: "high" }
+  })
+  const result = await verifier.verify({
+    objective: "Ship",
+    acceptanceCriteria: ["Tests pass"],
+    evidence: [{ id: "e", kind: "test", label: "unit", status: "passed", observedAt: 1, summary: "10 passed" }],
+  })
   assertEquals(result.verdict, "complete")
   assertEquals(observed.includes("Do not inspect the filesystem, call tools"), true)
 })
 
 Deno.test("verifier retries invalid output and honors cancellation", async () => {
   let attempts = 0
-  const verifier = new GoalVerifierService(async () => { attempts++; return attempts === 1 ? {} : { verdict: "continue", reason: "Missing test", missingCriteria: ["Test"], confidence: "medium" } }, 1_000, 1)
+  const verifier = new GoalVerifierService(
+    async () => {
+      attempts++
+      return attempts === 1
+        ? {}
+        : { verdict: "continue", reason: "Missing test", missingCriteria: ["Test"], confidence: "medium" }
+    },
+    1_000,
+    1,
+  )
   assertEquals((await verifier.verify({ objective: "Ship", acceptanceCriteria: [], evidence: [] })).verdict, "continue")
-  const aborted = new AbortController(); aborted.abort(new Error("cancelled"))
-  await assertRejects(() => verifier.verify({ objective: "Ship", acceptanceCriteria: [], evidence: [] }, aborted.signal), Error, "cancelled")
+  const aborted = new AbortController()
+  aborted.abort(new Error("cancelled"))
+  await assertRejects(
+    () => verifier.verify({ objective: "Ship", acceptanceCriteria: [], evidence: [] }, aborted.signal),
+    Error,
+    "cancelled",
+  )
 })
 
 Deno.test("verifier rejects oversized inputs explicitly instead of silently truncating them", async () => {
-  const verifier = new GoalVerifierService(async () => ({ verdict: "complete", reason: "unused", missingCriteria: [], confidence: "high" }))
-  await assertRejects(() => verifier.verify({ objective: "Ship", acceptanceCriteria: ["x".repeat(2_001)], evidence: [] }), Error, "criteria")
-  await assertRejects(() => verifier.verify({ objective: "Ship", acceptanceCriteria: [], latestAssistantResult: "x".repeat(20_001), evidence: [] }), Error, "assistant result")
-  await assertRejects(() => verifier.verify({ objective: "Ship", acceptanceCriteria: [], evidence: Array.from({ length: 201 }, (_, index) => ({ id: String(index), kind: "test" as const, label: "test", status: "passed" as const, observedAt: 1, summary: "passed" })) }), Error, "evidence")
+  const verifier = new GoalVerifierService(async () => ({
+    verdict: "complete",
+    reason: "unused",
+    missingCriteria: [],
+    confidence: "high",
+  }))
+  await assertRejects(
+    () => verifier.verify({ objective: "Ship", acceptanceCriteria: ["x".repeat(2_001)], evidence: [] }),
+    Error,
+    "criteria",
+  )
+  await assertRejects(
+    () =>
+      verifier.verify({
+        objective: "Ship",
+        acceptanceCriteria: [],
+        latestAssistantResult: "x".repeat(20_001),
+        evidence: [],
+      }),
+    Error,
+    "assistant result",
+  )
+  await assertRejects(
+    () =>
+      verifier.verify({
+        objective: "Ship",
+        acceptanceCriteria: [],
+        evidence: Array.from(
+          { length: 201 },
+          (_, index) => ({
+            id: String(index),
+            kind: "test" as const,
+            label: "test",
+            status: "passed" as const,
+            observedAt: 1,
+            summary: "passed",
+          }),
+        ),
+      }),
+    Error,
+    "evidence",
+  )
 })
 
 Deno.test("verifier retains bounded independent-session attempt metadata", async () => {

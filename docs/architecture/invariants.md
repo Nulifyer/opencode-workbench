@@ -6,19 +6,19 @@ later UI evolution.
 
 ## Ownership
 
-| Concern | Current authority | Workbench responsibility | Contract and evidence |
-| --- | --- | --- | --- |
-| Models, providers, agents, tools, commands | OpenCode | Read, bound, validate, and project catalogs | `OpenCodeClient.catalogs()`, `commands()`, and `toolIDs()`; `client_test.ts` catalog tests |
-| Sessions and transcripts | OpenCode | Select, reconcile, paginate, and project sessions | `OpenCodeClient` session methods; `session-controller_test.ts` reconciliation tests |
-| Prompt execution | OpenCode | Admit a prompt with a stable message ID and requested delivery | `OpenCodeClient.sendPrompt()`; `client_test.ts` prompt-admission tests |
-| Stable-mode queue | Workbench extension host until delivery | Keep bounded in-memory entries and their private file bytes; deliver via OpenCode `steer` or `queue` | `SessionController.sendToSession()` and `drainQueue()`; queue tests in `session-controller_test.ts` |
-| Permissions and questions | OpenCode | Preserve, display, and return exact supported responses | `parsePermission()`, `parseQuestion()`, coordinator methods; permission/question tests |
-| Goals, preferences, skill candidates | Companion OpenCode plugin | Project goal state and offer controls; never run a second model loop | `packages/opencode-plugin/src/index.ts`; plugin goal, memory, skill, and integration tests |
-| Session lineage, archive, sharing, revert state | OpenCode | Project native `parentID`, `time.archived`, `share`, and `revert`; invoke only proven native mutations | `OpenCodeClient`, `SessionController`, and recovery/session-list tests |
-| PTYs and background child sessions | OpenCode | Project the bounded native PTY feed; request native cancellation/backgrounding | OpenCode `/pty` and `/experimental/session/:id/background`; client/controller PTY tests |
-| Task artifacts and session pins | VS Code workspace state | Retain bounded presentation/action metadata keyed to canonical OpenCode session/message IDs | `TaskArtifactService`, `SessionPresentationService`, and shared artifact validators |
-| Editor state, tasks, terminals, diagnostics | VS Code | Expose a typed, authenticated, bounded bridge | `packages/vscode-extension/src/bridge.ts`; workspace and security tests |
-| Sidebar/editor synchronization | Extension host | Publish one bounded projection and synchronize private composer payloads | `ChatViewProvider`; communication and protocol tests |
+| Concern                                         | Current authority                       | Workbench responsibility                                                                               | Contract and evidence                                                                               |
+| ----------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| Models, providers, agents, tools, commands      | OpenCode                                | Read, bound, validate, and project catalogs                                                            | `OpenCodeClient.catalogs()`, `commands()`, and `toolIDs()`; `client_test.ts` catalog tests          |
+| Sessions and transcripts                        | OpenCode                                | Select, reconcile, paginate, and project sessions                                                      | `OpenCodeClient` session methods; `session-controller_test.ts` reconciliation tests                 |
+| Prompt execution                                | OpenCode                                | Admit a prompt with a stable message ID and requested delivery                                         | `OpenCodeClient.sendPrompt()`; `client_test.ts` prompt-admission tests                              |
+| Stable-mode queue                               | Workbench extension host until delivery | Keep bounded in-memory entries and their private file bytes; deliver via OpenCode `steer` or `queue`   | `SessionController.sendToSession()` and `drainQueue()`; queue tests in `session-controller_test.ts` |
+| Permissions and questions                       | OpenCode                                | Preserve, display, and return exact supported responses                                                | `parsePermission()`, `parseQuestion()`, coordinator methods; permission/question tests              |
+| Goals, preferences, skill candidates            | Companion OpenCode plugin               | Project goal state and offer controls; never run a second model loop                                   | `packages/opencode-plugin/src/index.ts`; plugin goal, memory, skill, and integration tests          |
+| Session lineage, archive, sharing, revert state | OpenCode                                | Project native `parentID`, `time.archived`, `share`, and `revert`; invoke only proven native mutations | `OpenCodeClient`, `SessionController`, and recovery/session-list tests                              |
+| PTYs and background child sessions              | OpenCode                                | Project the bounded native PTY feed; request native cancellation/backgrounding                         | OpenCode `/pty` and `/experimental/session/:id/background`; client/controller PTY tests             |
+| Task artifacts and session pins                 | VS Code workspace state                 | Retain bounded presentation/action metadata keyed to canonical OpenCode session/message IDs            | `TaskArtifactService`, `SessionPresentationService`, and shared artifact validators                 |
+| Editor state, tasks, terminals, diagnostics     | VS Code                                 | Expose a typed, authenticated, bounded bridge                                                          | `packages/vscode-extension/src/bridge.ts`; workspace and security tests                             |
+| Sidebar/editor synchronization                  | Extension host                          | Publish one bounded projection and synchronize private composer payloads                               | `ChatViewProvider`; communication and protocol tests                                                |
 
 Exactly one `SessionController` owns stable-mode orchestration for a connected
 workspace. OpenCode is the sole agent runtime and the sole authority for
@@ -164,19 +164,19 @@ Evidence: `workspace-root_test.ts`, `security_test.ts`, and bridge cases in
 
 ## Persistence and privacy
 
-| Data | Location/lifetime | Rule |
-| --- | --- | --- |
-| OpenCode sessions/transcripts | OpenCode storage | Canonical transcript; Workbench does not create a transcript database |
-| Selected workspace root, selected session, recovery mapping | VS Code workspace state | IDs/URIs only; no prompt payload |
-| Session pins | VS Code workspace state | Bounded presentation metadata keyed by OpenCode session ID; archive/share/lineage remain native |
-| Task artifacts | VS Code workspace state | Bounded, revisioned presentation/action metadata keyed by OpenCode provenance; never a second transcript or plan/prompt body store |
-| Composer agent/model/variant preferences | VS Code global state | Metadata only |
-| External server password override | VS Code Secret Storage | Never settings, workspace state, registry, or logs |
-| Managed credentials and bridge bearer token | Extension-host memory; bridge token also in owner-only registry | Removed/invalidated on disposal |
-| Goal state | `$XDG_DATA_HOME/opencode-workbench/plugin/goals.json` (fallback under the user data home) | Bounded atomic schema v2 state with durable continuation IDs and transcript-based restart recovery |
-| Preferences, evidence, staged skill candidates | `$XDG_DATA_HOME/opencode-workbench/plugin/state.json` | Approved/staged metadata; secret and prompt-injection scanning |
-| Attachment, screenshot, clipboard, and unsaved-buffer bytes | Webview and extension-host memory until admission | Never VS Code state or transcript snapshots; historical snapshots omit data URLs/base64 |
-| Webview state | VS Code webview state | Presentation only: pane widths/visibility, selected inspector tab, session filters, and todo expansion |
+| Data                                                        | Location/lifetime                                                                         | Rule                                                                                                                               |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| OpenCode sessions/transcripts                               | OpenCode storage                                                                          | Canonical transcript; Workbench does not create a transcript database                                                              |
+| Selected workspace root, selected session, recovery mapping | VS Code workspace state                                                                   | IDs/URIs only; no prompt payload                                                                                                   |
+| Session pins                                                | VS Code workspace state                                                                   | Bounded presentation metadata keyed by OpenCode session ID; archive/share/lineage remain native                                    |
+| Task artifacts                                              | VS Code workspace state                                                                   | Bounded, revisioned presentation/action metadata keyed by OpenCode provenance; never a second transcript or plan/prompt body store |
+| Composer agent/model/variant preferences                    | VS Code global state                                                                      | Metadata only                                                                                                                      |
+| External server password override                           | VS Code Secret Storage                                                                    | Never settings, workspace state, registry, or logs                                                                                 |
+| Managed credentials and bridge bearer token                 | Extension-host memory; bridge token also in owner-only registry                           | Removed/invalidated on disposal                                                                                                    |
+| Goal state                                                  | `$XDG_DATA_HOME/opencode-workbench/plugin/goals.json` (fallback under the user data home) | Bounded atomic schema v2 state with durable continuation IDs and transcript-based restart recovery                                 |
+| Preferences, evidence, staged skill candidates              | `$XDG_DATA_HOME/opencode-workbench/plugin/state.json`                                     | Approved/staged metadata; secret and prompt-injection scanning                                                                     |
+| Attachment, screenshot, clipboard, and unsaved-buffer bytes | Webview and extension-host memory until admission                                         | Never VS Code state or transcript snapshots; historical snapshots omit data URLs/base64                                            |
+| Webview state                                               | VS Code webview state                                                                     | Presentation only: pane widths/visibility, selected inspector tab, session filters, and todo expansion                             |
 
 Complete prompt payloads, attachment bytes, unsaved buffers, credentials, and
 bridge response bodies must not be added to new persisted metadata. Plan

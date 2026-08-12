@@ -1,6 +1,7 @@
 const AUTHORIZATION_VALUE = /\b((?:proxy-)?authorization\s*:\s*)[^\r\n]*/gi
 const COOKIE_VALUE = /\b((?:set-)?cookie\s*:\s*)[^\r\n]*/gi
-const SECRET_VALUE = /\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|cookie|password|secret|token|credential)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi
+const SECRET_VALUE =
+  /\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|cookie|password|secret|token|credential)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi
 const URL_CREDENTIAL = /(https?:\/\/)[^/@\s]+@/gi
 
 export function userFacingError(error: unknown): string {

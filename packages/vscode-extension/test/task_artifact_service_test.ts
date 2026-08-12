@@ -1,9 +1,9 @@
 import { assert, assertEquals, assertThrows } from "jsr:@std/assert"
 import type { TaskArtifact } from "@opencode-workbench/shared"
 import {
+  type NewTaskArtifact,
   TASK_ARTIFACT_CAPACITY,
   TaskArtifactService,
-  type NewTaskArtifact,
   type TaskArtifactState as PersistedTaskArtifactState,
 } from "../src/application/task-artifact-service.ts"
 
@@ -32,7 +32,9 @@ function fullArtifact(sessionID = "session-one"): TaskArtifact {
 
 Deno.test("task artifacts persist across restart and remain isolated from caller mutation", () => {
   let persisted: PersistedTaskArtifactState | undefined
-  const service = new TaskArtifactService(undefined, (state) => { persisted = state })
+  const service = new TaskArtifactService(undefined, (state) => {
+    persisted = state
+  })
   const created = service.create(planInput(), "create-one")
   assert(persisted)
 
@@ -61,7 +63,9 @@ Deno.test("task artifacts are keyed by canonical OpenCode session IDs", () => {
 
 Deno.test("updates use optimistic revisions and durable mutation idempotency", () => {
   let persisted: PersistedTaskArtifactState | undefined
-  const service = new TaskArtifactService(undefined, (state) => { persisted = state })
+  const service = new TaskArtifactService(undefined, (state) => {
+    persisted = state
+  })
   const created = service.create(planInput(), "create")
   let mutations = 0
   const approve = (draft: TaskArtifact): void => {
@@ -75,10 +79,19 @@ Deno.test("updates use optimistic revisions and durable mutation idempotency", (
   assertEquals(service.update(created.sessionID, created.id, 1, approve, "approve").revision, 2)
   assertEquals(mutations, 1)
   assertThrows(() => service.update(created.sessionID, created.id, 1, () => undefined), Error, "stale")
-  assertThrows(() => service.update(created.sessionID, created.id, 2, () => undefined, "approve"), Error, "different operation")
+  assertThrows(
+    () => service.update(created.sessionID, created.id, 2, () => undefined, "approve"),
+    Error,
+    "different operation",
+  )
 
   const restarted = new TaskArtifactService(persisted)
-  assertEquals(restarted.update(created.sessionID, created.id, 1, () => { throw new Error("must not run") }, "approve").revision, 2)
+  assertEquals(
+    restarted.update(created.sessionID, created.id, 1, () => {
+      throw new Error("must not run")
+    }, "approve").revision,
+    2,
+  )
 })
 
 Deno.test("archive and remove are explicit, revisioned, and idempotent", () => {
@@ -111,15 +124,36 @@ Deno.test("constructor ignores and reports corrupt records without losing valid 
 
 Deno.test("privacy fields are rejected before persistence", () => {
   let writes = 0
-  const service = new TaskArtifactService(undefined, () => { writes += 1 })
-  assertThrows(() => service.create({
-    ...planInput(),
-    payload: { ...planInput().payload, objective: "private objective", body: "private Markdown" },
-  } as unknown as NewTaskArtifact), Error, "unsupported field")
-  assertThrows(() => service.create({
-    kind: "context-capture", sessionID: "session", lifecycle: "active",
-    payload: { promptID: "prompt", receiptID: "context:prompt", admittedAt: 1, truncation: "none", sources: [], screenshot: "base64 bytes" },
-  } as unknown as NewTaskArtifact), Error, "unsupported field screenshot")
+  const service = new TaskArtifactService(undefined, () => {
+    writes += 1
+  })
+  assertThrows(
+    () =>
+      service.create({
+        ...planInput(),
+        payload: { ...planInput().payload, objective: "private objective", body: "private Markdown" },
+      } as unknown as NewTaskArtifact),
+    Error,
+    "unsupported field",
+  )
+  assertThrows(
+    () =>
+      service.create({
+        kind: "context-capture",
+        sessionID: "session",
+        lifecycle: "active",
+        payload: {
+          promptID: "prompt",
+          receiptID: "context:prompt",
+          admittedAt: 1,
+          truncation: "none",
+          sources: [],
+          screenshot: "base64 bytes",
+        },
+      } as unknown as NewTaskArtifact),
+    Error,
+    "unsupported field screenshot",
+  )
   assertEquals(writes, 0)
   assertEquals(service.list().length, 0)
 })

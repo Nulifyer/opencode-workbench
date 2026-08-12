@@ -1,4 +1,4 @@
-import { OrderedEventBus, type EventFlushScheduler } from "../src/ordered-event-bus.ts"
+import { type EventFlushScheduler, OrderedEventBus } from "../src/ordered-event-bus.ts"
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -8,10 +8,12 @@ Deno.test("ordered event bus drains large bursts in FIFO order without dropping 
   const callbacks: Array<() => void> = []
   const schedule: EventFlushScheduler = (callback) => {
     callbacks.push(callback)
-    return { cancel: () => {
-      const index = callbacks.indexOf(callback)
-      if (index >= 0) callbacks.splice(index, 1)
-    } }
+    return {
+      cancel: () => {
+        const index = callbacks.indexOf(callback)
+        if (index >= 0) callbacks.splice(index, 1)
+      },
+    }
   }
   const handled: number[] = []
   const errors: unknown[] = []
@@ -45,10 +47,12 @@ Deno.test("ordered event bus drains reentrant events after earlier queued events
     now: () => now,
     schedule: (callback) => {
       callbacks.push(callback)
-      return { cancel: () => {
-        const index = callbacks.indexOf(callback)
-        if (index >= 0) callbacks.splice(index, 1)
-      } }
+      return {
+        cancel: () => {
+          const index = callbacks.indexOf(callback)
+          if (index >= 0) callbacks.splice(index, 1)
+        },
+      }
     },
   })
 
@@ -107,10 +111,12 @@ Deno.test("ordered event bus yields large automatic drains in bounded batches", 
     now: () => now,
     schedule: (callback) => {
       callbacks.push(callback)
-      return { cancel: () => {
-        const index = callbacks.indexOf(callback)
-        if (index >= 0) callbacks.splice(index, 1)
-      } }
+      return {
+        cancel: () => {
+          const index = callbacks.indexOf(callback)
+          if (index >= 0) callbacks.splice(index, 1)
+        },
+      }
     },
   })
 
@@ -135,10 +141,12 @@ Deno.test("ordered event bus discards stale work without disabling future events
     now: () => now,
     schedule: (callback) => {
       callbacks.push(callback)
-      return { cancel: () => {
-        const index = callbacks.indexOf(callback)
-        if (index >= 0) callbacks.splice(index, 1)
-      } }
+      return {
+        cancel: () => {
+          const index = callbacks.indexOf(callback)
+          if (index >= 0) callbacks.splice(index, 1)
+        },
+      }
     },
   })
 

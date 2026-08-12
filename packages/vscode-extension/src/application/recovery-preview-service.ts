@@ -31,12 +31,18 @@ const MAX_FILE_CHARACTERS = 8_192
 const MAX_USER_TEXT_CHARACTERS = 20_000
 
 function validID(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= MAX_ID_CHARACTERS && !/[\u0000-\u001f\u007f]/.test(value)
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_ID_CHARACTERS &&
+    !/[\u0000-\u001f\u007f]/.test(value)
 }
 
 function changedFile(change: FileChange): RecoveryPreview["changedFiles"][number] {
-  if (!change.file || change.file.length > MAX_FILE_CHARACTERS || /[\u0000-\u001f\u007f]/.test(change.file)) throw new Error("OpenCode returned an invalid changed-file path")
-  if (!Number.isSafeInteger(change.additions) || change.additions < 0 || !Number.isSafeInteger(change.deletions) || change.deletions < 0) {
+  if (!change.file || change.file.length > MAX_FILE_CHARACTERS || /[\u0000-\u001f\u007f]/.test(change.file)) {
+    throw new Error("OpenCode returned an invalid changed-file path")
+  }
+  if (
+    !Number.isSafeInteger(change.additions) || change.additions < 0 || !Number.isSafeInteger(change.deletions) ||
+    change.deletions < 0
+  ) {
     throw new Error("OpenCode returned invalid changed-file totals")
   }
   return { file: change.file, additions: change.additions, deletions: change.deletions }
@@ -114,7 +120,9 @@ export class RecoveryPreviewService {
 
     const seen = new Set<string>()
     for (const message of input.messages) {
-      if (!validID(message.info.id) || seen.has(message.info.id)) throw new Error("Recovery preview requires unique valid transcript message IDs")
+      if (!validID(message.info.id) || seen.has(message.info.id)) {
+        throw new Error("Recovery preview requires unique valid transcript message IDs")
+      }
       seen.add(message.info.id)
     }
 
@@ -122,8 +130,12 @@ export class RecoveryPreviewService {
     if (input.intent === "redo") {
       const revertMessageID = input.revertMessageID
       if (!validID(revertMessageID)) throw new Error("Redo requires a native OpenCode revert marker")
-      if (input.messageID !== undefined && input.messageID !== revertMessageID) throw new Error("Redo target must match OpenCode's native revert marker")
-      const target = input.messages.find((message) => message.info.id === revertMessageID && message.info.role === "user")
+      if (input.messageID !== undefined && input.messageID !== revertMessageID) {
+        throw new Error("Redo target must match OpenCode's native revert marker")
+      }
+      const target = input.messages.find((message) =>
+        message.info.id === revertMessageID && message.info.role === "user"
+      )
       const prompt = target ? userText(target) : { text: "", truncated: false }
       const limitations = [
         "Redo is available only while OpenCode reports this native revert marker.",
@@ -131,7 +143,11 @@ export class RecoveryPreviewService {
         "Shell commands, external services, manual edits, and other side effects are outside native redo.",
         "File totals are the current OpenCode session summary, not the exact native-redo delta.",
       ]
-      if (prompt.truncated) limitations.push("The displayed boundary message is truncated to 20,000 characters; the native revert marker is unchanged.")
+      if (prompt.truncated) {
+        limitations.push(
+          "The displayed boundary message is truncated to 20,000 characters; the native revert marker is unchanged.",
+        )
+      }
       if (!input.changes.length) limitations.push("OpenCode currently reports no changed files for this session.")
       return {
         sessionID: input.sessionID,
@@ -149,7 +165,9 @@ export class RecoveryPreviewService {
 
     const requestedID = input.messageID
     if (requestedID !== undefined && !validID(requestedID)) throw new Error("Invalid recovery message ID")
-    let targetIndex = requestedID === undefined ? -1 : input.messages.findIndex((message) => message.info.id === requestedID)
+    let targetIndex = requestedID === undefined
+      ? -1
+      : input.messages.findIndex((message) => message.info.id === requestedID)
     if (requestedID === undefined) {
       for (let index = input.messages.length - 1; index >= 0; index -= 1) {
         if (input.messages[index]?.info.role !== "user") continue
@@ -157,7 +175,9 @@ export class RecoveryPreviewService {
         break
       }
     }
-    if (targetIndex < 0) throw new Error(requestedID ? "Recovery message was not found" : "Recovery requires a user message")
+    if (targetIndex < 0) {
+      throw new Error(requestedID ? "Recovery message was not found" : "Recovery requires a user message")
+    }
     const target = input.messages[targetIndex]!
     if (target.info.role !== "user") throw new Error("Recovery target must be a user message")
 
@@ -170,7 +190,11 @@ export class RecoveryPreviewService {
       "File totals are the current OpenCode session summary, not exact per-message attribution.",
       "Shell commands, external services, manual edits, and other side effects may not be reversible.",
     ]
-    if (prompt.truncated) limitations.push("The displayed user message is truncated to 20,000 characters; the revert boundary is unchanged.")
+    if (prompt.truncated) {
+      limitations.push(
+        "The displayed user message is truncated to 20,000 characters; the revert boundary is unchanged.",
+      )
+    }
     if (!input.changes.length) limitations.push("OpenCode currently reports no changed files for this session.")
 
     return {

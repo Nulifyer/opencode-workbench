@@ -7,10 +7,10 @@ import {
   githubContextDocument,
   githubHandoffPrompt,
   githubPullRequestChangesUri,
+  type GitHubRestProvider,
   hasExplicitGitHubContextLimits,
   NativeGitHubContextService,
   parseGitHubReference,
-  type GitHubRestProvider,
 } from "../src/application/native-integration-service.ts"
 
 class FixtureRestProvider implements GitHubRestProvider {
@@ -26,7 +26,13 @@ class FixtureRestProvider implements GitHubRestProvider {
 }
 
 Deno.test("GitHub handoff accepts only canonical issue and pull request references", () => {
-  assertEquals(parseGitHubReference("https://github.com/openai/codex/issues/42"), { url: "https://github.com/openai/codex/issues/42", owner: "openai", repository: "codex", kind: "issue", number: 42 })
+  assertEquals(parseGitHubReference("https://github.com/openai/codex/issues/42"), {
+    url: "https://github.com/openai/codex/issues/42",
+    owner: "openai",
+    repository: "codex",
+    kind: "issue",
+    number: 42,
+  })
   assertEquals(parseGitHubReference("https://github.com/openai/codex/pull/7/").kind, "pull-request")
   assertThrows(() => parseGitHubReference("https://example.com/openai/codex/issues/42"))
   assertThrows(() => parseGitHubReference("https://github.com/openai/codex/issues/42?token=secret"))
@@ -34,10 +40,25 @@ Deno.test("GitHub handoff accepts only canonical issue and pull request referenc
 })
 
 Deno.test("GitHub native surfaces and pull request URI are feature detected", () => {
-  const detected = detectGitHubSurfaces([{ id: "GitHub.vscode-pull-request-github", version: "0.126.0" }], ["workbench.view.extension.github-pull-requests", "pr.openDescription"])
-  assertEquals(detected, { extensionInstalled: true, openView: true, openPullRequestDescription: true, openPullRequestDiff: false, openPullRequestChanges: true })
-  assertEquals(detectGitHubSurfaces([{ id: "GitHub.vscode-pull-request-github", version: "0.124.0" }], []).openPullRequestChanges, false)
-  assertEquals(githubPullRequestChangesUri(parseGitHubReference("https://github.com/o/r/pull/3"), "vscode-insiders"), "vscode-insiders://github.vscode-pull-request-github/open-pull-request-changes?uri=https%3A%2F%2Fgithub.com%2Fo%2Fr%2Fpull%2F3")
+  const detected = detectGitHubSurfaces([{ id: "GitHub.vscode-pull-request-github", version: "0.126.0" }], [
+    "workbench.view.extension.github-pull-requests",
+    "pr.openDescription",
+  ])
+  assertEquals(detected, {
+    extensionInstalled: true,
+    openView: true,
+    openPullRequestDescription: true,
+    openPullRequestDiff: false,
+    openPullRequestChanges: true,
+  })
+  assertEquals(
+    detectGitHubSurfaces([{ id: "GitHub.vscode-pull-request-github", version: "0.124.0" }], []).openPullRequestChanges,
+    false,
+  )
+  assertEquals(
+    githubPullRequestChangesUri(parseGitHubReference("https://github.com/o/r/pull/3"), "vscode-insiders"),
+    "vscode-insiders://github.vscode-pull-request-github/open-pull-request-changes?uri=https%3A%2F%2Fgithub.com%2Fo%2Fr%2Fpull%2F3",
+  )
   assertEquals(githubPullRequestChangesUri(parseGitHubReference("https://github.com/o/r/issues/3")), undefined)
 })
 
@@ -56,8 +77,13 @@ Deno.test("native GitHub issue context is bounded, redacted, explicit, and provi
     created_at: "2026-08-01T00:00:00Z",
     updated_at: "2026-08-02T00:00:00Z",
   }])
-  const context = await new NativeGitHubContextService(provider).load(parseGitHubReference("https://github.com/openai/codex/issues/42"))
-  assertEquals(provider.calls, [{ pathname: "/repos/openai/codex/issues/42", maximumResponseBytes: GITHUB_CONTEXT_LIMITS.metadataResponseBytes }])
+  const context = await new NativeGitHubContextService(provider).load(
+    parseGitHubReference("https://github.com/openai/codex/issues/42"),
+  )
+  assertEquals(provider.calls, [{
+    pathname: "/repos/openai/codex/issues/42",
+    maximumResponseBytes: GITHUB_CONTEXT_LIMITS.metadataResponseBytes,
+  }])
   assertEquals(context.body.coverage, "truncated")
   assert(context.body.includedBytes <= GITHUB_CONTEXT_LIMITS.bodyBytes)
   assertEquals(context.body.text.includes(token), false)
@@ -102,13 +128,23 @@ Deno.test("native GitHub pull request context includes bounded changed-file patc
     deletions: 0,
     changes: 0,
   }]])
-  const context = await new NativeGitHubContextService(provider).load(parseGitHubReference("https://github.com/o/r/pull/7"))
-  assertEquals(provider.calls[1], { pathname: `/repos/o/r/pulls/7/files?per_page=${GITHUB_CONTEXT_LIMITS.changedFiles}&page=1`, maximumResponseBytes: GITHUB_CONTEXT_LIMITS.changedFilesResponseBytes })
+  const context = await new NativeGitHubContextService(provider).load(
+    parseGitHubReference("https://github.com/o/r/pull/7"),
+  )
+  assertEquals(provider.calls[1], {
+    pathname: `/repos/o/r/pulls/7/files?per_page=${GITHUB_CONTEXT_LIMITS.changedFiles}&page=1`,
+    maximumResponseBytes: GITHUB_CONTEXT_LIMITS.changedFilesResponseBytes,
+  })
   assertEquals(context.coverage.changedFiles, "truncated")
   assertEquals(context.coverage.patches, "partial")
   assertEquals(context.changedFiles[0]?.patchCoverage, "truncated")
   assertEquals(context.changedFiles[1]?.patchCoverage, "unavailable")
-  const document = githubContextDocument(context, { uri: "file:///work/main.ts", startLine: 1, endLine: 2, text: "selected context" })
+  const document = githubContextDocument(context, {
+    uri: "file:///work/main.ts",
+    startLine: 1,
+    endLine: 2,
+    text: "selected context",
+  })
   assertStringIncludes(document, "src/main.ts")
   assertStringIncludes(document, "patch coverage: truncated")
   assertStringIncludes(document, "selected context")
@@ -121,9 +157,14 @@ Deno.test("GitHub REST provider uses only the injected VS Code session and sanit
     requests.push({ url: String(input), authorization: headers.get("authorization") ?? undefined })
     return new Response(JSON.stringify({ number: 1 }), { headers: { "content-type": "application/json" } })
   }) as typeof fetch
-  const provider = new AuthenticatedGitHubRestProvider({ getSession: () => Promise.resolve({ accessToken: "session-only-token" }) }, fetcher)
+  const provider = new AuthenticatedGitHubRestProvider({
+    getSession: () => Promise.resolve({ accessToken: "session-only-token" }),
+  }, fetcher)
   assertEquals(await provider.getJson("/repos/o/r/issues/1", 1_024), { number: 1 })
-  assertEquals(requests, [{ url: "https://api.github.com/repos/o/r/issues/1", authorization: "Bearer session-only-token" }])
+  assertEquals(requests, [{
+    url: "https://api.github.com/repos/o/r/issues/1",
+    authorization: "Bearer session-only-token",
+  }])
 
   const rejected = new AuthenticatedGitHubRestProvider(
     { getSession: () => Promise.resolve({ accessToken: "session-only-token" }) },
@@ -139,10 +180,23 @@ Deno.test("GitHub REST provider uses only the injected VS Code session and sanit
 Deno.test("GitHub REST and editor context limits fail explicitly", async () => {
   const provider = new AuthenticatedGitHubRestProvider(
     { getSession: () => Promise.resolve({ accessToken: "session-only-token" }) },
-    (async () => new Response("x".repeat(33), { headers: { "content-type": "application/json", "content-length": "33" } })) as typeof fetch,
+    (async () =>
+      new Response("x".repeat(33), {
+        headers: { "content-type": "application/json", "content-length": "33" },
+      })) as typeof fetch,
   )
   const error = await assertRejects(() => provider.getJson("/repos/o/r/issues/1", 32))
   assert(error instanceof Error)
   assertStringIncludes(error.message, "32-byte safety limit")
-  assertThrows(() => assertSelectedEditorContextWithinLimit({ uri: "file:///work/a.ts", startLine: 1, endLine: 1, text: "x".repeat(GITHUB_CONTEXT_LIMITS.editorSelectionBytes + 1) }), Error, "select at most")
+  assertThrows(
+    () =>
+      assertSelectedEditorContextWithinLimit({
+        uri: "file:///work/a.ts",
+        startLine: 1,
+        endLine: 1,
+        text: "x".repeat(GITHUB_CONTEXT_LIMITS.editorSelectionBytes + 1),
+      }),
+    Error,
+    "select at most",
+  )
 })

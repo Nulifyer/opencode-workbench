@@ -10,6 +10,12 @@ export class PromptDispatcher {
   readonly promptAgents = new Map<string, string[]>()
 
   dispose(): void {
-    this.sendGenerations.clear(); this.drainingQueues.clear(); this.sendingPrompts.clear(); this.retryingSessions.clear(); this.steeringPrompts.clear(); this.promptFiles.clear(); this.promptAgents.clear()
+    this.sendGenerations.clear()
+    this.drainingQueues.clear()
+    this.sendingPrompts.clear()
+    this.retryingSessions.clear()
+    this.steeringPrompts.clear()
+    this.promptFiles.clear()
+    this.promptAgents.clear()
   }
 }

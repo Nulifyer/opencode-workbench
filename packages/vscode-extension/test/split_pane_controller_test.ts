@@ -2,15 +2,17 @@ import { assertEquals, assertThrows } from "jsr:@std/assert"
 import {
   clampSplitPaneWidth,
   SplitPaneController,
-  splitPaneWidthForKey,
   type SplitPaneResizeObserver,
+  splitPaneWidthForKey,
 } from "../src/webview/controllers/split-pane-controller.ts"
 
 type Listener = (event: Record<string, unknown>) => void
 
 class FakeStyle {
   readonly values = new Map<string, string>()
-  setProperty(name: string, value: string): void { this.values.set(name, value) }
+  setProperty(name: string, value: string): void {
+    this.values.set(name, value)
+  }
 }
 
 class FakeElement {
@@ -20,19 +22,34 @@ class FakeElement {
   readonly captures = new Set<number>()
   tabIndex = -1
 
-  setAttribute(name: string, value: string): void { this.attributes.set(name, value) }
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value)
+  }
   addEventListener(name: string, listener: Listener): void {
     const values = this.listeners.get(name) ?? new Set<Listener>()
     values.add(listener)
     this.listeners.set(name, values)
   }
-  removeEventListener(name: string, listener: Listener): void { this.listeners.get(name)?.delete(listener) }
-  setPointerCapture(id: number): void { this.captures.add(id) }
-  hasPointerCapture(id: number): boolean { return this.captures.has(id) }
-  releasePointerCapture(id: number): void { this.captures.delete(id) }
+  removeEventListener(name: string, listener: Listener): void {
+    this.listeners.get(name)?.delete(listener)
+  }
+  setPointerCapture(id: number): void {
+    this.captures.add(id)
+  }
+  hasPointerCapture(id: number): boolean {
+    return this.captures.has(id)
+  }
+  releasePointerCapture(id: number): void {
+    this.captures.delete(id)
+  }
   dispatch(name: string, values: Record<string, unknown> = {}): { prevented: boolean } {
     let prevented = false
-    const event = { ...values, preventDefault: () => { prevented = true } }
+    const event = {
+      ...values,
+      preventDefault: () => {
+        prevented = true
+      },
+    }
     for (const listener of this.listeners.get(name) ?? []) listener(event)
     return { prevented }
   }
@@ -63,7 +80,9 @@ Deno.test("split pane controller synchronizes CSS, ARIA, keyboard, pointer, and 
   let disconnected = false
   const observer: SplitPaneResizeObserver = {
     observe: () => undefined,
-    disconnect: () => { disconnected = true },
+    disconnect: () => {
+      disconnected = true
+    },
   }
   const controller = new SplitPaneController({
     root: root as unknown as HTMLElement,
@@ -126,20 +145,46 @@ Deno.test("split pane controller remains usable without ResizeObserver and rejec
   const first = new FakeElement()
   const controller = new SplitPaneController({
     root: root as unknown as HTMLElement,
-    panes: [{ key: "sessions", separator: first as unknown as HTMLElement, cssProperty: "--sessions-width", initialWidth: 300, minimumWidth: 220, maximumWidth: 420 }],
+    panes: [{
+      key: "sessions",
+      separator: first as unknown as HTMLElement,
+      cssProperty: "--sessions-width",
+      initialWidth: 300,
+      minimumWidth: 220,
+      maximumWidth: 420,
+    }],
     createResizeObserver: () => undefined,
   })
   assertEquals(controller.setWidth("sessions", 500), 420)
   controller.dispose()
 
-  assertThrows(() => new SplitPaneController({
-    root: root as unknown as HTMLElement,
-    panes: [
-      { key: "same", separator: first as unknown as HTMLElement, cssProperty: "--one", initialWidth: 1, minimumWidth: 1, maximumWidth: 2 },
-      { key: "same", separator: new FakeElement() as unknown as HTMLElement, cssProperty: "--two", initialWidth: 1, minimumWidth: 1, maximumWidth: 2 },
-    ],
-    createResizeObserver: () => ({ observe: () => undefined, disconnect: () => undefined }),
-  }), Error, "Duplicate split pane")
+  assertThrows(
+    () =>
+      new SplitPaneController({
+        root: root as unknown as HTMLElement,
+        panes: [
+          {
+            key: "same",
+            separator: first as unknown as HTMLElement,
+            cssProperty: "--one",
+            initialWidth: 1,
+            minimumWidth: 1,
+            maximumWidth: 2,
+          },
+          {
+            key: "same",
+            separator: new FakeElement() as unknown as HTMLElement,
+            cssProperty: "--two",
+            initialWidth: 1,
+            minimumWidth: 1,
+            maximumWidth: 2,
+          },
+        ],
+        createResizeObserver: () => ({ observe: () => undefined, disconnect: () => undefined }),
+      }),
+    Error,
+    "Duplicate split pane",
+  )
 })
 
 Deno.test("split pane pointer movement coalesces layout writes into one animation frame", () => {
@@ -150,7 +195,14 @@ Deno.test("split pane pointer movement coalesces layout writes into one animatio
   let nextFrame = 1
   const controller = new SplitPaneController({
     root: root as unknown as HTMLElement,
-    panes: [{ key: "sessions", separator: separator as unknown as HTMLElement, cssProperty: "--sessions-width", initialWidth: 300, minimumWidth: 200, maximumWidth: 500 }],
+    panes: [{
+      key: "sessions",
+      separator: separator as unknown as HTMLElement,
+      cssProperty: "--sessions-width",
+      initialWidth: 300,
+      minimumWidth: 200,
+      maximumWidth: 500,
+    }],
     createResizeObserver: () => undefined,
     requestFrame: (callback) => {
       const handle = nextFrame++

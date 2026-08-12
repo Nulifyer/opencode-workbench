@@ -4,10 +4,21 @@ import { InspectorShellController } from "../src/webview/views/inspector/shell.t
 import { composerSubmitIntent } from "../src/webview/views/composer.ts"
 import { deliveryLabel, queueProjection } from "../src/webview/views/queue.ts"
 import { sessionListMarkup } from "../src/webview/views/session-list.ts"
-import { historyLoadAllLabel, historyLoadAllProgress, historyPresentation, mergeHistoryPage } from "../src/webview/views/history.ts"
-import { MAX_TURN_NAVIGATION_MARKERS, turnNavigationMarkers, turnNavigationScrollTop } from "../src/webview/views/turn-navigation.ts"
+import {
+  historyLoadAllLabel,
+  historyLoadAllProgress,
+  historyPresentation,
+  mergeHistoryPage,
+} from "../src/webview/views/history.ts"
+import {
+  MAX_TURN_NAVIGATION_MARKERS,
+  turnNavigationMarkers,
+  turnNavigationScrollTop,
+} from "../src/webview/views/turn-navigation.ts"
 import { parseWithProtocolV1Adapter } from "../src/webview/transport/protocol-v1-adapter.ts"
 import { FocusController } from "../src/webview/controllers/focus-controller.ts"
+import { HistoryController } from "../src/webview/controllers/history-controller.ts"
+import { MetricsController } from "../src/webview/controllers/metrics-controller.ts"
 import { projectConversationTurns } from "../src/webview/views/conversation.ts"
 
 Deno.test("webview store and legacy adapter preserve one validated snapshot path", () => {
@@ -15,18 +26,51 @@ Deno.test("webview store and legacy adapter preserve one validated snapshot path
   const next = { ...store.snapshot, connected: true as const, connectionState: "connected" as const }
   assertEquals(store.replace(next).connected, true)
   assertEquals(store.snapshotRevision, 1)
-  const parse = (value: unknown): { type: "snapshot"; snapshot: unknown } | undefined => typeof value === "object" && value !== null && "type" in value && value.type === "snapshot" && "snapshot" in value ? value as { type: "snapshot"; snapshot: unknown } : undefined
+  const parse = (value: unknown): { type: "snapshot"; snapshot: unknown } | undefined =>
+    typeof value === "object" && value !== null && "type" in value && value.type === "snapshot" && "snapshot" in value
+      ? value as { type: "snapshot"; snapshot: unknown }
+      : undefined
   assertEquals(parseWithProtocolV1Adapter({ type: "state", state: next }, parse), { type: "snapshot", snapshot: next })
 })
 
 Deno.test("webview domain helpers own queue, composer, session ordering, and inspector state", () => {
-  const session = { id: "s", directory: "/work", title: "S", draft: "", status: { type: "busy" as const }, loaded: true, loadState: "ready" as const, messages: [], messageRevisions: {}, queue: [{ id: "one", text: "A", createdAt: 1, delivery: "steer" as const }], permissions: [], questions: [], todos: [], changes: [], inFlightPromptID: "one" }
+  const session = {
+    id: "s",
+    directory: "/work",
+    title: "S",
+    draft: "",
+    status: { type: "busy" as const },
+    loaded: true,
+    loadState: "ready" as const,
+    messages: [],
+    messageRevisions: {},
+    queue: [{ id: "one", text: "A", createdAt: 1, delivery: "steer" as const }],
+    permissions: [],
+    questions: [],
+    todos: [],
+    changes: [],
+    inFlightPromptID: "one",
+  }
   assertEquals(queueProjection(session).running?.id, "one")
   assertEquals(deliveryLabel("replace"), "Replace queued instruction")
-  assertEquals(composerSubmitIntent({ key: "Enter", shiftKey: false, ctrlKey: false, metaKey: false, altKey: true, isComposing: false }, "send", true), "steer")
-  const sessionMarkup = sessionListMarkup([{ id: "b", title: "B", status: { type: "busy" }, unread: 0 }, { id: "a", title: "A", status: { type: "busy" }, unread: 0 }], { empty: "None", now: 1 })
-  assertEquals(sessionMarkup.indexOf("data-session-id=\"a\"") < sessionMarkup.indexOf("data-session-id=\"b\""), true)
-  const inspector = new InspectorShellController({ inspectorOpen: true, inspectorTab: "runs" }); inspector.close(); inspector.select("goal")
+  assertEquals(
+    composerSubmitIntent(
+      { key: "Enter", shiftKey: false, ctrlKey: false, metaKey: false, altKey: true, isComposing: false },
+      "send",
+      true,
+    ),
+    "steer",
+  )
+  const sessionMarkup = sessionListMarkup([{ id: "b", title: "B", status: { type: "busy" }, unread: 0 }, {
+    id: "a",
+    title: "A",
+    status: { type: "busy" },
+    unread: 0,
+  }], { empty: "None", now: 1 })
+  assertEquals(sessionMarkup.indexOf('data-session-id="a"') < sessionMarkup.indexOf('data-session-id="b"'), true)
+  const inspector = new InspectorShellController({ inspectorOpen: true, inspectorTab: "runs" })
+  inspector.close()
+  inspector.select("goal")
   assertEquals(inspector.persisted(), { inspectorOpen: false, inspectorTab: "goal" })
   const defaultInspector = new InspectorShellController()
   assertEquals(defaultInspector.persisted(), { inspectorOpen: false, inspectorTab: "activity" })
@@ -34,11 +78,54 @@ Deno.test("webview domain helpers own queue, composer, session ordering, and ins
   assertEquals(restoredInspector.persisted(), { inspectorOpen: false, inspectorTab: "activity" })
 })
 
+Deno.test("history and metrics controllers own their bounded UI state", () => {
+  const history = new HistoryController()
+  history.begin("session", "all", {
+    node: {} as HTMLElement,
+    messageID: "anchor",
+    viewportTop: 10,
+    scrollTop: 20,
+    scrollHeight: 30,
+  }, 2_000)
+  history.recordPage(1_000)
+  history.cancel()
+  assertEquals({
+    sessionID: history.sessionID,
+    mode: history.mode,
+    loaded: history.loaded,
+    target: history.target,
+    cancelled: history.cancelled,
+  }, {
+    sessionID: "session",
+    mode: "all",
+    loaded: 1_000,
+    target: 2_000,
+    cancelled: true,
+  })
+  history.reset()
+  assertEquals(history.loading, false)
+
+  const metrics = new MetricsController({ querySelectorAll: () => [] } as unknown as HTMLElement)
+  const durations = metrics.durationValues({
+    archived: true,
+    metrics: { timeUsedSeconds: 30 },
+    goal: { status: "paused", timeUsedSeconds: 10 },
+    goalHistory: [{ timeUsedSeconds: 5 }],
+  } as never)
+  assertEquals(durations, { session: 30, goal: 10, outside: 15 })
+})
+
 Deno.test("older history merges ahead of the visible transcript without duplicating its anchor", () => {
   const message = (id: string, role: "user" | "assistant") => ({ info: { id, sessionID: "s", role }, parts: [] })
   const session = {
-    id: "s", title: "S", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const,
-    messages: [message("current", "user")], messageRevisions: { current: 2 },
+    id: "s",
+    title: "S",
+    draft: "",
+    status: { type: "idle" as const },
+    loaded: true,
+    loadState: "ready" as const,
+    messages: [message("current", "user")],
+    messageRevisions: { current: 2 },
     history: { totalMessages: 3, visibleMessages: 1, hasOlder: true, limitedBy: "messages" as const },
   }
   const merged = mergeHistoryPage(session, {
@@ -52,25 +139,55 @@ Deno.test("older history merges ahead of the visible transcript without duplicat
   assertEquals(merged.messageRevisions, { oldest: 1, current: 2 })
   assertEquals(merged.history?.visibleMessages, 2)
   assertEquals(historyPresentation(merged.history).visible, false)
-  const bounded = historyPresentation({ totalMessages: 10_000, visibleMessages: 10_000, hasOlder: false, sourceMayBeTruncated: true })
+  const bounded = historyPresentation({
+    totalMessages: 10_000,
+    visibleMessages: 10_000,
+    hasOlder: false,
+    sourceMayBeTruncated: true,
+  })
   assertEquals(bounded.visible, true)
   assertEquals(bounded.text.includes("older server history may exist"), true)
   assertEquals(bounded.actionLabel, undefined)
 })
 
 Deno.test("load-all history labels exact known work without overstating truncated upstream history", () => {
-  assertEquals(historyLoadAllLabel({ totalMessages: 4_800, visibleMessages: 300, hasOlder: true }), "Load all 4,500 remaining")
-  assertEquals(historyLoadAllLabel({ totalMessages: 300, visibleMessages: 300, hasOlder: true, sourceMayBeTruncated: true }), "Load all older messages")
+  assertEquals(
+    historyLoadAllLabel({ totalMessages: 4_800, visibleMessages: 300, hasOlder: true }),
+    "Load all 4,500 remaining",
+  )
+  assertEquals(
+    historyLoadAllLabel({ totalMessages: 300, visibleMessages: 300, hasOlder: true, sourceMayBeTruncated: true }),
+    "Load all older messages",
+  )
   assertEquals(historyLoadAllProgress(2_000, 4_500), "Loading all… 2,000 / 4,500")
   assertEquals(historyLoadAllProgress(2_000), "Loading all… 2,000 loaded")
 })
 
 Deno.test("turn navigation keeps fork boundaries but omits completed goal checkpoints", () => {
   const session = {
-    id: "fork", parentID: "parent", title: "Fork", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const,
+    id: "fork",
+    parentID: "parent",
+    title: "Fork",
+    draft: "",
+    status: { type: "idle" as const },
+    loaded: true,
+    loadState: "ready" as const,
     messages: [
-      { info: { id: "prompt", sessionID: "fork", role: "user" as const }, parts: [{ id: "prompt-text", sessionID: "fork", messageID: "prompt", type: "text", text: "Continue" }] },
-      { info: { id: "answer", sessionID: "fork", role: "assistant" as const }, parts: [{ id: "checkpoint", sessionID: "fork", messageID: "answer", type: "tool", tool: "update_goal_checkpoint", state: { status: "completed" } }] },
+      {
+        info: { id: "prompt", sessionID: "fork", role: "user" as const },
+        parts: [{ id: "prompt-text", sessionID: "fork", messageID: "prompt", type: "text", text: "Continue" }],
+      },
+      {
+        info: { id: "answer", sessionID: "fork", role: "assistant" as const },
+        parts: [{
+          id: "checkpoint",
+          sessionID: "fork",
+          messageID: "answer",
+          type: "tool",
+          tool: "update_goal_checkpoint",
+          state: { status: "completed" },
+        }],
+      },
     ],
     messageRevisions: { prompt: 1, answer: 1 },
   }
@@ -82,80 +199,171 @@ Deno.test("turn navigation keeps fork boundaries but omits completed goal checkp
 
 Deno.test("turn navigation omits compaction and automatic goal continuation markers", () => {
   const session = {
-    id: "compact", title: "Compacted", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const,
+    id: "compact",
+    title: "Compacted",
+    draft: "",
+    status: { type: "idle" as const },
+    loaded: true,
+    loadState: "ready" as const,
     messages: [
-      { info: { id: "prompt", sessionID: "compact", role: "user" as const }, parts: [{ id: "prompt-text", sessionID: "compact", messageID: "prompt", type: "text", text: "Do the work" }] },
-      { info: { id: "continuation", sessionID: "compact", role: "user" as const }, parts: [{
-        id: "continuation-text",
-        sessionID: "compact",
-        messageID: "continuation",
-        type: "text",
-        text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
-        synthetic: true,
-        metadata: { compaction_continue: true },
-      }] },
-      { info: { id: "compaction", sessionID: "compact", role: "user" as const }, parts: [{
-        id: "compaction-part",
-        sessionID: "compact",
-        messageID: "compaction",
-        type: "compaction",
-      }] },
-      { info: { id: "compaction-work", sessionID: "compact", role: "assistant" as const }, parts: [{
-        id: "compaction-work-text",
-        sessionID: "compact",
-        messageID: "compaction-work",
-        type: "text",
-        text: "Work immediately following compaction",
-      }] },
-      { info: { id: "goal-update", sessionID: "compact", role: "user" as const }, parts: [{
-        id: "goal-update-text",
-        sessionID: "compact",
-        messageID: "goal-update",
-        type: "text",
-        text: "Continue working autonomously toward the active goal.",
-        synthetic: true,
-        metadata: { "opencode-workbench": { kind: "goal-continuation" } },
-      }] },
-      { info: { id: "goal-update-work", sessionID: "compact", role: "assistant" as const }, parts: [
-        { id: "goal-update-text-part", sessionID: "compact", messageID: "goal-update-work", type: "text", text: "Objective and current work state" },
-        { id: "goal-update-tool", sessionID: "compact", messageID: "goal-update-work", type: "tool", tool: "bash", state: { status: "completed" } },
-      ] },
-      { info: { id: "goal-continuation", sessionID: "compact", role: "user" as const }, parts: [{
-        id: "goal-continuation-text",
-        sessionID: "compact",
-        messageID: "goal-continuation",
-        type: "text",
-        text: "Continue working autonomously toward the active goal.",
-        synthetic: true,
-        metadata: { "opencode-workbench": { kind: "goal-continuation" } },
-      }] },
-      { info: { id: "goal-work", sessionID: "compact", role: "assistant" as const }, parts: [
-        { id: "goal-checkpoint", sessionID: "compact", messageID: "goal-work", type: "tool", tool: "update_goal_checkpoint", state: { status: "completed" } },
-        { id: "goal-work-text", sessionID: "compact", messageID: "goal-work", type: "text", text: "Completed another substantive work turn" },
-      ] },
+      {
+        info: { id: "prompt", sessionID: "compact", role: "user" as const },
+        parts: [{ id: "prompt-text", sessionID: "compact", messageID: "prompt", type: "text", text: "Do the work" }],
+      },
+      {
+        info: { id: "continuation", sessionID: "compact", role: "user" as const },
+        parts: [{
+          id: "continuation-text",
+          sessionID: "compact",
+          messageID: "continuation",
+          type: "text",
+          text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          synthetic: true,
+          metadata: { compaction_continue: true },
+        }],
+      },
+      {
+        info: { id: "compaction", sessionID: "compact", role: "user" as const },
+        parts: [{
+          id: "compaction-part",
+          sessionID: "compact",
+          messageID: "compaction",
+          type: "compaction",
+        }],
+      },
+      {
+        info: { id: "compaction-work", sessionID: "compact", role: "assistant" as const },
+        parts: [{
+          id: "compaction-work-text",
+          sessionID: "compact",
+          messageID: "compaction-work",
+          type: "text",
+          text: "Work immediately following compaction",
+        }],
+      },
+      {
+        info: { id: "goal-update", sessionID: "compact", role: "user" as const },
+        parts: [{
+          id: "goal-update-text",
+          sessionID: "compact",
+          messageID: "goal-update",
+          type: "text",
+          text: "Continue working autonomously toward the active goal.",
+          synthetic: true,
+          metadata: { "opencode-workbench": { kind: "goal-continuation" } },
+        }],
+      },
+      {
+        info: { id: "goal-update-work", sessionID: "compact", role: "assistant" as const },
+        parts: [
+          {
+            id: "goal-update-text-part",
+            sessionID: "compact",
+            messageID: "goal-update-work",
+            type: "text",
+            text: "Objective and current work state",
+          },
+          {
+            id: "goal-update-tool",
+            sessionID: "compact",
+            messageID: "goal-update-work",
+            type: "tool",
+            tool: "bash",
+            state: { status: "completed" },
+          },
+        ],
+      },
+      {
+        info: { id: "goal-continuation", sessionID: "compact", role: "user" as const },
+        parts: [{
+          id: "goal-continuation-text",
+          sessionID: "compact",
+          messageID: "goal-continuation",
+          type: "text",
+          text: "Continue working autonomously toward the active goal.",
+          synthetic: true,
+          metadata: { "opencode-workbench": { kind: "goal-continuation" } },
+        }],
+      },
+      {
+        info: { id: "goal-work", sessionID: "compact", role: "assistant" as const },
+        parts: [
+          {
+            id: "goal-checkpoint",
+            sessionID: "compact",
+            messageID: "goal-work",
+            type: "tool",
+            tool: "update_goal_checkpoint",
+            state: { status: "completed" },
+          },
+          {
+            id: "goal-work-text",
+            sessionID: "compact",
+            messageID: "goal-work",
+            type: "text",
+            text: "Completed another substantive work turn",
+          },
+        ],
+      },
     ],
-    messageRevisions: { prompt: 1, continuation: 1, compaction: 1, "compaction-work": 1, "goal-update": 1, "goal-update-work": 1, "goal-continuation": 1, "goal-work": 1 },
+    messageRevisions: {
+      prompt: 1,
+      continuation: 1,
+      compaction: 1,
+      "compaction-work": 1,
+      "goal-update": 1,
+      "goal-update-work": 1,
+      "goal-continuation": 1,
+      "goal-work": 1,
+    },
   }
   const markers = turnNavigationMarkers(session)
   assertEquals(markers.map((marker) => marker.id), ["message:prompt", "message:goal-work"])
   assertEquals(markers[0]?.current, undefined)
   assertEquals(markers[1]?.current, true)
   assertEquals(markers[1]?.label, "Assistant work turn: Completed another substantive work turn")
-  assertEquals(projectConversationTurns(session, false).map((turn) => turn.key), ["user:prompt", "user:compaction", "user:goal-update", "user:goal-continuation"])
+  assertEquals(projectConversationTurns(session, false).map((turn) => turn.key), [
+    "user:prompt",
+    "user:compaction",
+    "user:goal-update",
+    "user:goal-continuation",
+  ])
 })
 
 Deno.test("long automatic goals get bounded assistant-work navigation without synthetic marker ticks", () => {
   const messages = Array.from({ length: 200 }, (_, index) => [
     {
       info: { id: `continuation-${index}`, sessionID: "goal", role: "user" as const },
-      parts: [{ id: `continuation-text-${index}`, sessionID: "goal", messageID: `continuation-${index}`, type: "text", text: "Continue working autonomously toward the active goal.", synthetic: true }],
+      parts: [{
+        id: `continuation-text-${index}`,
+        sessionID: "goal",
+        messageID: `continuation-${index}`,
+        type: "text",
+        text: "Continue working autonomously toward the active goal.",
+        synthetic: true,
+      }],
     },
     {
       info: { id: `answer-${index}`, sessionID: "goal", role: "assistant" as const },
-      parts: [{ id: `answer-text-${index}`, sessionID: "goal", messageID: `answer-${index}`, type: "text", text: `Substantive result ${index}` }],
+      parts: [{
+        id: `answer-text-${index}`,
+        sessionID: "goal",
+        messageID: `answer-${index}`,
+        type: "text",
+        text: `Substantive result ${index}`,
+      }],
     },
   ]).flat()
-  const session = { id: "goal", title: "Goal", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const, messages, messageRevisions: {} }
+  const session = {
+    id: "goal",
+    title: "Goal",
+    draft: "",
+    status: { type: "idle" as const },
+    loaded: true,
+    loadState: "ready" as const,
+    messages,
+    messageRevisions: {},
+  }
   const markers = turnNavigationMarkers(session)
   assertEquals(markers.length, MAX_TURN_NAVIGATION_MARKERS)
   assertEquals(markers.every((marker) => marker.id.startsWith("message:answer-")), true)
@@ -175,9 +383,24 @@ Deno.test("turn navigation keeps the complete active range clear of its faded ed
 Deno.test("turn navigation bounds long histories while retaining the current turn", () => {
   const messages = Array.from({ length: 200 }, (_, index) => ({
     info: { id: `prompt-${index}`, sessionID: "long", role: "user" as const },
-    parts: [{ id: `text-${index}`, sessionID: "long", messageID: `prompt-${index}`, type: "text", text: `Prompt ${index}` }],
+    parts: [{
+      id: `text-${index}`,
+      sessionID: "long",
+      messageID: `prompt-${index}`,
+      type: "text",
+      text: `Prompt ${index}`,
+    }],
   }))
-  const session = { id: "long", title: "Long", draft: "", status: { type: "idle" as const }, loaded: true, loadState: "ready" as const, messages, messageRevisions: {} }
+  const session = {
+    id: "long",
+    title: "Long",
+    draft: "",
+    status: { type: "idle" as const },
+    loaded: true,
+    loadState: "ready" as const,
+    messages,
+    messageRevisions: {},
+  }
   const markers = turnNavigationMarkers(session)
   assertEquals(markers.length, MAX_TURN_NAVIGATION_MARKERS)
   assertEquals(markers.at(-1)?.id, "message:prompt-199")
@@ -198,7 +421,13 @@ Deno.test("modal focus trapping recovers when focus starts outside the overlay",
   try {
     Object.defineProperty(globalThis, "document", { configurable: true, value: { activeElement: outside } })
     let prevented = false
-    const trapped = new FocusController().trapTab({ key: "Tab", shiftKey: false, preventDefault: () => { prevented = true } } as KeyboardEvent, root as unknown as HTMLElement)
+    const trapped = new FocusController().trapTab({
+      key: "Tab",
+      shiftKey: false,
+      preventDefault: () => {
+        prevented = true
+      },
+    } as KeyboardEvent, root as unknown as HTMLElement)
     assertEquals({ trapped, prevented, focused }, { trapped: true, prevented: true, focused: ["first"] })
   } finally {
     if (descriptor) Object.defineProperty(globalThis, "document", descriptor)

@@ -1,6 +1,6 @@
 import type { ChatSnapshot } from "@opencode-workbench/shared"
 import { isCompactionMessage, isGoalContinuationMessage, turnContent } from "../presentation.js"
-import { conversationTurnGroups, type ConversationTurnGroup } from "./conversation.js"
+import { type ConversationTurnGroup, conversationTurnGroups } from "./conversation.js"
 
 type SessionSnapshot = NonNullable<ChatSnapshot["session"]>
 
@@ -36,7 +36,9 @@ export function turnNavigationScrollTop(geometry: TurnNavigationScrollGeometry):
   if (activeHeight > availableHeight && geometry.activeTop < visibleTop && geometry.activeBottom > visibleBottom) {
     const topMovement = visibleTop - geometry.activeTop
     const bottomMovement = geometry.activeBottom - visibleBottom
-    next = topMovement <= bottomMovement ? geometry.activeTop - inset : geometry.activeBottom - geometry.clientHeight + inset
+    next = topMovement <= bottomMovement
+      ? geometry.activeTop - inset
+      : geometry.activeBottom - geometry.clientHeight + inset
   } else if (geometry.activeTop < visibleTop) next = geometry.activeTop - inset
   else next = geometry.activeBottom - geometry.clientHeight + inset
   return Math.max(0, Math.min(maximum, next))
@@ -59,11 +61,19 @@ function assistantTurnAnchor(turn: ConversationTurnGroup): SessionSnapshot["mess
 }
 
 /** Keeps long transcripts navigable without allowing the marker rail to grow past the viewport. */
-export function boundedTurnNavigationMarkers(markers: readonly TurnNavigationMarker[], limit = MAX_TURN_NAVIGATION_MARKERS): TurnNavigationMarker[] {
+export function boundedTurnNavigationMarkers(
+  markers: readonly TurnNavigationMarker[],
+  limit = MAX_TURN_NAVIGATION_MARKERS,
+): TurnNavigationMarker[] {
   const boundedLimit = Math.max(2, Math.floor(limit))
   if (markers.length <= boundedLimit) return [...markers]
   const current = markers.findIndex((marker) => marker.current)
-  const priority = [0, markers.length - 1, current, ...markers.flatMap((marker, index) => !marker.id.startsWith("message:") ? [index] : [])].filter((index) => index >= 0)
+  const priority = [
+    0,
+    markers.length - 1,
+    current,
+    ...markers.flatMap((marker, index) => !marker.id.startsWith("message:") ? [index] : []),
+  ].filter((index) => index >= 0)
   const chosen = new Set(priority.slice(0, boundedLimit))
   const remaining = boundedLimit - chosen.size
   if (remaining > 0) {
@@ -80,11 +90,13 @@ export function turnNavigationMarkers(session: SessionSnapshot): TurnNavigationM
   const markers: TurnNavigationMarker[] = []
   const turns = conversationTurnGroups(session)
   const firstMessage = session.messages[0]
-  if (session.parentID && firstMessage) markers.push({
-    id: `fork:${session.id}`,
-    target: `message:${firstMessage.info.id}`,
-    label: "Forked or delegated session boundary",
-  })
+  if (session.parentID && firstMessage) {
+    markers.push({
+      id: `fork:${session.id}`,
+      target: `message:${firstMessage.info.id}`,
+      label: "Forked or delegated session boundary",
+    })
+  }
   let currentTurnMarker: TurnNavigationMarker | undefined
   for (const turn of turns) {
     const user = turn.entries.find((entry) => entry.message.info.role === "user")?.message
@@ -100,22 +112,30 @@ export function turnNavigationMarkers(session: SessionSnapshot): TurnNavigationM
       }
       markers.push(currentTurnMarker)
     }
-    for (const entry of turn.entries) if (entry.message.info.error !== undefined) markers.push({
-      id: `failure:${entry.message.info.id}`,
-      target: `message:${entry.message.info.id}`,
-      label: "Failed turn",
-    })
+    for (const entry of turn.entries) {
+      if (entry.message.info.error !== undefined) {
+        markers.push({
+          id: `failure:${entry.message.info.id}`,
+          target: `message:${entry.message.info.id}`,
+          label: "Failed turn",
+        })
+      }
+    }
   }
   if (currentTurnMarker) currentTurnMarker.current = true
-  for (const permission of session.permissions ?? []) markers.push({
-    id: `permission:${permission.id}`,
-    target: `permission:${permission.id}`,
-    label: `Permission: ${permission.title}`,
-  })
-  for (const question of session.questions ?? []) markers.push({
-    id: `question:${question.id}`,
-    target: `question:${question.id}`,
-    label: `Question: ${question.questions[0]?.header ?? "OpenCode input"}`,
-  })
+  for (const permission of session.permissions ?? []) {
+    markers.push({
+      id: `permission:${permission.id}`,
+      target: `permission:${permission.id}`,
+      label: `Permission: ${permission.title}`,
+    })
+  }
+  for (const question of session.questions ?? []) {
+    markers.push({
+      id: `question:${question.id}`,
+      target: `question:${question.id}`,
+      label: `Question: ${question.questions[0]?.header ?? "OpenCode input"}`,
+    })
+  }
   return boundedTurnNavigationMarkers(markers)
 }

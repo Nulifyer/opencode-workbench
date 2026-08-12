@@ -1,4 +1,11 @@
-import { isOpenCodeMessageID, parseHostMessage, reusablePermissionScopes, type MessageBundle, type OpenCodePty, type SessionInfo } from "@opencode-workbench/shared"
+import {
+  isOpenCodeMessageID,
+  type MessageBundle,
+  type OpenCodePty,
+  parseHostMessage,
+  reusablePermissionScopes,
+  type SessionInfo,
+} from "@opencode-workbench/shared"
 import type { OpenCodeClient } from "../src/opencode-client.ts"
 import { type ComposerPreferences, permissionPatternMatches, SessionController } from "../src/session-controller.ts"
 import { deriveContext } from "../src/application/snapshot-projector.ts"
@@ -24,12 +31,24 @@ function session(id: string, updated: number): SessionInfo {
 }
 
 function pty(id: string, status: OpenCodePty["status"] = "running"): OpenCodePty {
-  return { id, title: id, command: "deno", args: ["test"], cwd: "/project", status, pid: 42, ...(status === "exited" ? { exitCode: 0 } : {}) }
+  return {
+    id,
+    title: id,
+    command: "deno",
+    args: ["test"],
+    cwd: "/project",
+    status,
+    pid: 42,
+    ...(status === "exited" ? { exitCode: 0 } : {}),
+  }
 }
 
 Deno.test("chat snapshot exposes switchable sessions", async () => {
   const fake = {
-    listSessions: async () => [{ ...session("one", 2), tokens: { input: 10, output: 20, reasoning: 5, cache: { read: 7, write: 3 } } }, session("two", 1)],
+    listSessions: async () => [{
+      ...session("one", 2),
+      tokens: { input: 10, output: 20, reasoning: 5, cache: { read: 7, write: 3 } },
+    }, session("two", 1)],
     sessionStatuses: async () => ({ two: { type: "busy" as const } }),
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [],
@@ -38,7 +57,10 @@ Deno.test("chat snapshot exposes switchable sessions", async () => {
   await controller.reconcile()
 
   const snapshot = controller.chatSnapshot()
-  if (snapshot.sessions.length !== 2 || snapshot.sessions[0]?.tokens !== 45 || snapshot.sessions[1]?.id !== "two" || snapshot.sessions[1]?.status.type !== "busy") {
+  if (
+    snapshot.sessions.length !== 2 || snapshot.sessions[0]?.tokens !== 45 || snapshot.sessions[1]?.id !== "two" ||
+    snapshot.sessions[1]?.status.type !== "busy"
+  ) {
     throw new Error("Chat snapshot omitted session switcher state")
   }
   controller.dispose()
@@ -57,19 +79,33 @@ Deno.test("deleting the active session opens the non-session screen until anothe
       return true
     },
   } as unknown as OpenCodeClient
-  const controller = new SessionController(fake, { error: () => undefined, selectionChanged: (sessionID) => selections.push(sessionID) })
+  const controller = new SessionController(fake, {
+    error: () => undefined,
+    selectionChanged: (sessionID) => selections.push(sessionID),
+  })
   await controller.reconcile()
 
   await controller.deleteSession("one")
-  if (controller.chatSnapshot().session !== undefined || controller.chatSnapshot().sessions.map((candidate) => candidate.id).join(",") !== "two") {
-    throw new Error("Deleting the active session did not retain the remaining rail while opening the non-session screen")
+  if (
+    controller.chatSnapshot().session !== undefined ||
+    controller.chatSnapshot().sessions.map((candidate) => candidate.id).join(",") !== "two"
+  ) {
+    throw new Error(
+      "Deleting the active session did not retain the remaining rail while opening the non-session screen",
+    )
   }
-  if (selections.length !== 1 || selections[0] !== undefined) throw new Error("Deleting the active session did not persist its cleared selection")
+  if (selections.length !== 1 || selections[0] !== undefined) {
+    throw new Error("Deleting the active session did not persist its cleared selection")
+  }
 
   await controller.reconcile()
-  if (controller.chatSnapshot().session !== undefined) throw new Error("Session reconciliation replaced the intentional non-session screen")
+  if (controller.chatSnapshot().session !== undefined) {
+    throw new Error("Session reconciliation replaced the intentional non-session screen")
+  }
   await controller.select("two")
-  if (controller.chatSnapshot().session?.id !== "two") throw new Error("An explicit session choice did not leave the non-session screen")
+  if (controller.chatSnapshot().session?.id !== "two") {
+    throw new Error("An explicit session choice did not leave the non-session screen")
+  }
   controller.dispose()
 })
 
@@ -88,10 +124,14 @@ Deno.test("settled turns refresh generated OpenCode session titles", async () =>
   controller.subscribe(() => {
     if (controller.chatSnapshot().session?.title === title) refreshed.resolve(undefined)
   })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.idle", properties: { sessionID: "one" } })
   await refreshed.promise
-  if (controller.chatSnapshot().sessions[0]?.title !== title) throw new Error("Generated OpenCode title was not refreshed after settlement")
+  if (controller.chatSnapshot().sessions[0]?.title !== title) {
+    throw new Error("Generated OpenCode title was not refreshed after settlement")
+  }
   controller.dispose()
 })
 
@@ -116,8 +156,12 @@ Deno.test("settled native prompts fall back to an OpenCode-persisted prompt titl
   await controller.reconcile()
   const internal = controller as unknown as { ensureAutomaticTitle(sessionID: string): Promise<void> }
   await internal.ensureAutomaticTitle("one")
-  if (renamed.join(",") !== "Hello from the workbench") throw new Error("Automatic title was not persisted through OpenCode")
-  if (controller.chatSnapshot().session?.title !== "Hello from the workbench") throw new Error("Persisted automatic title was not projected")
+  if (renamed.join(",") !== "Hello from the workbench") {
+    throw new Error("Automatic title was not persisted through OpenCode")
+  }
+  if (controller.chatSnapshot().session?.title !== "Hello from the workbench") {
+    throw new Error("Persisted automatic title was not projected")
+  }
   await internal.ensureAutomaticTitle("one")
   if (renamed.length !== 1) throw new Error("Automatic title fallback ran more than once")
   controller.dispose()
@@ -139,7 +183,9 @@ Deno.test("LSP events refresh runtime status", async () => {
     if (controller.chatSnapshot().runtime?.lsp[0]?.id === "jdtls") refreshed.resolve(undefined)
   })
 
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "lsp.updated", properties: {} })
   await refreshed.promise
 
@@ -170,7 +216,9 @@ Deno.test("controller hydrates a bounded clone-safe OpenCode PTY projection and 
   }
   projected[0]!.args[0] = "mutated"
   if (controller.ptys()[0]?.args[0] !== "test") throw new Error("Controller PTY getter leaked mutable metadata")
-  if (!await controller.backgroundChildSessions("one") || backgrounded.join(",") !== "one") throw new Error("Controller did not use OpenCode child-session backgrounding")
+  if (!await controller.backgroundChildSessions("one") || backgrounded.join(",") !== "one") {
+    throw new Error("Controller did not use OpenCode child-session backgrounding")
+  }
   controller.dispose()
 })
 
@@ -192,9 +240,13 @@ Deno.test("controller cancels only known PTYs through OpenCode and mutates proje
   await controller.reconcile()
 
   await controller.cancelPty("pty-one")
-  if (deleted.join(",") !== "pty-one" || controller.ptys().length !== 0) throw new Error("Confirmed OpenCode PTY cancellation was not projected")
+  if (deleted.join(",") !== "pty-one" || controller.ptys().length !== 0) {
+    throw new Error("Confirmed OpenCode PTY cancellation was not projected")
+  }
 
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "pty.created", properties: { info: pty("pty-two") } })
   deletionAccepted = false
   let rejected = false
@@ -203,7 +255,9 @@ Deno.test("controller cancels only known PTYs through OpenCode and mutates proje
   } catch {
     rejected = true
   }
-  if (!rejected || controller.ptys()[0]?.id !== "pty-two") throw new Error("Rejected OpenCode PTY cancellation mutated the local projection")
+  if (!rejected || controller.ptys()[0]?.id !== "pty-two") {
+    throw new Error("Rejected OpenCode PTY cancellation mutated the local projection")
+  }
 
   try {
     await controller.cancelPty("pty-unknown")
@@ -224,17 +278,24 @@ Deno.test("controller consumes authoritative OpenCode PTY lifecycle events", asy
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   const created = { ...pty("pty-two"), args: ["task", "build"] }
   internal.handleEvent({ type: "pty.created", properties: { info: created } })
   created.args[0] = "mutated"
   internal.handleEvent({ type: "pty.updated", properties: { info: { ...pty("pty-one"), title: "Renamed" } } })
-  if (controller.ptys().find((candidate) => candidate.id === "pty-one")?.title !== "Renamed") throw new Error("OpenCode PTY update event was ignored")
+  if (controller.ptys().find((candidate) => candidate.id === "pty-one")?.title !== "Renamed") {
+    throw new Error("OpenCode PTY update event was ignored")
+  }
   internal.handleEvent({ type: "pty.exited", properties: { id: "pty-two", exitCode: 9 } })
   internal.handleEvent({ type: "pty.deleted", properties: { id: "pty-one" } })
 
   const projected = controller.ptys()
-  if (projected.length !== 1 || projected[0]?.id !== "pty-two" || projected[0].status !== "exited" || projected[0].exitCode !== 9 || projected[0].args[0] !== "task") {
+  if (
+    projected.length !== 1 || projected[0]?.id !== "pty-two" || projected[0].status !== "exited" ||
+    projected[0].exitCode !== 9 || projected[0].args[0] !== "task"
+  ) {
     throw new Error(`OpenCode PTY lifecycle events were not projected exactly: ${JSON.stringify(projected)}`)
   }
   controller.dispose()
@@ -254,7 +315,9 @@ Deno.test("newer PTY events cannot be overwritten by stale reconciliation", asyn
   const controller = new SessionController(fake, { error: () => undefined })
   const reconciling = controller.reconcile()
   for (let attempt = 0; attempt < 20 && ptyCalls === 0; attempt += 1) await Promise.resolve()
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "pty.created", properties: { info: current } })
   first.resolve([{ ...pty("pty-stale"), title: "Stale list" }])
   await reconciling
@@ -277,14 +340,22 @@ Deno.test("runtime normalization follows OpenCode formatter and MCP status contr
       { name: "gofmt", extensions: [".go"], enabled: false },
       { name: "invalid", extensions: [".txt"] },
     ],
-    mcp: async () => ({ docs: { status: "needs_auth" }, fs: { status: "connected" }, broken: { status: "failed", error: "Connection closed" } }),
+    mcp: async () => ({
+      docs: { status: "needs_auth" },
+      fs: { status: "connected" },
+      broken: { status: "failed", error: "Connection closed" },
+    }),
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   const runtime = controller.chatSnapshot().runtime
-  if (runtime?.formatters.length !== 2 || runtime.formatters[0]?.id !== "prettier" || runtime.formatters[0]?.enabled !== true ||
+  if (
+    runtime?.formatters.length !== 2 || runtime.formatters[0]?.id !== "prettier" ||
+    runtime.formatters[0]?.enabled !== true ||
     runtime.formatters[0]?.extensions?.join(",") !== ".js,.ts" || runtime.formatters[1]?.enabled !== false ||
-    runtime.mcp.map((service) => `${service.id}:${service.status}:${service.error ?? ""}`).join(",") !== "docs:needs_auth:,fs:connected:,broken:failed:Connection closed") {
+    runtime.mcp.map((service) => `${service.id}:${service.status}:${service.error ?? ""}`).join(",") !==
+      "docs:needs_auth:,fs:connected:,broken:failed:Connection closed"
+  ) {
     throw new Error(`OpenCode formatter or MCP runtime status was normalized incorrectly: ${JSON.stringify(runtime)}`)
   }
   controller.dispose()
@@ -302,8 +373,10 @@ Deno.test("chat snapshot caps session summaries while retaining selection", asyn
   await controller.reconcile()
   await controller.select("session-5000")
   const snapshot = controller.chatSnapshot()
-  if (snapshot.sessions.length !== 5_000 || !snapshot.sessions.some((value) => value.id === "session-5000") ||
-    !parseHostMessage({ type: "snapshot", snapshot })) {
+  if (
+    snapshot.sessions.length !== 5_000 || !snapshot.sessions.some((value) => value.id === "session-5000") ||
+    !parseHostMessage({ type: "snapshot", snapshot })
+  ) {
     throw new Error("Bounded session summaries omitted the selected session or failed protocol validation")
   }
   controller.dispose()
@@ -323,13 +396,23 @@ Deno.test("chat history exposes and pages messages older than the bounded snapsh
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   const visible = controller.chatSnapshot().session
-  if (visible?.messages.length !== 5_000 || visible.history?.totalMessages !== 6_201 || !visible.history.hasOlder || visible.history.limitedBy !== "messages") {
+  if (
+    visible?.messages.length !== 5_000 || visible.history?.totalMessages !== 6_201 || !visible.history.hasOlder ||
+    visible.history.limitedBy !== "messages"
+  ) {
     throw new Error(`Bounded transcript did not disclose older history: ${JSON.stringify(visible?.history)}`)
   }
   const page = controller.historyPage("one", visible.messages[0]!.info.id)
-  if (page.messages.length !== 1_000 || page.messages[0]?.info.id !== "message-0201" || !page.hasOlder || page.totalMessages !== 6_201 ||
-    parseHostMessage({ type: "historyPage", page })?.type !== "historyPage") {
-    throw new Error(`Older transcript page was not projected from the exact boundary: ${JSON.stringify({ first: page.messages[0]?.info.id, count: page.messages.length, hasOlder: page.hasOlder })}`)
+  if (
+    page.messages.length !== 1_000 || page.messages[0]?.info.id !== "message-0201" || !page.hasOlder ||
+    page.totalMessages !== 6_201 ||
+    parseHostMessage({ type: "historyPage", page })?.type !== "historyPage"
+  ) {
+    throw new Error(
+      `Older transcript page was not projected from the exact boundary: ${
+        JSON.stringify({ first: page.messages[0]?.info.id, count: page.messages.length, hasOlder: page.hasOlder })
+      }`,
+    )
   }
   const oldest = controller.historyPage("one", page.messages[0]!.info.id)
   if (oldest.messages.length !== 201 || oldest.messages[0]?.info.id !== "message-0000" || oldest.hasOlder) {
@@ -348,27 +431,118 @@ Deno.test("cold sessions hydrate a bounded tail and fetch older server history o
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
     catalogs: async () => ({ agents: [], models: [] }),
-    messageHistoryPage: async (_sessionID: string, cursor: { legacyComplete: boolean; v2Complete: boolean } | undefined, limit: number) => {
+    messageHistoryPage: async (
+      _sessionID: string,
+      cursor: { legacyComplete: boolean; v2Complete: boolean } | undefined,
+      limit: number,
+    ) => {
       calls.push({ cursor: cursor ? "older" : undefined, limit })
       return cursor
-        ? { messages: [bundle("message-1", 1), bundle("message-2", 2)], legacyMessageIDs: ["message-1", "message-2"], v2MessageIDs: [], cursor: { legacyComplete: true, v2Complete: true } }
-        : { messages: [bundle("message-3", 3), bundle("message-4", 4)], legacyMessageIDs: ["message-3", "message-4"], v2MessageIDs: [], cursor: { legacy: "older", legacyComplete: false, v2Complete: true } }
+        ? {
+          messages: [bundle("message-1", 1), bundle("message-2", 2)],
+          legacyMessageIDs: ["message-1", "message-2"],
+          v2MessageIDs: [],
+          cursor: { legacyComplete: true, v2Complete: true },
+        }
+        : {
+          messages: [bundle("message-3", 3), bundle("message-4", 4)],
+          legacyMessageIDs: ["message-3", "message-4"],
+          v2MessageIDs: [],
+          cursor: { legacy: "older", legacyComplete: false, v2Complete: true },
+        }
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   const recent = controller.chatSnapshot().session
-  if (calls.length !== 1 || calls[0]?.limit !== 400 || recent?.messages.map((message) => message.info.id).join(",") !== "message-3,message-4" ||
-    !recent.history?.hasOlder || !recent.history.sourceMayBeTruncated || recent.metrics?.turnsTruncated !== true) throw new Error(`Cold history was not bounded: ${JSON.stringify({ calls, history: recent?.history, metrics: recent?.metrics })}`)
+  if (
+    calls.length !== 1 || calls[0]?.limit !== 400 ||
+    recent?.messages.map((message) => message.info.id).join(",") !== "message-3,message-4" ||
+    !recent.history?.hasOlder || !recent.history.sourceMayBeTruncated || recent.metrics?.turnsTruncated !== true
+  ) {
+    throw new Error(
+      `Cold history was not bounded: ${JSON.stringify({ calls, history: recent?.history, metrics: recent?.metrics })}`,
+    )
+  }
   const recentRevisions = { ...recent.messageRevisions }
   const page = await controller.loadHistoryPage("one", "message-3")
   const expanded = controller.chatSnapshot().session
   const completedCalls = calls.slice()
-  if (completedCalls.length !== 2 || completedCalls[1]?.cursor !== "older" || completedCalls[1]?.limit !== 1_000 || page.messages.map((message) => message.info.id).join(",") !== "message-1,message-2" || page.hasOlder ||
-    expanded?.messages.map((message) => message.info.id).join(",") !== "message-1,message-2,message-3,message-4" || expanded.history?.hasOlder ||
+  if (
+    completedCalls.length !== 2 || completedCalls[1]?.cursor !== "older" || completedCalls[1]?.limit !== 1_000 ||
+    page.messages.map((message) => message.info.id).join(",") !== "message-1,message-2" || page.hasOlder ||
+    expanded?.messages.map((message) => message.info.id).join(",") !== "message-1,message-2,message-3,message-4" ||
+    expanded.history?.hasOlder ||
     expanded.metrics?.turnsTruncated !== undefined ||
-    expanded.messageRevisions["message-3"] !== recentRevisions["message-3"] || expanded.messageRevisions["message-4"] !== recentRevisions["message-4"]) {
-    throw new Error(`On-demand server history did not merge incrementally: ${JSON.stringify({ calls, page, expanded: expanded?.history })}`)
+    expanded.messageRevisions["message-3"] !== recentRevisions["message-3"] ||
+    expanded.messageRevisions["message-4"] !== recentRevisions["message-4"]
+  ) {
+    throw new Error(
+      `On-demand server history did not merge incrementally: ${
+        JSON.stringify({ calls, page, expanded: expanded?.history })
+      }`,
+    )
+  }
+  controller.dispose()
+})
+
+Deno.test("server-backed history stops at the aggregate transcript safety limit", async () => {
+  const bundle = (index: number): MessageBundle => ({
+    info: {
+      id: `message-${String(index).padStart(5, "0")}`,
+      sessionID: "one",
+      role: index % 2 ? "user" : "assistant",
+      time: { created: index },
+    },
+    parts: [],
+  })
+  const all = Array.from({ length: 10_400 }, (_, index) => bundle(index))
+  let oldest = all.length
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({ agents: [], models: [] }),
+    messageHistoryPage: async (
+      _sessionID: string,
+      cursor: { legacyComplete: boolean; v2Complete: boolean } | undefined,
+      limit: number,
+    ) => {
+      const end = cursor ? oldest : all.length
+      const start = Math.max(0, end - limit)
+      oldest = start
+      const messages = all.slice(start, end)
+      return {
+        messages,
+        legacyMessageIDs: messages.map((message) => message.info.id),
+        v2MessageIDs: [],
+        cursor: { legacy: start > 0 ? String(start) : undefined, legacyComplete: start === 0, v2Complete: true },
+      }
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  let page = controller.historyPage("one", controller.chatSnapshot().session!.messages[0]!.info.id)
+  while (page.hasOlder) {
+    page = await controller.loadHistoryPage(
+      "one",
+      page.messages[0]?.info.id ?? controller.snapshot.sessions.one!.messages[0]!.info.id,
+    )
+  }
+  const retained = controller.snapshot.sessions.one!
+  const projection = controller.chatSnapshot().session!
+  if (
+    retained.messages.length !== 10_000 || retained.messages[0]?.info.id !== "message-00400" ||
+    projection.history?.sourceMayBeTruncated !== true
+  ) {
+    throw new Error(
+      `Aggregate history limit was not enforced: ${
+        JSON.stringify({
+          count: retained.messages.length,
+          first: retained.messages[0]?.info.id,
+          history: projection.history,
+        })
+      }`,
+    )
   }
   controller.dispose()
 })
@@ -415,7 +589,9 @@ Deno.test("new empty sessions retain current agent, model, and reasoning", async
   controller.setPreference("plan", "acme/fast")
   if (controller.chatSnapshot().session?.variant !== undefined) throw new Error("Reasoning leaked to another model")
   controller.setPreference("plan", "acme/deep")
-  if (controller.chatSnapshot().session?.variant !== "high") throw new Error("Per-model reasoning preference was not restored")
+  if (controller.chatSnapshot().session?.variant !== "high") {
+    throw new Error("Per-model reasoning preference was not restored")
+  }
   let rejected = false
   try {
     controller.setPreference("build", "", "high")
@@ -430,7 +606,9 @@ Deno.test("new empty sessions retain current agent, model, and reasoning", async
     throw new Error("New session did not retain current composer preferences")
   }
   await controller.select("one")
-  if (controller.chatSnapshot().session?.variant !== "high") throw new Error("Session reselection erased remembered reasoning")
+  if (controller.chatSnapshot().session?.variant !== "high") {
+    throw new Error("Session reselection erased remembered reasoning")
+  }
   controller.dispose()
 })
 
@@ -462,7 +640,9 @@ Deno.test("last model preference survives controller recreation and applies acro
     throw new Error("Last user-selected model preference was not restored globally")
   }
   restored.setPreference("plan", "", "")
-  if (restored.chatSnapshot().session?.model !== "openai/sol") throw new Error("Global model preference did not follow the selected agent")
+  if (restored.chatSnapshot().session?.model !== "openai/sol") {
+    throw new Error("Global model preference did not follow the selected agent")
+  }
   restored.dispose()
 })
 
@@ -525,7 +705,9 @@ Deno.test("first prompt creates and submits a session", async () => {
 
   const sessionID = await controller.createSessionWithPrompt("Review this workspace")
 
-  if (sessionID !== "new" || sent[0]?.text !== "Review this workspace" || !isOpenCodeMessageID(sent[0]?.id)) throw new Error("First prompt was not submitted with a compatible OpenCode message ID")
+  if (sessionID !== "new" || sent[0]?.text !== "Review this workspace" || !isOpenCodeMessageID(sent[0]?.id)) {
+    throw new Error("First prompt was not submitted with a compatible OpenCode message ID")
+  }
   controller.dispose()
 })
 
@@ -585,7 +767,9 @@ Deno.test("failed send restores the submitted draft when no newer edit exists", 
   await controller.reconcile()
   controller.setDraft("Keep this prompt")
   await controller.send("Keep this prompt").catch(() => undefined)
-  if (controller.snapshot.sessions.one?.draft !== "Keep this prompt") throw new Error("Failed send cleared the submitted draft")
+  if (controller.snapshot.sessions.one?.draft !== "Keep this prompt") {
+    throw new Error("Failed send cleared the submitted draft")
+  }
   controller.dispose()
 })
 
@@ -615,7 +799,14 @@ Deno.test("newer reconciliation cannot be overwritten by an older response", asy
 })
 
 Deno.test("transcript response preserves newer streamed updates", async () => {
-  const transcript = deferred<Array<{ info: { id: string; sessionID: string; role: "user" | "assistant" }; parts: Array<{ id: string; sessionID: string; messageID: string; type: string; text?: string }> }>>()
+  const transcript = deferred<
+    Array<
+      {
+        info: { id: string; sessionID: string; role: "user" | "assistant" }
+        parts: Array<{ id: string; sessionID: string; messageID: string; type: string; text?: string }>
+      }
+    >
+  >()
   let firstLoad = true
   const fake = {
     listSessions: async () => [session("one", 1)],
@@ -642,8 +833,10 @@ Deno.test("transcript response preserves newer streamed updates", async () => {
   await load
 
   const messages = controller.snapshot.sessions.one?.messages ?? []
-  if (!messages.some((message) => message.info.id === "history") ||
-    !messages.some((message) => message.info.id === "live" && message.parts[0]?.text === "streamed")) {
+  if (
+    !messages.some((message) => message.info.id === "history") ||
+    !messages.some((message) => message.info.id === "live" && message.parts[0]?.text === "streamed")
+  ) {
     throw new Error("Transcript response discarded streamed updates")
   }
   controller.dispose()
@@ -713,15 +906,23 @@ Deno.test("removed messages also remove their webview revisions", async () => {
 Deno.test("chat snapshots bound large transcripts and tool metadata", async () => {
   const transcript = Array.from({ length: 20 }, (_, index) => ({
     info: { id: `message-${index}`, sessionID: "one", role: "assistant" as const },
-    parts: [{ id: `part-${index}`, sessionID: "one", messageID: `message-${index}`, type: "text", text: "x".repeat(500_000) }],
+    parts: [{
+      id: `part-${index}`,
+      sessionID: "one",
+      messageID: `message-${index}`,
+      type: "text",
+      text: "x".repeat(500_000),
+    }],
   }))
-  transcript[19]!.parts.push({
-    id: "tool",
-    sessionID: "one",
-    messageID: "message-19",
-    type: "tool",
-    state: { status: "completed", metadata: { output: "x".repeat(150_000) } },
-  } as unknown as typeof transcript[number]["parts"][number])
+  transcript[19]!.parts.push(
+    {
+      id: "tool",
+      sessionID: "one",
+      messageID: "message-19",
+      type: "tool",
+      state: { status: "completed", metadata: { output: "x".repeat(150_000) } },
+    } as unknown as typeof transcript[number]["parts"][number],
+  )
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
@@ -732,8 +933,10 @@ Deno.test("chat snapshots bound large transcripts and tool metadata", async () =
   await controller.reconcile()
   const snapshot = controller.chatSnapshot()
 
-  if (!parseHostMessage({ type: "snapshot", snapshot }) || snapshot.session?.messages.at(-1)?.info.id !== "message-19" ||
-    snapshot.session.messages.length >= transcript.length) {
+  if (
+    !parseHostMessage({ type: "snapshot", snapshot }) || snapshot.session?.messages.at(-1)?.info.id !== "message-19" ||
+    snapshot.session.messages.length >= transcript.length
+  ) {
     throw new Error("Large transcript was not bounded into a valid recent snapshot")
   }
   controller.dispose()
@@ -770,27 +973,44 @@ Deno.test("delegated task snapshots include bounded child-session progress", asy
     listSessions: async () => [parent, child, grandchild],
     sessionStatuses: async () => ({ child: { type: "busy" as const } }),
     catalogs: async () => ({ agents: [], models: [] }),
-    messages: async (sessionID: string) => sessionID === "parent" ? [{
-      info: { id: "assistant", sessionID: "parent", role: "assistant" as const },
-      parts: [{
-        id: "task-part",
-        sessionID: "parent",
-        messageID: "assistant",
-        type: "tool",
-        tool: "task",
-        state: { status: "running", title: "Map workspace", metadata: { sessionId: "child" } },
-      }],
-    }] : [{
-      info: { id: "child-assistant", sessionID: "child", role: "assistant" as const },
-      parts: [{ id: "reasoning", sessionID: "child", messageID: "child-assistant", type: "reasoning", text: "Inspecting routes" }],
-    }],
+    messages: async (sessionID: string) =>
+      sessionID === "parent"
+        ? [{
+          info: { id: "assistant", sessionID: "parent", role: "assistant" as const },
+          parts: [{
+            id: "task-part",
+            sessionID: "parent",
+            messageID: "assistant",
+            type: "tool",
+            tool: "task",
+            state: { status: "running", title: "Map workspace", metadata: { sessionId: "child" } },
+          }],
+        }]
+        : [{
+          info: { id: "child-assistant", sessionID: "child", role: "assistant" as const },
+          parts: [{
+            id: "reasoning",
+            sessionID: "child",
+            messageID: "child-assistant",
+            type: "reasoning",
+            text: "Inspecting routes",
+          }],
+        }],
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({
     type: "permission.asked",
-    properties: { id: "child-permission", sessionID: "child", permission: "bash", patterns: ["git status"], always: [] },
+    properties: {
+      id: "child-permission",
+      sessionID: "child",
+      permission: "bash",
+      patterns: ["git status"],
+      always: [],
+    },
   })
   internal.handleEvent({
     type: "question.v2.asked",
@@ -805,15 +1025,28 @@ Deno.test("delegated task snapshots include bounded child-session progress", asy
   const permissionAttention = snapshot.attentionItems?.find((item) => item.kind === "permission")
   const questionAttention = snapshot.attentionItems?.find((item) => item.kind === "question")
 
-  if (delegation?.sessionID !== "child" || delegation.status.type !== "busy" || delegation.messages[0]?.parts[0]?.text !== "Inspecting routes" ||
-    snapshot.session?.permissions?.[0]?.sessionID !== "child" || snapshot.session.questions?.[0]?.sessionID !== "child" ||
+  if (
+    delegation?.sessionID !== "child" || delegation.status.type !== "busy" ||
+    delegation.messages[0]?.parts[0]?.text !== "Inspecting routes" ||
+    snapshot.session?.permissions?.[0]?.sessionID !== "child" ||
+    snapshot.session.questions?.[0]?.sessionID !== "child" ||
     snapshot.sessions[0]?.permissionCount !== 1 || snapshot.sessions[0]?.questionCount !== 1 ||
-    permissionAttention?.sessionID !== "parent" || permissionAttention.id !== "permission:current:child:child-permission" || permissionAttention.target.itemID !== "child-permission" ||
-    questionAttention?.sessionID !== "parent" || questionAttention.id !== "question:child:child-question" || questionAttention.target.itemID !== "child-question" ||
+    permissionAttention?.sessionID !== "parent" ||
+    permissionAttention.id !== "permission:current:child:child-permission" ||
+    permissionAttention.target.itemID !== "child-permission" ||
+    questionAttention?.sessionID !== "parent" || questionAttention.id !== "question:child:child-question" ||
+    questionAttention.target.itemID !== "child-question" ||
     snapshot.sessions.some((entry) => entry.id === "child") ||
-    !snapshot.lineage?.some((entry) => entry.sessionID === "child" && entry.parentID === "parent" && entry.rootID === "parent" && entry.depth === 1 && entry.relation === "child") ||
-    !snapshot.lineage?.some((entry) => entry.sessionID === "grandchild" && entry.parentID === "child" && entry.rootID === "parent" && entry.depth === 2 && entry.relation === "child") ||
-    !parseHostMessage({ type: "snapshot", snapshot })) {
+    !snapshot.lineage?.some((entry) =>
+      entry.sessionID === "child" && entry.parentID === "parent" && entry.rootID === "parent" && entry.depth === 1 &&
+      entry.relation === "child"
+    ) ||
+    !snapshot.lineage?.some((entry) =>
+      entry.sessionID === "grandchild" && entry.parentID === "child" && entry.rootID === "parent" &&
+      entry.depth === 2 && entry.relation === "child"
+    ) ||
+    !parseHostMessage({ type: "snapshot", snapshot })
+  ) {
     throw new Error("Delegated child progress was not loaded into a valid parent snapshot")
   }
   internal.handleEvent({
@@ -825,7 +1058,10 @@ Deno.test("delegated task snapshots include bounded child-session progress", asy
   }
   await controller.select("child")
   const childSnapshot = controller.chatSnapshot().session
-  if (childSnapshot?.parentID !== "parent" || childSnapshot.permissions?.length !== 0 || childSnapshot.questions?.length !== 0) {
+  if (
+    childSnapshot?.parentID !== "parent" || childSnapshot.permissions?.length !== 0 ||
+    childSnapshot.questions?.length !== 0
+  ) {
     throw new Error("Subagent detail snapshot omitted parent navigation or retained parent-routed approval UI")
   }
   controller.dispose()
@@ -842,7 +1078,9 @@ Deno.test("child attention routing remains canonical across malformed parent cyc
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({
     type: "permission.asked",
     properties: { id: "cycle-permission", sessionID: "cycle-a", permission: "bash", patterns: ["pwd"], always: [] },
@@ -858,8 +1096,10 @@ Deno.test("child attention routing remains canonical across malformed parent cyc
   const attention = controller.chatSnapshot().attentionItems ?? []
   const permission = attention.find((item) => item.kind === "permission")
   const question = attention.find((item) => item.kind === "question")
-  if (!permission?.sessionID || permission.sessionID !== question?.sessionID ||
-    permission.id !== "permission:current:cycle-a:cycle-permission" || question.id !== "question:cycle-b:cycle-question") {
+  if (
+    !permission?.sessionID || permission.sessionID !== question?.sessionID ||
+    permission.id !== "permission:current:cycle-a:cycle-permission" || question.id !== "question:cycle-b:cycle-question"
+  ) {
     throw new Error("Cyclic child ownership split attention routing or lost the exact request owner")
   }
   controller.dispose()
@@ -870,9 +1110,13 @@ Deno.test("busy sessions durably admit prompts in queue order", async () => {
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({ one: { type: "busy" as const } }),
-    catalogs: async () => ({ agents: [{ name: "build" }], models: [{ id: "model", providerID: "acme", name: "Model" }] }),
+    catalogs: async () => ({
+      agents: [{ name: "build" }],
+      models: [{ id: "model", providerID: "acme", name: "Model" }],
+    }),
     messages: async () => [],
-    sendPrompt: async (_sessionID: string, id: string, text: string, delivery: string) => calls.push({ id, text, delivery }),
+    sendPrompt: async (_sessionID: string, id: string, text: string, delivery: string) =>
+      calls.push({ id, text, delivery }),
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
@@ -881,12 +1125,20 @@ Deno.test("busy sessions durably admit prompts in queue order", async () => {
   await controller.send("first", "build", "acme/model")
   await controller.send("second")
   controller.setDraft("new draft")
-  if (calls.map((call) => call.text).join(",") !== "first,second" || calls.some((call) => call.delivery !== "queue") || calls.some((call) => !call.id.startsWith("msg_"))) {
+  if (
+    calls.map((call) => call.text).join(",") !== "first,second" || calls.some((call) => call.delivery !== "queue") ||
+    calls.some((call) => !call.id.startsWith("msg_"))
+  ) {
     throw new Error("Busy prompts were not durably admitted in order")
   }
 
   const snapshot = controller.chatSnapshot().session
-  if (snapshot?.queue?.length !== 0 || snapshot?.draft !== "new draft" || snapshot.messages.filter((message) => message.info.role === "user").map((message) => message.parts[0]?.text).join(",") !== "first,second") {
+  if (
+    snapshot?.queue?.length !== 0 || snapshot?.draft !== "new draft" ||
+    snapshot.messages.filter((message) => message.info.role === "user").map((message) => message.parts[0]?.text).join(
+        ",",
+      ) !== "first,second"
+  ) {
     throw new Error("Queue drain lost a newer draft, retained sent prompts, or hid admitted user messages")
   }
   controller.dispose()
@@ -938,7 +1190,9 @@ Deno.test("steer choice survives another prompt admission already in progress", 
   await admitting
   await Promise.resolve()
   await Promise.resolve()
-  if (deliveries.join(",") !== "first:queue,second:steer") throw new Error(`Steer choice was lost while queued: ${deliveries.join(",")}`)
+  if (deliveries.join(",") !== "first:queue,second:steer") {
+    throw new Error(`Steer choice was lost while queued: ${deliveries.join(",")}`)
+  }
   controller.dispose()
 })
 
@@ -958,7 +1212,15 @@ Deno.test("sending a retained queued prompt now stops before legacy delivery", a
       events.push("abort")
       return true
     },
-    sendAsync: async (_sessionID: string, text: string, _agent?: string, _model?: string, _variant?: string, _files?: unknown[], messageID?: string) => {
+    sendAsync: async (
+      _sessionID: string,
+      text: string,
+      _agent?: string,
+      _model?: string,
+      _variant?: string,
+      _files?: unknown[],
+      messageID?: string,
+    ) => {
       deliveredID = messageID ?? ""
       events.push(`send:${text}`)
     },
@@ -967,21 +1229,33 @@ Deno.test("sending a retained queued prompt now stops before legacy delivery", a
   await controller.reconcile()
   const promptID = "msg_018bcfe568001234567890abcd"
   await controller.send("retained", undefined, "openai/model", undefined, [], [], promptID)
-  if (controller.snapshot.sessions.one?.queue[0]?.id !== promptID || events.length) throw new Error("Busy legacy prompt was not retained in the queue")
+  if (controller.snapshot.sessions.one?.queue[0]?.id !== promptID || events.length) {
+    throw new Error("Busy legacy prompt was not retained in the queue")
+  }
   await controller.sendQueuedNow("one", promptID)
-  if (events.join(",") !== "abort,send:retained" || controller.snapshot.sessions.one?.queue.length || !isOpenCodeMessageID(deliveredID) || deliveredID !== promptID) {
+  if (
+    events.join(",") !== "abort,send:retained" || controller.snapshot.sessions.one?.queue.length ||
+    !isOpenCodeMessageID(deliveredID) || deliveredID !== promptID
+  ) {
     throw new Error("Queued send-now did not stop before sending or retained the prompt")
   }
   controller.dispose()
 })
 
 Deno.test("legacy history keeps standard providers on legacy transport", async () => {
-  const assistant: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "assistant", time: { created: 1 } }, parts: [] }
+  const assistant: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "assistant", time: { created: 1 } },
+    parts: [],
+  }
   const calls: string[] = []
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
-    catalogs: async () => ({ agents: [], providers: [{ id: "acme", name: "Acme", source: "api" as const }], models: [{ id: "model", providerID: "acme", name: "Model" }] }),
+    catalogs: async () => ({
+      agents: [],
+      providers: [{ id: "acme", name: "Acme", source: "api" as const }],
+      models: [{ id: "model", providerID: "acme", name: "Model" }],
+    }),
     messageHistory: async () => ({ messages: [assistant], legacyMessageIDs: [assistant.info.id], v2MessageIDs: [] }),
     messages: async () => [assistant],
     sendAsync: async () => calls.push("legacy"),
@@ -995,8 +1269,20 @@ Deno.test("legacy history keeps standard providers on legacy transport", async (
 })
 
 Deno.test("unsafe legacy IDs recover through a remapped fork", async () => {
-  const unsafe: MessageBundle = { info: { id: "msg_ffffffffffffffffffffffffffffffff", sessionID: "one", role: "user", time: { created: 1 } }, parts: [{ id: "part", sessionID: "one", messageID: "msg_ffffffffffffffffffffffffffffffff", type: "text", text: "old" }] }
-  const recovered: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "fork", role: "user", time: { created: 1 } }, parts: [] }
+  const unsafe: MessageBundle = {
+    info: { id: "msg_ffffffffffffffffffffffffffffffff", sessionID: "one", role: "user", time: { created: 1 } },
+    parts: [{
+      id: "part",
+      sessionID: "one",
+      messageID: "msg_ffffffffffffffffffffffffffffffff",
+      type: "text",
+      text: "old",
+    }],
+  }
+  const recovered: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "fork", role: "user", time: { created: 1 } },
+    parts: [],
+  }
   let sentSession = ""
   let recoveredMapping = ""
   let deletes = 0
@@ -1005,47 +1291,129 @@ Deno.test("unsafe legacy IDs recover through a remapped fork", async () => {
   const fake = {
     listSessions: async () => [source],
     sessionStatuses: async () => ({}),
-    catalogs: async () => ({ agents: [], providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }], models: [{ id: "model", providerID: "openai", name: "Model" }] }),
-    messageHistory: async (sessionID: string) => sessionID === "one"
-      ? { messages: [unsafe], legacyMessageIDs: [unsafe.info.id], v2MessageIDs: [] }
-      : { messages: [recovered], legacyMessageIDs: [recovered.info.id], v2MessageIDs: [] },
+    catalogs: async () => ({
+      agents: [],
+      providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }],
+      models: [{ id: "model", providerID: "openai", name: "Model" }],
+    }),
+    messageHistory: async (sessionID: string) =>
+      sessionID === "one"
+        ? { messages: [unsafe], legacyMessageIDs: [unsafe.info.id], v2MessageIDs: [] }
+        : { messages: [recovered], legacyMessageIDs: [recovered.info.id], v2MessageIDs: [] },
     messages: async () => [],
     forkSession: async () => fork,
-    deleteSession: async () => { deletes += 1; return true },
-    sendAsync: async (sessionID: string) => { sentSession = sessionID },
+    deleteSession: async () => {
+      deletes += 1
+      return true
+    },
+    sendAsync: async (sessionID: string) => {
+      sentSession = sessionID
+    },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, {
     error: () => undefined,
-    sessionRecovered: (sourceID, recoveredID) => { recoveredMapping = `${sourceID}:${recoveredID}` },
+    sessionRecovered: (sourceID, recoveredID) => {
+      recoveredMapping = `${sourceID}:${recoveredID}`
+    },
   })
   await controller.reconcile()
   await controller.send("continue", undefined, "openai/model")
   const sessions = controller.chatSnapshot().sessions
-  if (sentSession !== "fork" || controller.snapshot.selectedID !== "fork" || recoveredMapping !== "one:fork" || deletes !== 0 ||
+  if (
+    sentSession !== "fork" || controller.snapshot.selectedID !== "fork" || recoveredMapping !== "one:fork" ||
+    deletes !== 0 ||
     sessions.length !== 1 || sessions[0]?.id !== "fork" || sessions[0]?.title !== "Dashboard (fork #1)" ||
-    controller.chatSnapshot().session?.title !== sessions[0].title || controller.visibleSessionIDs().join(",") !== "fork") {
+    controller.chatSnapshot().session?.title !== sessions[0].title ||
+    controller.visibleSessionIDs().join(",") !== "fork"
+  ) {
     throw new Error("Unsafe legacy recovery did not preserve one non-destructive logical session")
+  }
+  controller.dispose()
+})
+
+Deno.test("unsafe legacy IDs outside the recent page still recover before sending", async () => {
+  const safe: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "assistant", time: { created: 2 } },
+    parts: [],
+  }
+  const unsafe: MessageBundle = {
+    info: { id: "legacy-unsafe", sessionID: "one", role: "user", time: { created: 1 } },
+    parts: [],
+  }
+  const recovered: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abce", sessionID: "fork", role: "assistant", time: { created: 3 } },
+    parts: [],
+  }
+  let sentSession = ""
+  let fullHistoryReads = 0
+  const fake = {
+    listSessions: async () => [session("one", 1)],
+    sessionStatuses: async () => ({}),
+    catalogs: async () => ({
+      agents: [],
+      providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }],
+      models: [{ id: "model", providerID: "openai", name: "Model" }],
+    }),
+    messageHistoryPage: async () => ({
+      messages: [safe],
+      legacyMessageIDs: [safe.info.id],
+      v2MessageIDs: [],
+      cursor: { legacy: "older", legacyComplete: false, v2Complete: true },
+    }),
+    messageHistory: async (sessionID: string) => {
+      fullHistoryReads += 1
+      return sessionID === "one"
+        ? { messages: [unsafe, safe], legacyMessageIDs: [unsafe.info.id, safe.info.id], v2MessageIDs: [] }
+        : { messages: [recovered], legacyMessageIDs: [recovered.info.id], v2MessageIDs: [] }
+    },
+    forkSession: async () => ({ ...session("fork", 2), title: "Recovered" }),
+    sendAsync: async (sessionID: string) => {
+      sentSession = sessionID
+    },
+  } as unknown as OpenCodeClient
+  const controller = new SessionController(fake, { error: () => undefined })
+  await controller.reconcile()
+  await controller.send("continue", undefined, "openai/model")
+  if (fullHistoryReads !== 1 || sentSession !== "fork" || controller.snapshot.selectedID !== "fork") {
+    throw new Error(
+      `Older unsafe legacy history was not recovered before send: ${
+        JSON.stringify({ fullHistoryReads, sentSession, selected: controller.snapshot.selectedID })
+      }`,
+    )
   }
   controller.dispose()
 })
 
 Deno.test("concurrent unsafe-session sends create only one recovery fork", async () => {
   const fork = deferred<SessionInfo>()
-  const unsafe: MessageBundle = { info: { id: "msg_ffffffffffffffffffffffffffffffff", sessionID: "one", role: "user", time: { created: 1 } }, parts: [] }
+  const unsafe: MessageBundle = {
+    info: { id: "msg_ffffffffffffffffffffffffffffffff", sessionID: "one", role: "user", time: { created: 1 } },
+    parts: [],
+  }
   let forkCalls = 0
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
-    catalogs: async () => ({ agents: [], providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }], models: [{ id: "model", providerID: "openai", name: "Model" }] }),
+    catalogs: async () => ({
+      agents: [],
+      providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }],
+      models: [{ id: "model", providerID: "openai", name: "Model" }],
+    }),
     messageHistory: async () => ({ messages: [unsafe], legacyMessageIDs: [unsafe.info.id], v2MessageIDs: [] }),
     messages: async () => [unsafe],
-    forkSession: () => { forkCalls += 1; return fork.promise },
+    forkSession: () => {
+      forkCalls += 1
+      return fork.promise
+    },
     sendAsync: async () => undefined,
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   const first = controller.send("continue", undefined, "openai/model")
-  const rejected = await controller.send("again", undefined, "openai/model").then(() => false, (error) => /already being recovered/.test(String(error)))
+  const rejected = await controller.send("again", undefined, "openai/model").then(
+    () => false,
+    (error) => /already being recovered/.test(String(error)),
+  )
   fork.resolve(session("fork", 2))
   await first
   if (!rejected || forkCalls !== 1) throw new Error("Concurrent sends created duplicate recovery forks")
@@ -1053,25 +1421,43 @@ Deno.test("concurrent unsafe-session sends create only one recovery fork", async
 })
 
 Deno.test("persisted recovery mapping reuses its existing fork", async () => {
-  const unsafe: MessageBundle = { info: { id: "msg_ffffffffffffffffffffffffffffffff", sessionID: "one", role: "user", time: { created: 1 } }, parts: [] }
-  const safe: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "fork", role: "assistant", time: { created: 2 } }, parts: [] }
+  const unsafe: MessageBundle = {
+    info: { id: "msg_ffffffffffffffffffffffffffffffff", sessionID: "one", role: "user", time: { created: 1 } },
+    parts: [],
+  }
+  const safe: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "fork", role: "assistant", time: { created: 2 } },
+    parts: [],
+  }
   let forks = 0
   let sentSession = ""
   const fake = {
     listSessions: async () => [session("one", 2), session("fork", 1)],
     sessionStatuses: async () => ({}),
-    catalogs: async () => ({ agents: [], providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }], models: [{ id: "model", providerID: "openai", name: "Model" }] }),
-    messageHistory: async (sessionID: string) => sessionID === "one"
-      ? { messages: [unsafe], legacyMessageIDs: [unsafe.info.id], v2MessageIDs: [] }
-      : { messages: [safe], legacyMessageIDs: [safe.info.id], v2MessageIDs: [] },
+    catalogs: async () => ({
+      agents: [],
+      providers: [{ id: "openai", name: "OpenAI", source: "custom" as const }],
+      models: [{ id: "model", providerID: "openai", name: "Model" }],
+    }),
+    messageHistory: async (sessionID: string) =>
+      sessionID === "one"
+        ? { messages: [unsafe], legacyMessageIDs: [unsafe.info.id], v2MessageIDs: [] }
+        : { messages: [safe], legacyMessageIDs: [safe.info.id], v2MessageIDs: [] },
     messages: async () => [],
-    forkSession: async () => { forks += 1; return session("unexpected", 3) },
-    sendAsync: async (sessionID: string) => { sentSession = sessionID },
+    forkSession: async () => {
+      forks += 1
+      return session("unexpected", 3)
+    },
+    sendAsync: async (sessionID: string) => {
+      sentSession = sessionID
+    },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined }, undefined, "one", { one: "fork" })
   await controller.reconcile()
   await controller.send("continue", undefined, "openai/model")
-  if (forks || sentSession !== "fork" || controller.snapshot.selectedID !== "fork") throw new Error("Persisted recovered session was not reused")
+  if (forks || sentSession !== "fork" || controller.snapshot.selectedID !== "fork") {
+    throw new Error("Persisted recovered session was not reused")
+  }
   controller.dispose()
 })
 
@@ -1084,11 +1470,15 @@ Deno.test("recovered sessions replace their source in session lists", async () =
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [],
   } as unknown as OpenCodeClient
-  const controller = new SessionController(fake, { error: () => undefined }, undefined, "source", { source: "recovered" })
+  const controller = new SessionController(fake, { error: () => undefined }, undefined, "source", {
+    source: "recovered",
+  })
   await controller.reconcile()
   const sessions = controller.chatSnapshot().sessions
-  if (sessions.length !== 1 || sessions[0]?.id !== "recovered" || sessions[0]?.title !== "Dashboard (fork #1)" ||
-    controller.chatSnapshot().session?.title !== sessions[0].title || controller.snapshot.selectedID !== "recovered") {
+  if (
+    sessions.length !== 1 || sessions[0]?.id !== "recovered" || sessions[0]?.title !== "Dashboard (fork #1)" ||
+    controller.chatSnapshot().session?.title !== sessions[0].title || controller.snapshot.selectedID !== "recovered"
+  ) {
     throw new Error("Recovered session did not replace its source as one logical session")
   }
   controller.dispose()
@@ -1108,8 +1498,12 @@ Deno.test("persisted recovery mapping collapses clustered duplicate forks", asyn
   const controller = new SessionController(fake, { error: () => undefined }, undefined, "older", { source: "newest" })
   await controller.reconcile()
   const sessions = controller.chatSnapshot().sessions
-  if (sessions.length !== 2 || sessions[0]?.id !== "later" || sessions[1]?.id !== "newest" || sessions[1]?.title !== "Dashboard (fork #1)" || controller.snapshot.selectedID !== "newest" ||
-    controller.chatSnapshot().session?.title !== sessions[1].title || controller.visibleSessionIDs().join(",") !== "later,newest") {
+  if (
+    sessions.length !== 2 || sessions[0]?.id !== "later" || sessions[1]?.id !== "newest" ||
+    sessions[1]?.title !== "Dashboard (fork #1)" || controller.snapshot.selectedID !== "newest" ||
+    controller.chatSnapshot().session?.title !== sessions[1].title ||
+    controller.visibleSessionIDs().join(",") !== "later,newest"
+  ) {
     throw new Error("Persisted recovery duplicates were not presented as one logical session")
   }
   controller.dispose()
@@ -1143,7 +1537,9 @@ Deno.test("selected children do not reveal a hidden recovery source", async () =
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [],
   } as unknown as OpenCodeClient
-  const controller = new SessionController(fake, { error: () => undefined }, undefined, "child", { source: "recovered" })
+  const controller = new SessionController(fake, { error: () => undefined }, undefined, "child", {
+    source: "recovered",
+  })
   await controller.reconcile()
   const sessions = controller.chatSnapshot().sessions
   if (controller.snapshot.selectedID !== "child" || sessions.length !== 1 || sessions[0]?.id !== "recovered") {
@@ -1153,7 +1549,10 @@ Deno.test("selected children do not reveal a hidden recovery source", async () =
 })
 
 Deno.test("idle trailing user turns are marked interrupted", async () => {
-  const user: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "user", time: { created: 1 } }, parts: [] }
+  const user: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "user", time: { created: 1 } },
+    parts: [],
+  }
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
@@ -1164,12 +1563,17 @@ Deno.test("idle trailing user turns are marked interrupted", async () => {
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   const status = controller.snapshot.sessions.one?.status
-  if (status?.type !== "error" || !status.message?.includes("interrupted")) throw new Error("Interrupted session was presented as idle")
+  if (status?.type !== "error" || !status.message?.includes("interrupted")) {
+    throw new Error("Interrupted session was presented as idle")
+  }
   controller.dispose()
 })
 
 Deno.test("upstream session errors survive transcript reconciliation", async () => {
-  const user: MessageBundle = { info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "user", time: { created: 1 } }, parts: [] }
+  const user: MessageBundle = {
+    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "user", time: { created: 1 } },
+    parts: [],
+  }
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({ one: { type: "error" as const, message: "Expected an OpenCode prt_ part ID" } }),
@@ -1187,7 +1591,13 @@ Deno.test("upstream session errors survive transcript reconciliation", async () 
 
 Deno.test("persisted empty provider responses are explained", async () => {
   const assistant: MessageBundle = {
-    info: { id: "msg_018bcfe568001234567890abcd", sessionID: "one", role: "assistant", time: { created: 1, completed: 2 }, finish: "unknown" },
+    info: {
+      id: "msg_018bcfe568001234567890abcd",
+      sessionID: "one",
+      role: "assistant",
+      time: { created: 1, completed: 2 },
+      finish: "unknown",
+    },
     parts: [{ id: "step", sessionID: "one", messageID: "msg_018bcfe568001234567890abcd", type: "step-finish" }],
   }
   const fake = {
@@ -1215,33 +1625,54 @@ Deno.test("provider errors remain terminal across error, idle, and message event
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   const currentStatus = () => controller.snapshot.sessions.one?.status.type
-  internal.handleEvent({ type: "session.error", properties: { sessionID: "one", error: { data: { message: "Provider stream failed" } } } })
+  internal.handleEvent({
+    type: "session.error",
+    properties: { sessionID: "one", error: { data: { message: "Provider stream failed" } } },
+  })
   internal.handleEvent({ type: "session.status", properties: { sessionID: "one", status: { type: "idle" } } })
   internal.handleEvent({ type: "session.idle", properties: { sessionID: "one" } })
-  internal.handleEvent({ type: "message.updated", properties: { info: {
-    id: "msg_018bcfe568001234567890abcd",
-    sessionID: "one",
-    role: "assistant",
-    error: { data: { message: "Provider stream failed" } },
-  } } })
+  internal.handleEvent({
+    type: "message.updated",
+    properties: {
+      info: {
+        id: "msg_018bcfe568001234567890abcd",
+        sessionID: "one",
+        role: "assistant",
+        error: { data: { message: "Provider stream failed" } },
+      },
+    },
+  })
   const status = controller.snapshot.sessions.one?.status
   if (status?.type !== "error" || status.message !== "Provider stream failed") {
     throw new Error("Provider failure was overwritten by a trailing idle or message event")
   }
-  internal.handleEvent({ type: "session.next.retried", properties: { sessionID: "one", attempt: 1, error: { message: "Retrying" } } })
+  internal.handleEvent({
+    type: "session.next.retried",
+    properties: { sessionID: "one", attempt: 1, error: { message: "Retrying" } },
+  })
   internal.handleEvent({ type: "session.status", properties: { sessionID: "one", status: { type: "idle" } } })
   if (currentStatus() !== "idle") throw new Error("A retry retained a stale terminal provider failure")
-  internal.handleEvent({ type: "session.error", properties: { sessionID: "one", error: { data: { message: "Provider stream failed" } } } })
+  internal.handleEvent({
+    type: "session.error",
+    properties: { sessionID: "one", error: { data: { message: "Provider stream failed" } } },
+  })
   polledStatus = { one: { type: "busy" } }
   await controller.reconcile()
-  internal.handleEvent({ type: "message.updated", properties: { info: {
-    id: "msg_018bcfe568001234567890abcd",
-    sessionID: "one",
-    role: "assistant",
-    error: { data: { message: "Provider stream failed" } },
-  } } })
+  internal.handleEvent({
+    type: "message.updated",
+    properties: {
+      info: {
+        id: "msg_018bcfe568001234567890abcd",
+        sessionID: "one",
+        role: "assistant",
+        error: { data: { message: "Provider stream failed" } },
+      },
+    },
+  })
   if (currentStatus() !== "busy") throw new Error("A delayed failed-assistant update replaced newer busy work")
   internal.handleEvent({ type: "session.status", properties: { sessionID: "one", status: { type: "idle" } } })
   if (currentStatus() !== "idle") throw new Error("A reconciled busy turn retained a stale provider failure")
@@ -1256,9 +1687,21 @@ Deno.test("controller restores the persisted selected session", async () => {
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [],
   } as unknown as OpenCodeClient
-  const controller = new SessionController(fake, { error: () => undefined, selectionChanged: (sessionID) => { selected = sessionID ?? "" } }, undefined, "two")
+  const controller = new SessionController(
+    fake,
+    {
+      error: () => undefined,
+      selectionChanged: (sessionID) => {
+        selected = sessionID ?? ""
+      },
+    },
+    undefined,
+    "two",
+  )
   await controller.reconcile()
-  if (controller.snapshot.selectedID !== "two" || selected !== "two") throw new Error("Persisted session selection was not restored")
+  if (controller.snapshot.selectedID !== "two" || selected !== "two") {
+    throw new Error("Persisted session selection was not restored")
+  }
   controller.dispose()
 })
 
@@ -1281,7 +1724,9 @@ Deno.test("transcript refresh preserves admitted prompt text until the server pr
   const internal = controller as unknown as { loadTranscript(sessionID: string, markLoading: boolean): Promise<void> }
   await internal.loadTranscript("one", false)
   const user = controller.snapshot.sessions.one?.messages.find((entry) => entry.info.id === promptID)
-  if (user?.parts[0]?.text !== "Visible prompt") throw new Error("Incomplete transcript projection replaced the admitted prompt text")
+  if (user?.parts[0]?.text !== "Visible prompt") {
+    throw new Error("Incomplete transcript projection replaced the admitted prompt text")
+  }
   controller.dispose()
 })
 
@@ -1381,7 +1826,9 @@ Deno.test("unsupported native manual compaction fails honestly instead of mutati
   } catch (error) {
     rejected = /does not support native manual compaction/.test(error instanceof Error ? error.message : String(error))
   }
-  if (!rejected || legacy !== 0) throw new Error("Unavailable V2 compaction silently fell back to the legacy transcript")
+  if (!rejected || legacy !== 0) {
+    throw new Error("Unavailable V2 compaction silently fell back to the legacy transcript")
+  }
   controller.dispose()
 })
 
@@ -1399,12 +1846,21 @@ Deno.test("pending prompt text fills an info-only server event before admission 
   await controller.reconcile()
 
   const sending = controller.send("Visible before admission", undefined, undefined, undefined, [], [], promptID)
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
-  internal.handleEvent({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user" } } })
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
+  internal.handleEvent({
+    type: "message.updated",
+    properties: { info: { id: promptID, sessionID: "one", role: "user" } },
+  })
   const pending = controller.chatSnapshot().session?.messages.find((entry) => entry.info.id === promptID)
-  if (pending?.parts[0]?.text !== "Visible before admission") throw new Error("Info-only server event exposed the Message sent placeholder")
+  if (pending?.parts[0]?.text !== "Visible before admission") {
+    throw new Error("Info-only server event exposed the Message sent placeholder")
+  }
   const patch = controller.messagePatches([{ sessionID: "one", messageID: promptID }])?.[0]
-  if (patch?.message?.parts[0]?.text !== "Visible before admission") throw new Error("Targeted info-only patch omitted pending prompt text")
+  if (patch?.message?.parts[0]?.text !== "Visible before admission") {
+    throw new Error("Targeted info-only patch omitted pending prompt text")
+  }
 
   admission.resolve()
   await sending
@@ -1426,13 +1882,24 @@ Deno.test("ambiguous prompt failure retains visible text from the queued prompt"
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
-  emitInfo = () => internal.handleEvent({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user" } } })
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
+  emitInfo = () =>
+    internal.handleEvent({
+      type: "message.updated",
+      properties: { info: { id: promptID, sessionID: "one", role: "user" } },
+    })
 
   let rejected = false
-  await controller.send("Still visible after failure", undefined, undefined, undefined, [], [], promptID).catch(() => { rejected = true })
+  await controller.send("Still visible after failure", undefined, undefined, undefined, [], [], promptID).catch(() => {
+    rejected = true
+  })
   const message = controller.chatSnapshot().session?.messages.find((entry) => entry.info.id === promptID)
-  if (rejected || Number(controller.chatSnapshot().session?.queue?.length ?? 0) !== 0 || message?.parts[0]?.text !== "Still visible after failure") {
+  if (
+    rejected || Number(controller.chatSnapshot().session?.queue?.length ?? 0) !== 0 ||
+    message?.parts[0]?.text !== "Still visible after failure"
+  ) {
     throw new Error("Durably confirmed admission remained failed, queued, or reverted to a placeholder")
   }
   controller.dispose()
@@ -1444,22 +1911,42 @@ Deno.test("legacy background failures retain prompt text and exact error detail"
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
-    catalogs: async () => ({ agents: [], providers: [{ id: "custom", name: "Custom", source: "custom" as const }], models: [{ id: "model", providerID: "custom", name: "Model" }] }),
+    catalogs: async () => ({
+      agents: [],
+      providers: [{ id: "custom", name: "Custom", source: "custom" as const }],
+      models: [{ id: "model", providerID: "custom", name: "Model" }],
+    }),
     messageHistory: async () => ({ messages: [], legacyMessageIDs: [], v2MessageIDs: [] }),
-    sendAsync: async (_sessionID: string, _text: string, _agent?: string, _model?: string, _variant?: string, _files?: unknown[], messageID?: string) => {
+    sendAsync: async (
+      _sessionID: string,
+      _text: string,
+      _agent?: string,
+      _model?: string,
+      _variant?: string,
+      _files?: unknown[],
+      messageID?: string,
+    ) => {
       admittedID = messageID ?? ""
       emit({ type: "message.updated", properties: { info: { id: admittedID, sessionID: "one", role: "user" } } })
-      emit({ type: "session.error", properties: { sessionID: "one", error: { data: { message: "Injected part ID was invalid" } } } })
+      emit({
+        type: "session.error",
+        properties: { sessionID: "one", error: { data: { message: "Injected part ID was invalid" } } },
+      })
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   emit = (event) => internal.handleEvent(event)
   await controller.send("Keep this visible", undefined, "custom/model")
   const visible = controller.chatSnapshot().session?.messages.find((entry) => entry.info.id === admittedID)
   const status = controller.snapshot.sessions.one?.status
-  if (visible?.parts[0]?.text !== "Keep this visible" || status?.type !== "error" || status.message !== "Injected part ID was invalid") {
+  if (
+    visible?.parts[0]?.text !== "Keep this visible" || status?.type !== "error" ||
+    status.message !== "Injected part ID was invalid"
+  ) {
     throw new Error("Legacy asynchronous failure hid the prompt or its exact error")
   }
   controller.dispose()
@@ -1471,18 +1958,37 @@ Deno.test("legacy history shells cannot erase retained prompt text", async () =>
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
-    catalogs: async () => ({ agents: [], providers: [{ id: "custom", name: "Custom", source: "custom" as const }], models: [{ id: "model", providerID: "custom", name: "Model" }] }),
-    messageHistory: async () => ({ messages: history, legacyMessageIDs: history.map((entry) => entry.info.id), v2MessageIDs: [] }),
-    sendAsync: async (_sessionID: string, _text: string, _agent?: string, _model?: string, _variant?: string, _files?: unknown[], messageID?: string) => {
+    catalogs: async () => ({
+      agents: [],
+      providers: [{ id: "custom", name: "Custom", source: "custom" as const }],
+      models: [{ id: "model", providerID: "custom", name: "Model" }],
+    }),
+    messageHistory: async () => ({
+      messages: history,
+      legacyMessageIDs: history.map((entry) => entry.info.id),
+      v2MessageIDs: [],
+    }),
+    sendAsync: async (
+      _sessionID: string,
+      _text: string,
+      _agent?: string,
+      _model?: string,
+      _variant?: string,
+      _files?: unknown[],
+      messageID?: string,
+    ) => {
       admittedID = messageID ?? ""
-      history = [{ info: { id: admittedID, sessionID: "one", role: "user" as const }, parts: [{
-        id: "prt_018bcfe568001234567890abcd",
-        sessionID: "one",
-        messageID: admittedID,
-        type: "text",
-        text: "<approved_preference_data>Preference</approved_preference_data>",
-        synthetic: true,
-      }] }]
+      history = [{
+        info: { id: admittedID, sessionID: "one", role: "user" as const },
+        parts: [{
+          id: "prt_018bcfe568001234567890abcd",
+          sessionID: "one",
+          messageID: admittedID,
+          type: "text",
+          text: "<approved_preference_data>Preference</approved_preference_data>",
+          synthetic: true,
+        }],
+      }]
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
@@ -1503,42 +2009,70 @@ Deno.test("attachment-only legacy prompts release pending state after file persi
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
-    catalogs: async () => ({ agents: [], providers: [{ id: "custom", name: "Custom", source: "custom" as const }], models: [{ id: "model", providerID: "custom", name: "Model" }] }),
-    messageHistory: async () => ({ messages: history, legacyMessageIDs: history.map((entry) => entry.info.id), v2MessageIDs: [] }),
-    sendAsync: async (_sessionID: string, _text: string, _agent?: string, _model?: string, _variant?: string, _files?: unknown[], messageID?: string) => {
+    catalogs: async () => ({
+      agents: [],
+      providers: [{ id: "custom", name: "Custom", source: "custom" as const }],
+      models: [{ id: "model", providerID: "custom", name: "Model" }],
+    }),
+    messageHistory: async () => ({
+      messages: history,
+      legacyMessageIDs: history.map((entry) => entry.info.id),
+      v2MessageIDs: [],
+    }),
+    sendAsync: async (
+      _sessionID: string,
+      _text: string,
+      _agent?: string,
+      _model?: string,
+      _variant?: string,
+      _files?: unknown[],
+      messageID?: string,
+    ) => {
       admittedID = messageID ?? ""
       history = [{ info: { id: admittedID, sessionID: "one", role: "user" as const }, parts: [] }]
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
-  await controller.send("   ", undefined, "custom/model", undefined, [{ type: "file", mime: "image/png", filename: "theme.png", url: "data:image/png;base64,AA==" }])
+  await controller.send("   ", undefined, "custom/model", undefined, [{
+    type: "file",
+    mime: "image/png",
+    filename: "theme.png",
+    url: "data:image/png;base64,AA==",
+  }])
   const internal = controller as unknown as {
     loadTranscript(sessionID: string, markLoading: boolean): Promise<void>
     pendingPromptSessions: Map<string, string>
   }
   await internal.loadTranscript("one", false)
-  if (!internal.pendingPromptSessions.has(admittedID)) throw new Error("Partial file history released attachment-only pending state")
-  history = [{ info: { id: admittedID, sessionID: "one", role: "user" }, parts: [
-    {
-      id: "prt_018bcfe568001234567890abce",
-      sessionID: "one",
-      messageID: admittedID,
-      type: "text",
-      text: "<approved_preference_data>Preference</approved_preference_data>",
-      synthetic: true,
-    },
-    {
-      id: "prt_018bcfe568001234567890abcd",
-      sessionID: "one",
-      messageID: admittedID,
-      type: "file",
-      mime: "image/png",
-      filename: "theme.png",
-    },
-  ] }]
+  if (!internal.pendingPromptSessions.has(admittedID)) {
+    throw new Error("Partial file history released attachment-only pending state")
+  }
+  history = [{
+    info: { id: admittedID, sessionID: "one", role: "user" },
+    parts: [
+      {
+        id: "prt_018bcfe568001234567890abce",
+        sessionID: "one",
+        messageID: admittedID,
+        type: "text",
+        text: "<approved_preference_data>Preference</approved_preference_data>",
+        synthetic: true,
+      },
+      {
+        id: "prt_018bcfe568001234567890abcd",
+        sessionID: "one",
+        messageID: admittedID,
+        type: "file",
+        mime: "image/png",
+        filename: "theme.png",
+      },
+    ],
+  }]
   await internal.loadTranscript("one", false)
-  if (internal.pendingPromptSessions.has(admittedID)) throw new Error("Persisted attachment did not release pending legacy state")
+  if (internal.pendingPromptSessions.has(admittedID)) {
+    throw new Error("Persisted attachment did not release pending legacy state")
+  }
   controller.dispose()
 })
 
@@ -1558,14 +2092,22 @@ Deno.test("synthetic prompt projection stays ordered after buffered server parts
     eventBus: { emit(event: { type: string; properties: Record<string, unknown> }): void; flush(): void }
   }
   enqueueServerProjection = () => {
-    internal.eventBus.emit({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user" } } })
-    internal.eventBus.emit({ type: "message.part.updated", properties: { part: { id: `${promptID}-text`, sessionID: "one", messageID: promptID, type: "text", text: "" } } })
+    internal.eventBus.emit({
+      type: "message.updated",
+      properties: { info: { id: promptID, sessionID: "one", role: "user" } },
+    })
+    internal.eventBus.emit({
+      type: "message.part.updated",
+      properties: { part: { id: `${promptID}-text`, sessionID: "one", messageID: promptID, type: "text", text: "" } },
+    })
   }
 
   await controller.send("Locally projected text", undefined, undefined, undefined, [], [], promptID)
   internal.eventBus.flush()
   const message = controller.snapshot.sessions.one?.messages.find((entry) => entry.info.id === promptID)
-  if (message?.parts[0]?.text !== "Locally projected text") throw new Error("Buffered server projection overwrote the newer synthetic prompt text")
+  if (message?.parts[0]?.text !== "Locally projected text") {
+    throw new Error("Buffered server projection overwrote the newer synthetic prompt text")
+  }
   controller.dispose()
 })
 
@@ -1589,7 +2131,9 @@ Deno.test("reload pause rejects new prompts and resumes retained queues", async 
   }
   controller.setPromptAdmissionPaused(false)
   await controller.send("accepted")
-  if (!rejected || calls.join(",") !== "accepted") throw new Error("Reload pause admitted a prompt or failed to resume prompt sending")
+  if (!rejected || calls.join(",") !== "accepted") {
+    throw new Error("Reload pause admitted a prompt or failed to resume prompt sending")
+  }
   controller.dispose()
 })
 
@@ -1605,7 +2149,15 @@ Deno.test("custom providers use compatible legacy prompt transport", async () =>
       models: [{ id: "gpt-5.6-sol", providerID: "openai", name: "GPT-5.6 Sol", variants: ["high"] }],
     }),
     messages: async () => [],
-    sendAsync: async (_sessionID: string, text: string, agent?: string, model?: string, variant?: string, _files?: unknown[], messageID?: string) => calls.push({ text, agent, model, variant, messageID }),
+    sendAsync: async (
+      _sessionID: string,
+      text: string,
+      agent?: string,
+      model?: string,
+      variant?: string,
+      _files?: unknown[],
+      messageID?: string,
+    ) => calls.push({ text, agent, model, variant, messageID }),
     sendPrompt: () => {
       throw new Error("Custom provider used incompatible v2 transport")
     },
@@ -1617,13 +2169,24 @@ Deno.test("custom providers use compatible legacy prompt transport", async () =>
   await controller.reconcile()
   const promptID = "msg_018bcfe568001234567890abcd"
   await controller.send("hello", "caveboss", "openai/gpt-5.6-sol", "high", [], [], promptID)
-  if (calls.length !== 1 || calls[0]?.text !== "hello" || calls[0].agent !== "caveboss" || calls[0].model !== "openai/gpt-5.6-sol" || calls[0].variant !== "high" || calls[0].messageID !== promptID) {
+  if (
+    calls.length !== 1 || calls[0]?.text !== "hello" || calls[0].agent !== "caveboss" ||
+    calls[0].model !== "openai/gpt-5.6-sol" || calls[0].variant !== "high" || calls[0].messageID !== promptID
+  ) {
     throw new Error("Custom provider prompt did not preserve composer selection")
   }
   if (admissions.length) throw new Error("Legacy prompt_async HTTP acceptance was reported as durable admission")
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
-  internal.handleEvent({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user", time: { created: 123 } } } })
-  internal.handleEvent({ type: "message.updated", properties: { info: { id: promptID, sessionID: "one", role: "user", time: { created: 123 } } } })
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
+  internal.handleEvent({
+    type: "message.updated",
+    properties: { info: { id: promptID, sessionID: "one", role: "user", time: { created: 123 } } },
+  })
+  internal.handleEvent({
+    type: "message.updated",
+    properties: { info: { id: promptID, sessionID: "one", role: "user", time: { created: 123 } } },
+  })
   if (admissions.length !== 1 || admissions[0]?.promptID !== promptID || admissions[0].admittedAt !== 123) {
     throw new Error(`Legacy durable admission was not confirmed exactly once: ${JSON.stringify(admissions)}`)
   }
@@ -1636,12 +2199,23 @@ Deno.test("retries the selected prompt with its attachments", async () => {
     info: { id: "older", sessionID: "one", role: "user" },
     parts: [{ id: "older-text", sessionID: "one", messageID: "older", type: "text", text: "Older prompt" }],
   }
-  const olderResponse: MessageBundle = { info: { id: "older-response", sessionID: "one", role: "assistant" }, parts: [] }
+  const olderResponse: MessageBundle = {
+    info: { id: "older-response", sessionID: "one", role: "assistant" },
+    parts: [],
+  }
   const user: MessageBundle = {
     info: { id: "user", sessionID: "one", role: "user" },
     parts: [
       { id: "text", sessionID: "one", messageID: "user", type: "text", text: "Try again" },
-      { id: "file", sessionID: "one", messageID: "user", type: "file", mime: "image/png", filename: "image.png", url: "data:image/png;base64,eA==" },
+      {
+        id: "file",
+        sessionID: "one",
+        messageID: "user",
+        type: "file",
+        mime: "image/png",
+        filename: "image.png",
+        url: "data:image/png;base64,eA==",
+      },
     ],
   }
   const fake = {
@@ -1653,7 +2227,16 @@ Deno.test("retries the selected prompt with its attachments", async () => {
       calls.push({ reverted: messageID })
       return session("one", 2)
     },
-    sendPrompt: async (_sessionID: string, _promptID: string, text: string, _delivery: string, _agent?: string, _model?: string, _variant?: string, files?: Array<{ url: string }>) => {
+    sendPrompt: async (
+      _sessionID: string,
+      _promptID: string,
+      text: string,
+      _delivery: string,
+      _agent?: string,
+      _model?: string,
+      _variant?: string,
+      files?: Array<{ url: string }>,
+    ) => {
       calls.push({ text, files })
     },
   } as unknown as OpenCodeClient
@@ -1664,14 +2247,19 @@ Deno.test("retries the selected prompt with its attachments", async () => {
   if (calls[0]?.reverted !== "older" || calls[1]?.text !== "Older prompt" || calls[1]?.files?.length) {
     throw new Error("Retry did not revert and resubmit the selected prompt")
   }
-  if (controller.chatSnapshot().session?.draft !== "Keep this draft") throw new Error("Retry cleared an unrelated draft")
+  if (controller.chatSnapshot().session?.draft !== "Keep this draft") {
+    throw new Error("Retry cleared an unrelated draft")
+  }
   controller.dispose()
 })
 
 Deno.test("failed retries restore the reverted turn and stay in their original session", async () => {
   const reverted = deferred<void>()
   const calls: string[] = []
-  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const user: MessageBundle = {
+    info: { id: "user", sessionID: "one", role: "user" },
+    parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }],
+  }
   const fake = {
     listSessions: async () => [session("one", 2), session("two", 1)],
     sessionStatuses: async () => ({}),
@@ -1696,7 +2284,9 @@ Deno.test("failed retries restore the reverted turn and stay in their original s
   const retry = controller.retrySession("one").then(() => false, () => true)
   await controller.select("two")
   reverted.resolve(undefined)
-  if (!await retry || calls.join(",") !== "revert:one,send:one,redo:one" || controller.snapshot.sessions.one?.queue.length) {
+  if (
+    !await retry || calls.join(",") !== "revert:one,send:one,redo:one" || controller.snapshot.sessions.one?.queue.length
+  ) {
     throw new Error(`Retry selection race or rollback failed: ${calls.join(",")}`)
   }
   controller.dispose()
@@ -1705,7 +2295,10 @@ Deno.test("failed retries restore the reverted turn and stay in their original s
 Deno.test("concurrent retries are rejected before a second revert", async () => {
   const revert = deferred<SessionInfo>()
   let revertCalls = 0
-  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const user: MessageBundle = {
+    info: { id: "user", sessionID: "one", role: "user" },
+    parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }],
+  }
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
@@ -1735,7 +2328,10 @@ Deno.test("concurrent retries are rejected before a second revert", async () => 
 Deno.test("retry rolls back when transcript reload fails after revert", async () => {
   let messageCalls = 0
   let restored = false
-  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const user: MessageBundle = {
+    info: { id: "user", sessionID: "one", role: "user" },
+    parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }],
+  }
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
@@ -1762,7 +2358,10 @@ Deno.test("retry keeps an ambiguously accepted prompt instead of unreverting", a
   let messageCalls = 0
   let restored = false
   let retriedID = ""
-  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const user: MessageBundle = {
+    info: { id: "user", sessionID: "one", role: "user" },
+    parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }],
+  }
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
@@ -1786,7 +2385,9 @@ Deno.test("retry keeps an ambiguously accepted prompt instead of unreverting", a
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   await controller.retrySession("one")
-  if (restored || controller.snapshot.sessions.one?.queue.length) throw new Error("Accepted retry was rolled back or remained queued")
+  if (restored || controller.snapshot.sessions.one?.queue.length) {
+    throw new Error("Accepted retry was rolled back or remained queued")
+  }
   controller.dispose()
 })
 
@@ -1806,7 +2407,9 @@ Deno.test("forks from a selected transcript message", async () => {
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   await controller.forkSession("one", "user")
-  if (forkedFrom !== "user" || controller.chatSnapshot().session?.id !== "fork") throw new Error("Message-scoped fork was not selected")
+  if (forkedFrom !== "user" || controller.chatSnapshot().session?.id !== "fork") {
+    throw new Error("Message-scoped fork was not selected")
+  }
   controller.dispose()
 })
 
@@ -1826,13 +2429,23 @@ Deno.test("v2 session events refresh projected output and terminal status", asyn
   await controller.reconcile()
   const refreshed = deferred<void>()
   controller.subscribe(() => {
-    if (controller.chatSnapshot().session?.messages.some((message) => message.info.id === "assistant")) refreshed.resolve(undefined)
+    if (controller.chatSnapshot().session?.messages.some((message) => message.info.id === "assistant")) {
+      refreshed.resolve(undefined)
+    }
   })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
-  internal.handleEvent({ type: "session.next.step.failed", properties: { sessionID: "one", error: { message: "Provider failed" } } })
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
+  internal.handleEvent({
+    type: "session.next.step.failed",
+    properties: { sessionID: "one", error: { message: "Provider failed" } },
+  })
   await refreshed.promise
   const snapshot = controller.chatSnapshot().session
-  if (snapshot?.status.type !== "error" || snapshot.status.message !== "Provider failed" || snapshot.messages[0]?.info.id !== "assistant") {
+  if (
+    snapshot?.status.type !== "error" || snapshot.status.message !== "Provider failed" ||
+    snapshot.messages[0]?.info.id !== "assistant"
+  ) {
     throw new Error("V2 terminal event did not refresh projected output and error status")
   }
   controller.dispose()
@@ -1857,16 +2470,29 @@ Deno.test("v2 step completion waits for authoritative runner settlement and pres
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
-  internal.handleEvent({ type: "session.next.step.ended", properties: { sessionID: "one", assistantMessageID: "assistant", finish: "stop" } })
-  if (controller.chatSnapshot().session?.status.type !== "busy") throw new Error("A provider step end was mistaken for complete session settlement")
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
+  internal.handleEvent({
+    type: "session.next.step.ended",
+    properties: { sessionID: "one", assistantMessageID: "assistant", finish: "stop" },
+  })
+  if (controller.chatSnapshot().session?.status.type !== "busy") {
+    throw new Error("A provider step end was mistaken for complete session settlement")
+  }
   await controller.send("Follow up while the runner is still draining")
-  if (deliveries.join(",") !== "queue") throw new Error(`False idle changed a follow-up into ${deliveries.join(",") || "no delivery"}`)
+  if (deliveries.join(",") !== "queue") {
+    throw new Error(`False idle changed a follow-up into ${deliveries.join(",") || "no delivery"}`)
+  }
   await new Promise((resolve) => setTimeout(resolve, 45))
-  if (controller.chatSnapshot().session?.status.type !== "busy" || statusCalls < 2) throw new Error("Active OpenCode runner was marked idle by the settlement probe")
+  if (controller.chatSnapshot().session?.status.type !== "busy" || statusCalls < 2) {
+    throw new Error("Active OpenCode runner was marked idle by the settlement probe")
+  }
   active = false
   await new Promise((resolve) => setTimeout(resolve, 140))
-  if (controller.chatSnapshot().session?.status.type !== "idle") throw new Error("Inactive OpenCode runner did not settle the Workbench session")
+  if (controller.chatSnapshot().session?.status.type !== "idle") {
+    throw new Error("Inactive OpenCode runner did not settle the Workbench session")
+  }
   controller.dispose()
 })
 
@@ -1876,31 +2502,77 @@ Deno.test("v2 live events stream text, reasoning, tool input, and preferences", 
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
-    catalogs: async () => ({ agents: [{ name: "build" }], models: [{ providerID: "acme", id: "model", name: "Model", variants: ["high"] }] }),
-    messages: async () => { messageCalls += 1; return [] },
+    catalogs: async () => ({
+      agents: [{ name: "build" }],
+      models: [{ providerID: "acme", id: "model", name: "Model", variants: ["high"] }],
+    }),
+    messages: async () => {
+      messageCalls += 1
+      return []
+    },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: (message) => errors.push(message) })
   await controller.reconcile()
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
-  internal.handleEvent({ type: "session.next.step.started", properties: { sessionID: "one", assistantMessageID: "assistant", agent: "build", model: { providerID: "acme", id: "model" }, timestamp: 1 } })
-  internal.handleEvent({ type: "session.next.text.started", properties: { sessionID: "one", assistantMessageID: "assistant", textID: "text" } })
-  internal.handleEvent({ type: "session.next.text.delta", properties: { sessionID: "one", assistantMessageID: "assistant", textID: "text", delta: "Hello" } })
-  internal.handleEvent({ type: "session.next.reasoning.started", properties: { sessionID: "one", assistantMessageID: "assistant", reasoningID: "reasoning" } })
-  internal.handleEvent({ type: "session.next.reasoning.delta", properties: { sessionID: "one", assistantMessageID: "assistant", reasoningID: "reasoning", delta: "Think" } })
-  internal.handleEvent({ type: "session.next.tool.input.started", properties: { sessionID: "one", assistantMessageID: "assistant", callID: "tool", name: "bash" } })
-  internal.handleEvent({ type: "session.next.tool.input.delta", properties: { sessionID: "one", assistantMessageID: "assistant", callID: "tool", delta: "pwd" } })
-  internal.handleEvent({ type: "session.next.tool.input.ended", properties: { sessionID: "one", assistantMessageID: "assistant", callID: "tool", text: "pwd -P" } })
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
+  internal.handleEvent({
+    type: "session.next.step.started",
+    properties: {
+      sessionID: "one",
+      assistantMessageID: "assistant",
+      agent: "build",
+      model: { providerID: "acme", id: "model" },
+      timestamp: 1,
+    },
+  })
+  internal.handleEvent({
+    type: "session.next.text.started",
+    properties: { sessionID: "one", assistantMessageID: "assistant", textID: "text" },
+  })
+  internal.handleEvent({
+    type: "session.next.text.delta",
+    properties: { sessionID: "one", assistantMessageID: "assistant", textID: "text", delta: "Hello" },
+  })
+  internal.handleEvent({
+    type: "session.next.reasoning.started",
+    properties: { sessionID: "one", assistantMessageID: "assistant", reasoningID: "reasoning" },
+  })
+  internal.handleEvent({
+    type: "session.next.reasoning.delta",
+    properties: { sessionID: "one", assistantMessageID: "assistant", reasoningID: "reasoning", delta: "Think" },
+  })
+  internal.handleEvent({
+    type: "session.next.tool.input.started",
+    properties: { sessionID: "one", assistantMessageID: "assistant", callID: "tool", name: "bash" },
+  })
+  internal.handleEvent({
+    type: "session.next.tool.input.delta",
+    properties: { sessionID: "one", assistantMessageID: "assistant", callID: "tool", delta: "pwd" },
+  })
+  internal.handleEvent({
+    type: "session.next.tool.input.ended",
+    properties: { sessionID: "one", assistantMessageID: "assistant", callID: "tool", text: "pwd -P" },
+  })
   internal.handleEvent({ type: "session.next.agent.switched", properties: { sessionID: "one", agent: "build" } })
-  internal.handleEvent({ type: "session.next.model.switched", properties: { sessionID: "one", model: { providerID: "acme", id: "model", variant: "high" } } })
+  internal.handleEvent({
+    type: "session.next.model.switched",
+    properties: { sessionID: "one", model: { providerID: "acme", id: "model", variant: "high" } },
+  })
   internal.handleEvent({ type: "future.event", properties: {} })
   internal.handleEvent({ type: "future.event", properties: {} })
   internal.handleEvent({ type: "project.updated", properties: { id: "project" } })
   await new Promise((resolve) => setTimeout(resolve, 35))
   const state = controller.snapshot.sessions.one
   const parts = state?.messages[0]?.parts ?? []
-  if (parts.find((part) => part.id === "text")?.text !== "Hello" || parts.find((part) => part.id === "reasoning")?.text !== "Think" ||
-    parts.find((part) => part.id === "tool")?.state?.input !== "pwd -P" || state?.agent !== "build" || state.model !== "acme/model" || state.variant !== "high" ||
-    errors.some((message) => message.includes("future.event") || message.includes("project.updated")) || messageCalls !== 1) {
+  if (
+    parts.find((part) => part.id === "text")?.text !== "Hello" ||
+    parts.find((part) => part.id === "reasoning")?.text !== "Think" ||
+    parts.find((part) => part.id === "tool")?.state?.input !== "pwd -P" || state?.agent !== "build" ||
+    state.model !== "acme/model" || state.variant !== "high" ||
+    errors.some((message) => message.includes("future.event") || message.includes("project.updated")) ||
+    messageCalls !== 1
+  ) {
     throw new Error("V2 live event projection or forward-compatible event handling failed")
   }
   controller.dispose()
@@ -1924,17 +2596,31 @@ Deno.test("catalog and MCP invalidation events refresh data and expose browser f
     formatter: async () => [],
     mcp: async () => [],
   } as unknown as OpenCodeClient
-  const controller = new SessionController(fake, { error: () => undefined, openExternal: (url) => { opened.push(url) } })
+  const controller = new SessionController(fake, {
+    error: () => undefined,
+    openExternal: (url) => {
+      opened.push(url)
+    },
+  })
   await controller.reconcile()
   controller.subscribe(() => {
     if (controller.chatSnapshot().models[0]?.id === "model-2") refreshed.resolve()
   })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "catalog.updated", properties: {} })
-  internal.handleEvent({ type: "mcp.browser.open.failed", properties: { mcpName: "docs", url: "https://example.test/auth" } })
+  internal.handleEvent({
+    type: "mcp.browser.open.failed",
+    properties: { mcpName: "docs", url: "https://example.test/auth" },
+  })
   await refreshed.promise
   if (controller.chatSnapshot().models[0]?.id !== "model-2" || opened.join(",") !== "https://example.test/auth") {
-    throw new Error(`Catalog invalidation or MCP browser fallback was ignored: model=${controller.chatSnapshot().models[0]?.id}, opened=${opened.join(",")}`)
+    throw new Error(
+      `Catalog invalidation or MCP browser fallback was ignored: model=${
+        controller.chatSnapshot().models[0]?.id
+      }, opened=${opened.join(",")}`,
+    )
   }
   controller.dispose()
 })
@@ -1946,7 +2632,16 @@ Deno.test("queued attachments retain private payloads only until durable admissi
     sessionStatuses: async () => ({ one: { type: "busy" as const } }),
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [],
-    sendPrompt: async (_sessionID: string, _id: string, _text: string, delivery: string, _agent?: string, _model?: string, _variant?: string, files?: Array<{ url: string; filename: string }>) => {
+    sendPrompt: async (
+      _sessionID: string,
+      _id: string,
+      _text: string,
+      delivery: string,
+      _agent?: string,
+      _model?: string,
+      _variant?: string,
+      files?: Array<{ url: string; filename: string }>,
+    ) => {
       if (delivery !== "queue") throw new Error("Busy attachment was not admitted as queued")
       sent.resolve(files ?? [])
     },
@@ -1957,7 +2652,9 @@ Deno.test("queued attachments retain private payloads only until durable admissi
   await controller.send("", undefined, undefined, undefined, [file])
   const files = await sent.promise
   if (files[0]?.url !== file.url) throw new Error("Queued attachment payload was not sent")
-  if (controller.chatSnapshot().session?.queue?.length || JSON.stringify(controller.chatSnapshot()).includes("base64")) throw new Error("Admitted attachment payload remained in client state")
+  if (
+    controller.chatSnapshot().session?.queue?.length || JSON.stringify(controller.chatSnapshot()).includes("base64")
+  ) throw new Error("Admitted attachment payload remained in client state")
   controller.dispose()
 })
 
@@ -1971,7 +2668,16 @@ Deno.test("editing a waiting queued prompt preserves its attachments", async () 
     sessionStatuses: async () => ({ one: { type: "busy" as const } }),
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [],
-    sendPrompt: async (_sessionID: string, _id: string, text: string, _delivery: string, _agent?: string, _model?: string, _variant?: string, files?: Array<{ url: string }>) => {
+    sendPrompt: async (
+      _sessionID: string,
+      _id: string,
+      text: string,
+      _delivery: string,
+      _agent?: string,
+      _model?: string,
+      _variant?: string,
+      files?: Array<{ url: string }>,
+    ) => {
       calls += 1
       if (calls === 1) {
         firstStarted.resolve()
@@ -1991,7 +2697,9 @@ Deno.test("editing a waiting queued prompt preserves its attachments", async () 
   releaseFirst.resolve()
   await first
   const sent = await secondSent.promise
-  if (sent.text !== "after" || sent.files[0]?.url !== file.url) throw new Error("Queued prompt edit lost text or attachment data")
+  if (sent.text !== "after" || sent.files[0]?.url !== file.url) {
+    throw new Error("Queued prompt edit lost text or attachment data")
+  }
   controller.dispose()
 })
 
@@ -2002,14 +2710,25 @@ Deno.test("file message snapshots retain labels without exposing attachment URLs
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [{
       info: { id: "user", sessionID: "one", role: "user" as const },
-      parts: [{ id: "file", sessionID: "one", messageID: "user", type: "file", mime: "image/png", filename: "screen.png", url: "data:image/png;base64,secret" }],
+      parts: [{
+        id: "file",
+        sessionID: "one",
+        messageID: "user",
+        type: "file",
+        mime: "image/png",
+        filename: "screen.png",
+        url: "data:image/png;base64,secret",
+      }],
     }],
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   const snapshot = controller.chatSnapshot()
   const part = snapshot.session?.messages[0]?.parts[0]
-  if (part?.filename !== "screen.png" || part.mime !== "image/png" || "url" in (part ?? {}) || !parseHostMessage({ type: "snapshot", snapshot })) {
+  if (
+    part?.filename !== "screen.png" || part.mime !== "image/png" || "url" in (part ?? {}) ||
+    !parseHostMessage({ type: "snapshot", snapshot })
+  ) {
     throw new Error("File snapshot label was lost or private URL was exposed")
   }
   controller.dispose()
@@ -2026,7 +2745,9 @@ Deno.test("auto approval hides delayed successful responses until removal", asyn
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined, attention: () => attention += 1 })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   controller.setAutoApproval("one", true)
   internal.handleEvent({
@@ -2035,8 +2756,11 @@ Deno.test("auto approval hides delayed successful responses until removal", asyn
   })
 
   const snapshot = controller.chatSnapshot()
-  if (replies.join(",") !== "once" || controller.snapshot.sessions.one?.permissions.length !== 1 ||
-    snapshot.session?.permissions?.length !== 0 || snapshot.sessions[0]?.permissionCount !== 0 || snapshot.sessions[0]?.attention !== 0) {
+  if (
+    replies.join(",") !== "once" || controller.snapshot.sessions.one?.permissions.length !== 1 ||
+    snapshot.session?.permissions?.length !== 0 || snapshot.sessions[0]?.permissionCount !== 0 ||
+    snapshot.sessions[0]?.attention !== 0
+  ) {
     throw new Error("Auto approval exposed an in-flight permission or lost internal pending state")
   }
   if (attention !== 0) throw new Error("Auto-approved permission emitted an attention notification")
@@ -2046,13 +2770,22 @@ Deno.test("auto approval hides delayed successful responses until removal", asyn
   })
   response.resolve(true)
   await removed.promise
-  if (controller.chatSnapshot().session?.permissions?.length !== 0) throw new Error("Accepted permission remained pending")
+  if (controller.chatSnapshot().session?.permissions?.length !== 0) {
+    throw new Error("Accepted permission remained pending")
+  }
   controller.dispose()
 })
 
 Deno.test("reconciled auto approval exposes permission after response failure", async () => {
   const response = deferred<boolean>()
-  const request = { id: "permission", sessionID: "one", title: "Shell", type: "bash", pattern: ["ls"], protocol: "current" as const }
+  const request = {
+    id: "permission",
+    sessionID: "one",
+    title: "Shell",
+    type: "bash",
+    pattern: ["ls"],
+    protocol: "current" as const,
+  }
   let errors = 0
   const fake = {
     pendingPermissionsDetailed: async () => ({ requests: [request], succeeded: ["current" as const] }),
@@ -2068,8 +2801,10 @@ Deno.test("reconciled auto approval exposes permission after response failure", 
   await internal.reconcilePermissions()
 
   const hidden = controller.chatSnapshot()
-  if (controller.snapshot.sessions.one?.permissions.length !== 1 || hidden.session?.permissions?.length !== 0 ||
-    hidden.sessions[0]?.permissionCount !== 0 || hidden.sessions[0]?.attention !== 0) {
+  if (
+    controller.snapshot.sessions.one?.permissions.length !== 1 || hidden.session?.permissions?.length !== 0 ||
+    hidden.sessions[0]?.permissionCount !== 0 || hidden.sessions[0]?.attention !== 0
+  ) {
     throw new Error("Reconciled auto approval exposed an in-flight permission")
   }
   const exposed = deferred<void>()
@@ -2080,7 +2815,10 @@ Deno.test("reconciled auto approval exposes permission after response failure", 
   await exposed.promise
 
   const fallback = controller.chatSnapshot()
-  if (errors !== 1 || fallback.session?.permissions?.[0]?.id !== request.id || fallback.sessions[0]?.permissionCount !== 1 || fallback.sessions[0]?.attention !== 1) {
+  if (
+    errors !== 1 || fallback.session?.permissions?.[0]?.id !== request.id ||
+    fallback.sessions[0]?.permissionCount !== 1 || fallback.sessions[0]?.attention !== 1
+  ) {
     throw new Error("Failed automatic response did not expose manual permission fallback")
   }
   controller.dispose()
@@ -2096,13 +2834,17 @@ Deno.test("enabling auto approval hides an existing permission before publishing
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   internal.handleEvent({
     type: "permission.asked",
     properties: { id: "permission", sessionID: "one", permission: "bash", patterns: ["ls"], always: [] },
   })
-  if (controller.chatSnapshot().session?.permissions?.length !== 1) throw new Error("Manual permission was not initially visible")
+  if (controller.chatSnapshot().session?.permissions?.length !== 1) {
+    throw new Error("Manual permission was not initially visible")
+  }
 
   let flashed = false
   controller.subscribe(() => {
@@ -2120,34 +2862,69 @@ Deno.test("enabling auto approval hides an existing permission before publishing
 })
 
 Deno.test("permission command scopes are exact or conservative prefixes", async () => {
-  if (!permissionPatternMatches("deno test", "deno test") || !permissionPatternMatches("anything", "*") || permissionPatternMatches("DENO TEST", "deno test") ||
-    !permissionPatternMatches("deno test packages/shared", "deno test *") || permissionPatternMatches("deno task test", "deno test *") ||
-    permissionPatternMatches("deno test && rm -rf .", "deno test *") || permissionPatternMatches("deno task install:local", "deno task install:*")) {
+  if (
+    !permissionPatternMatches("deno test", "deno test") || !permissionPatternMatches("anything", "*") ||
+    permissionPatternMatches("DENO TEST", "deno test") ||
+    !permissionPatternMatches("deno test packages/shared", "deno test *") ||
+    permissionPatternMatches("deno task test", "deno test *") ||
+    !permissionPatternMatches("git status *", "git *") || !permissionPatternMatches("git status --short", "git *") ||
+    permissionPatternMatches("deno test && rm -rf .", "deno test *") ||
+    permissionPatternMatches("deno task install:local", "deno task install:*")
+  ) {
     throw new Error("Permission command scope matching was unsafe or incorrect")
   }
   const replies: string[] = []
   let attention = 0
   const fake = {
-    events: (signal: AbortSignal) => new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })),
+    events: (signal: AbortSignal) =>
+      new Promise<void>((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+      ),
     respondPermission: async (_request: unknown, reply: string) => {
       replies.push(reply)
       return true
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined, attention: () => attention += 1 })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
-  internal.handleEvent({ type: "permission.asked", properties: { id: "first", sessionID: "one", permission: "bash", patterns: ["deno test"], always: ["deno test *"] } })
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: { id: "first", sessionID: "one", permission: "bash", patterns: ["deno test"], always: ["deno test *"] },
+  })
   await controller.respondPermission("first", "exact", "one", "current")
   controller.reconnect()
-  internal.handleEvent({ type: "permission.asked", properties: { id: "repeat", sessionID: "one", permission: "bash", patterns: ["deno test"], always: ["deno test *"] } })
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: {
+      id: "repeat",
+      sessionID: "one",
+      permission: "bash",
+      patterns: ["deno test"],
+      always: ["deno test *"],
+    },
+  })
   await Promise.resolve()
   await Promise.resolve()
   if (replies.join(",") !== "once,once" || attention !== 1 || controller.chatSnapshot().session?.permissions?.length) {
     throw new Error("Remembered exact scope did not cover the identical repeated command")
   }
-  internal.handleEvent({ type: "permission.asked", properties: { id: "other", sessionID: "one", permission: "bash", patterns: ["deno test packages/shared"], always: ["deno test *"] } })
-  if (replies.join(",") !== "once,once" || Number(attention) !== 2 || controller.chatSnapshot().session?.permissions?.[0]?.id !== "other") {
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: {
+      id: "other",
+      sessionID: "one",
+      permission: "bash",
+      patterns: ["deno test packages/shared"],
+      always: ["deno test *"],
+    },
+  })
+  if (
+    replies.join(",") !== "once,once" || Number(attention) !== 2 ||
+    controller.chatSnapshot().session?.permissions?.[0]?.id !== "other"
+  ) {
     throw new Error("Exact grant leaked to a broader command covered by OpenCode's suggested wildcard")
   }
   controller.dispose()
@@ -2155,11 +2932,26 @@ Deno.test("permission command scopes are exact or conservative prefixes", async 
 
 Deno.test("selected command scopes allow matching commands only within the conversation", async () => {
   const command = "deno test --sloppy-imports --allow-env packages/vscode-extension/test/session-controller_test.ts"
-  const request = { id: "first", sessionID: "one", title: "Shell", type: "bash", pattern: [command], always: ["deno test *"], protocol: "current" as const }
+  const request = {
+    id: "first",
+    sessionID: "one",
+    title: "Shell",
+    type: "bash",
+    pattern: [command],
+    always: ["deno test *"],
+    protocol: "current" as const,
+  }
   const scopes = reusablePermissionScopes(request)
-  if (scopes.join(",") !== "deno test *,deno *,*") throw new Error(`Unexpected reusable command scopes: ${scopes.join(",")}`)
-  const complexScopes = reusablePermissionScopes({ ...request, pattern: ["PY=\"$(command -v python)\" && \"$PY\" - <<'PY'"] })
-  if (complexScopes.join(",") !== "*") throw new Error("Complex shell command did not retain the explicit all-shell session option")
+  if (scopes.join(",") !== "deno test *,deno *,*") {
+    throw new Error(`Unexpected reusable command scopes: ${scopes.join(",")}`)
+  }
+  const complexScopes = reusablePermissionScopes({
+    ...request,
+    pattern: ['PY="$(command -v python)" && "$PY" - <<\'PY\''],
+  })
+  if (complexScopes.join(",") !== "*") {
+    throw new Error("Complex shell command did not retain the explicit all-shell session option")
+  }
   const replies: string[] = []
   const fake = {
     respondPermission: async (_request: unknown, reply: string) => {
@@ -2168,25 +2960,67 @@ Deno.test("selected command scopes allow matching commands only within the conve
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
-  internal.handleEvent({ type: "permission.asked", properties: { id: request.id, sessionID: request.sessionID, permission: request.type, patterns: request.pattern, always: request.always } })
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: {
+      id: request.id,
+      sessionID: request.sessionID,
+      permission: request.type,
+      patterns: request.pattern,
+      always: request.always,
+    },
+  })
   await controller.respondPermission("first", "scope", "one", "current", undefined, "deno test *")
-  internal.handleEvent({ type: "permission.asked", properties: { id: "covered", sessionID: "one", permission: "bash", patterns: ["deno test packages/shared"], always: ["deno test *"] } })
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: {
+      id: "covered",
+      sessionID: "one",
+      permission: "bash",
+      patterns: ["deno test packages/shared"],
+      always: ["deno test *"],
+    },
+  })
   await Promise.resolve()
   await Promise.resolve()
-  internal.handleEvent({ type: "permission.asked", properties: { id: "other", sessionID: "one", permission: "bash", patterns: ["deno task test"], always: ["deno task *"] } })
-  if (replies.join(",") !== "once,once" || controller.snapshot.sessions.one?.permissions.map((permission) => permission.id).join(",") !== "other") {
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: {
+      id: "other",
+      sessionID: "one",
+      permission: "bash",
+      patterns: ["deno task test"],
+      always: ["deno task *"],
+    },
+  })
+  if (
+    replies.join(",") !== "once,once" ||
+    controller.snapshot.sessions.one?.permissions.map((permission) => permission.id).join(",") !== "other"
+  ) {
     throw new Error("Selected command scope covered an unrelated command or missed a matching command")
   }
   await controller.respondPermission("other", "scope", "one", "current", undefined, "git *").catch(() => undefined)
-  if (replies.join(",") !== "once,once") throw new Error("Controller accepted a scope that was not offered for the request")
+  if (replies.join(",") !== "once,once") {
+    throw new Error("Controller accepted a scope that was not offered for the request")
+  }
   controller.dispose()
 })
 
 Deno.test("permission reconciliation applies remembered exact grants", async () => {
   const replies: string[] = []
-  const repeat = { id: "repeat", sessionID: "one", title: "Shell", type: "bash", pattern: ["deno test"], always: ["deno test *"], protocol: "current" as const }
+  const repeat = {
+    id: "repeat",
+    sessionID: "one",
+    title: "Shell",
+    type: "bash",
+    pattern: ["deno test"],
+    always: ["deno test *"],
+    protocol: "current" as const,
+  }
   const fake = {
     respondPermission: async (_request: unknown, reply: string) => {
       replies.push(reply)
@@ -2200,7 +3034,10 @@ Deno.test("permission reconciliation applies remembered exact grants", async () 
     reconcilePermissions(): Promise<void>
   }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
-  internal.handleEvent({ type: "permission.asked", properties: { id: "first", sessionID: "one", permission: "bash", patterns: ["deno test"], always: ["deno test *"] } })
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: { id: "first", sessionID: "one", permission: "bash", patterns: ["deno test"], always: ["deno test *"] },
+  })
   await controller.respondPermission("first", "exact", "one", "current")
   await internal.reconcilePermissions()
   await Promise.resolve()
@@ -2221,15 +3058,26 @@ Deno.test("OpenCode reload permission always requires explicit approval", async 
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined, attention: () => attention += 1 })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   controller.setAutoApproval("one", true)
   internal.handleEvent({
     type: "permission.asked",
-    properties: { id: "reload", sessionID: "one", permission: "vscode.reload_opencode", patterns: ["skill-activation"], always: [] },
+    properties: {
+      id: "reload",
+      sessionID: "one",
+      permission: "vscode.reload_opencode",
+      patterns: ["skill-activation"],
+      always: [],
+    },
   })
   await Promise.resolve()
-  if (replies.length || attention !== 1 || controller.chatSnapshot().session?.permissions?.[0]?.type !== "vscode.reload_opencode") {
+  if (
+    replies.length || attention !== 1 ||
+    controller.chatSnapshot().session?.permissions?.[0]?.type !== "vscode.reload_opencode"
+  ) {
     throw new Error("Reload permission was auto-approved or hidden")
   }
   controller.dispose()
@@ -2246,20 +3094,27 @@ Deno.test("auto approval is scoped to one root session and new sessions default 
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined, attention: () => attention += 1 })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   controller.setAutoApproval("one", true)
   internal.handleEvent({ type: "session.created", properties: { info: session("two", 2) } })
   await controller.select("two")
   if (controller.chatSnapshot().autoApproval !== false) throw new Error("New session inherited Auto approval")
-  internal.handleEvent({ type: "permission.asked", properties: { id: "two-permission", sessionID: "two", permission: "bash", patterns: ["pwd"], always: [] } })
+  internal.handleEvent({
+    type: "permission.asked",
+    properties: { id: "two-permission", sessionID: "two", permission: "bash", patterns: ["pwd"], always: [] },
+  })
   await Promise.resolve()
   if (replies.length || attention !== 1) throw new Error("Auto approval leaked into another root session")
 
   const child = { ...session("child", 3), parentID: "one" }
   internal.handleEvent({ type: "session.created", properties: { info: child } })
   await controller.select("child")
-  if (controller.chatSnapshot().autoApproval !== true) throw new Error("Subagent did not inherit its root session approval mode")
+  if (controller.chatSnapshot().autoApproval !== true) {
+    throw new Error("Subagent did not inherit its root session approval mode")
+  }
   controller.dispose()
 })
 
@@ -2273,7 +3128,9 @@ Deno.test("truncated permissions cannot be allowed or auto-approved", async () =
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined, attention: () => attention += 1 })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   controller.setAutoApproval("one", true)
   internal.handleEvent({
@@ -2308,9 +3165,10 @@ Deno.test("reconnect discards stale permission reconciliation", async () => {
   const permissions = deferred<Array<{ id: string; sessionID: string; title: string; protocol: "current" }>>()
   const fake = {
     pendingPermissions: () => permissions.promise,
-    events: (signal: AbortSignal) => new Promise<void>((_resolve, reject) => {
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true })
-    }),
+    events: (signal: AbortSignal) =>
+      new Promise<void>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+      }),
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   const internal = controller as unknown as {
@@ -2342,7 +3200,9 @@ Deno.test("event connection remains loading until session hydration settles", as
     events: async (signal: AbortSignal, onOpen: () => Promise<void> | void) => {
       opened.resolve(undefined)
       await onOpen()
-      await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))
+      await new Promise<void>((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+      )
     },
     listSessions: () => sessions.promise,
     sessionStatuses: async () => ({}),
@@ -2355,20 +3215,25 @@ Deno.test("event connection remains loading until session hydration settles", as
   controller.start()
   await opened.promise
   await Promise.resolve()
-  if (controller.snapshot.connected || controller.snapshot.connectionState !== "connecting") throw new Error("Unsettled session hydration was reported as connected or failed")
+  if (controller.snapshot.connected || controller.snapshot.connectionState !== "connecting") {
+    throw new Error("Unsettled session hydration was reported as connected or failed")
+  }
   sessions.resolve([])
   await connected.promise
-  if (!controller.snapshot.connected || String(controller.snapshot.connectionState) !== "connected") throw new Error("Settled connection was not reported as connected")
+  if (!controller.snapshot.connected || String(controller.snapshot.connectionState) !== "connected") {
+    throw new Error("Settled connection was not reported as connected")
+  }
   controller.dispose()
 })
 
 Deno.test("explicit reconnect discards old-stream terminal events before queue admission", async () => {
   let sends = 0
   const fake = {
-    events: (signal: AbortSignal) => new Promise<void>((resolve) => {
-      if (signal.aborted) resolve()
-      else signal.addEventListener("abort", () => resolve(), { once: true })
-    }),
+    events: (signal: AbortSignal) =>
+      new Promise<void>((resolve) => {
+        if (signal.aborted) resolve()
+        else signal.addEventListener("abort", () => resolve(), { once: true })
+      }),
     sendPrompt: async () => sends += 1,
     cancelPendingRequests: () => undefined,
   } as unknown as OpenCodeClient
@@ -2387,7 +3252,10 @@ Deno.test("explicit reconnect discards old-stream terminal events before queue a
 
   controller.reconnect()
   await Promise.resolve()
-  if (sends !== 0 || controller.snapshot.sessions.one?.queue[0]?.id !== promptID || controller.snapshot.sessions.one?.status.type !== "busy") {
+  if (
+    sends !== 0 || controller.snapshot.sessions.one?.queue[0]?.id !== promptID ||
+    controller.snapshot.sessions.one?.status.type !== "busy"
+  ) {
     throw new Error("Reconnect applied a stale terminal event and admitted a queued prompt")
   }
   controller.dispose()
@@ -2405,7 +3273,9 @@ Deno.test("stale event-loop startup cannot reconnect an aborted stream", async (
         await onOpen()
       }
       if (signal.aborted) return
-      await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))
+      await new Promise<void>((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+      )
     },
     listSessions: () => sessions.promise,
     sessionStatuses: async () => ({}),
@@ -2424,7 +3294,10 @@ Deno.test("stale event-loop startup cannot reconnect an aborted stream", async (
 
 Deno.test("retry rejects active sessions before reverting", async () => {
   let reverted = false
-  const user: MessageBundle = { info: { id: "user", sessionID: "one", role: "user" }, parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }] }
+  const user: MessageBundle = {
+    info: { id: "user", sessionID: "one", role: "user" },
+    parts: [{ id: "text", sessionID: "one", messageID: "user", type: "text", text: "Retry me" }],
+  }
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({ one: { type: "busy" as const } }),
@@ -2455,7 +3328,9 @@ Deno.test("failed permission responses remain pending", async () => {
     },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => errors += 1 })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   internal.handleEvent({
     type: "permission.asked",
@@ -2477,8 +3352,12 @@ Deno.test("failed permission responses remain pending", async () => {
 })
 
 Deno.test("todo events remain scoped to their owning session", async () => {
-  const controller = new SessionController({ messages: async () => [] } as unknown as OpenCodeClient, { error: () => undefined })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const controller = new SessionController({ messages: async () => [] } as unknown as OpenCodeClient, {
+    error: () => undefined,
+  })
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   internal.handleEvent({ type: "session.created", properties: { info: session("two", 2) } })
   internal.handleEvent({
@@ -2490,7 +3369,10 @@ Deno.test("todo events remain scoped to their owning session", async () => {
   if (controller.chatSnapshot().session?.todos?.length !== 0) throw new Error("Todo event leaked into another session")
   await controller.select("one")
   const snapshot = controller.chatSnapshot()
-  if (snapshot.session?.todos?.[0]?.content !== "Ship it" || snapshot.sessions.find((entry) => entry.id === "one")?.todo?.completed !== 1) {
+  if (
+    snapshot.session?.todos?.[0]?.content !== "Ship it" ||
+    snapshot.sessions.find((entry) => entry.id === "one")?.todo?.completed !== 1
+  ) {
     throw new Error("Todo event did not remain on its owning session")
   }
   controller.dispose()
@@ -2500,12 +3382,20 @@ Deno.test("context uses latest step tokens and cumulative assistant costs", asyn
   const fake = {
     listSessions: async () => [session("one", 1)],
     sessionStatuses: async () => ({}),
-    catalogs: async () => ({ agents: [], models: [{ id: "model", providerID: "acme", name: "Model", contextLimit: 1_000 }] }),
+    catalogs: async () => ({
+      agents: [],
+      models: [{ id: "model", providerID: "acme", name: "Model", contextLimit: 1_000 }],
+    }),
     messages: async () => [{
       info: { id: "a1", sessionID: "one", role: "assistant" as const, cost: 1 },
       parts: [],
     }, {
-      info: { id: "u", sessionID: "one", role: "user" as const, model: { providerID: "acme", modelID: "model", variant: "high" } },
+      info: {
+        id: "u",
+        sessionID: "one",
+        role: "user" as const,
+        model: { providerID: "acme", modelID: "model", variant: "high" },
+      },
       parts: [],
     }, {
       info: { id: "a2", sessionID: "one", role: "assistant" as const, cost: 2, tokens: { input: 1 } },
@@ -2529,17 +3419,29 @@ Deno.test("context uses latest step tokens and cumulative assistant costs", asyn
   await controller.reconcile()
 
   const snapshot = controller.chatSnapshot().session
-  if (snapshot?.context?.totalTokens !== 481 || snapshot.context.cost !== 3 || snapshot.context.contextLimit !== 1_000) {
+  if (
+    snapshot?.context?.totalTokens !== 481 || snapshot.context.cost !== 3 || snapshot.context.contextLimit !== 1_000
+  ) {
     throw new Error("Context summary did not use latest step tokens and cumulative costs")
   }
   if (snapshot.variant !== "high") throw new Error("Reasoning variant was not inferred from real user message shape")
-  if (snapshot.goal?.objective !== "Ship safely" || snapshot.todos?.length !== 0) throw new Error("Goal summary was not kept distinct from todos")
+  if (snapshot.goal?.objective !== "Ship safely" || snapshot.todos?.length !== 0) {
+    throw new Error("Goal summary was not kept distinct from todos")
+  }
   controller.dispose()
 })
 
 Deno.test("zero-valued provider usage remains distinguishable from a known zero-percent context", () => {
   const context = deriveContext([{
-    info: { id: "assistant", sessionID: "session", role: "assistant", providerID: "openai", modelID: "model", time: { completed: 1 }, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+    info: {
+      id: "assistant",
+      sessionID: "session",
+      role: "assistant",
+      providerID: "openai",
+      modelID: "model",
+      time: { completed: 1 },
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    },
     parts: [],
   }], [{ id: "model", providerID: "openai", name: "Model", contextLimit: 500_000 }])
   if (context?.usageReported !== false || context.usagePercent !== undefined || context.contextLimit !== 500_000) {
@@ -2553,7 +3455,9 @@ Deno.test("question and diff events expose actionable session state", async () =
     respondQuestion: async (_request: unknown, value: string[][]) => answers.push(value),
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   internal.handleEvent({
     type: "question.v2.asked",
@@ -2565,11 +3469,18 @@ Deno.test("question and diff events expose actionable session state", async () =
   })
   internal.handleEvent({
     type: "session.diff",
-    properties: { sessionID: "one", diff: [{ file: "src/main.ts", patch: "diff", additions: 2, deletions: 1, status: "modified" }] },
+    properties: {
+      sessionID: "one",
+      diff: [{ file: "src/main.ts", patch: "diff", additions: 2, deletions: 1, status: "modified" }],
+    },
   })
 
   const pending = controller.chatSnapshot()
-  if (pending.sessions[0]?.attention !== 1 || pending.sessions[0]?.questionCount !== 1 || pending.sessions[0]?.permissionCount !== 0 || pending.sessions[0]?.changeCount !== 1 || pending.session?.changes?.[0]?.file !== "src/main.ts") {
+  if (
+    pending.sessions[0]?.attention !== 1 || pending.sessions[0]?.questionCount !== 1 ||
+    pending.sessions[0]?.permissionCount !== 0 || pending.sessions[0]?.changeCount !== 1 ||
+    pending.session?.changes?.[0]?.file !== "src/main.ts"
+  ) {
     throw new Error("Question or changed-file state was not exposed")
   }
   await controller.respondQuestion("que_1", [["Yes"]], "one")
@@ -2583,15 +3494,23 @@ Deno.test("an in-flight question response survives webview snapshot reload", asy
   const response = deferred<void>()
   const fake = { respondQuestion: () => response.promise } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   internal.handleEvent({
     type: "question.v2.asked",
-    properties: { id: "que_reload", sessionID: "one", questions: [{ header: "Choice", question: "Continue?", options: [{ label: "Yes", description: "Proceed" }] }] },
+    properties: {
+      id: "que_reload",
+      sessionID: "one",
+      questions: [{ header: "Choice", question: "Continue?", options: [{ label: "Yes", description: "Proceed" }] }],
+    },
   })
 
   const first = controller.respondQuestion("que_reload", [["Yes"]], "one")
-  if (controller.chatSnapshot().session?.questions?.[0]?.id !== "que_reload") throw new Error("Reload snapshot lost the in-flight question")
+  if (controller.chatSnapshot().session?.questions?.[0]?.id !== "que_reload") {
+    throw new Error("Reload snapshot lost the in-flight question")
+  }
   let duplicateRejected = false
   try {
     await controller.respondQuestion("que_reload", [["Yes"]], "one")
@@ -2601,7 +3520,9 @@ Deno.test("an in-flight question response survives webview snapshot reload", asy
   if (!duplicateRejected) throw new Error("Reloaded surface could duplicate an in-flight question response")
   response.resolve()
   await first
-  if (controller.chatSnapshot().session?.questions?.length) throw new Error("Settled question response remained pending")
+  if (controller.chatSnapshot().session?.questions?.length) {
+    throw new Error("Settled question response remained pending")
+  }
   controller.dispose()
 })
 
@@ -2635,17 +3556,23 @@ Deno.test("undo and redo accept updated session responses", async () => {
 
 Deno.test("accepted stop requests immediately transition selected session to idle", async () => {
   let aborted = ""
-  const fake = { abort: async (sessionID: string) => {
-    aborted = sessionID
-    return true
-  } } as unknown as OpenCodeClient
+  const fake = {
+    abort: async (sessionID: string) => {
+      aborted = sessionID
+      return true
+    },
+  } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.created", properties: { info: session("one", 1) } })
   internal.handleEvent({ type: "session.status", properties: { sessionID: "one", status: { type: "busy" } } })
 
   await controller.abortSelected()
-  if (aborted !== "one" || controller.chatSnapshot().session?.status.type !== "idle") throw new Error("Stop acknowledgement did not update local status")
+  if (aborted !== "one" || controller.chatSnapshot().session?.status.type !== "idle") {
+    throw new Error("Stop acknowledgement did not update local status")
+  }
   controller.dispose()
 })
 
@@ -2656,7 +3583,10 @@ Deno.test("workspace refresh refuses to dispose an active session", async () => 
     sessionStatuses: async () => ({ one: { type: "busy" as const } }),
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [],
-    disposeInstance: async () => { disposals += 1; return true },
+    disposeInstance: async () => {
+      disposals += 1
+      return true
+    },
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
@@ -2683,10 +3613,14 @@ Deno.test("slash commands use native endpoints while bang prompts remain ordinar
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   await controller.send("/goal status")
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
   internal.handleEvent({ type: "session.idle", properties: { sessionID: "one" } })
   await controller.send("!git status --short")
-  if (calls.join("|") !== "/goal status|!git status --short") throw new Error("Slash command routing or ordinary bang prompt handling failed")
+  if (calls.join("|") !== "/goal status|!git status --short") {
+    throw new Error("Slash command routing or ordinary bang prompt handling failed")
+  }
   controller.dispose()
 })
 
@@ -2704,21 +3638,37 @@ Deno.test("executing goal commands are reported as running rather than queued", 
 
   const sending = controller.send("/goal review this project")
   const running = controller.chatSnapshot()
-  if (!running.session?.inFlightPromptID || running.session.queue?.length !== 1 || running.sessions[0]?.queued !== 0 || !parseHostMessage({ type: "snapshot", snapshot: running })) {
+  if (
+    !running.session?.inFlightPromptID || running.session.queue?.length !== 1 || running.sessions[0]?.queued !== 0 ||
+    !parseHostMessage({ type: "snapshot", snapshot: running })
+  ) {
     throw new Error("Executing command was not distinguished from pending queue entries")
   }
   const goalUpdate = {
     type: "event" as const,
     event: {
       type: "message.part.updated",
-      properties: { part: { id: "goal", messageID: "assistant", sessionID: "one", type: "tool", tool: "get_goal_history", state: { status: "completed", output: "{}" } } },
+      properties: {
+        part: {
+          id: "goal",
+          messageID: "assistant",
+          sessionID: "one",
+          type: "tool",
+          tool: "get_goal_history",
+          state: { status: "completed", output: "{}" },
+        },
+      },
     },
   }
-  if (controller.messageUpdateKey(goalUpdate) !== undefined) throw new Error("Completed goal update was reduced to a transcript-only patch")
+  if (controller.messageUpdateKey(goalUpdate) !== undefined) {
+    throw new Error("Completed goal update was reduced to a transcript-only patch")
+  }
 
   command.resolve({})
   await sending
-  if (controller.chatSnapshot().session?.inFlightPromptID || controller.chatSnapshot().session?.queue?.length) throw new Error("Completed command remained in running state")
+  if (controller.chatSnapshot().session?.inFlightPromptID || controller.chatSnapshot().session?.queue?.length) {
+    throw new Error("Completed command remained in running state")
+  }
   controller.dispose()
 })
 
@@ -2733,9 +3683,17 @@ Deno.test("streaming message updates expose bounded targeted patches", async () 
   await controller.reconcile()
   let update: Parameters<Parameters<SessionController["subscribe"]>[0]>[0] | undefined
   controller.subscribe((next) => update = next)
-  const internal = controller as unknown as { handleEvent(event: { type: string; properties: Record<string, unknown> }): void }
-  internal.handleEvent({ type: "message.updated", properties: { info: { id: "assistant", sessionID: "one", role: "assistant" } } })
-  internal.handleEvent({ type: "message.part.updated", properties: { part: { id: "text", messageID: "assistant", sessionID: "one", type: "text", text: "streamed" } } })
+  const internal = controller as unknown as {
+    handleEvent(event: { type: string; properties: Record<string, unknown> }): void
+  }
+  internal.handleEvent({
+    type: "message.updated",
+    properties: { info: { id: "assistant", sessionID: "one", role: "assistant" } },
+  })
+  internal.handleEvent({
+    type: "message.part.updated",
+    properties: { part: { id: "text", messageID: "assistant", sessionID: "one", type: "text", text: "streamed" } },
+  })
 
   if (!update) throw new Error("Streaming update was not published")
   const key = controller.messageUpdateKey(update)
@@ -2753,13 +3711,23 @@ Deno.test("ordered event ingress applies a large delta burst without loss", asyn
     catalogs: async () => ({ agents: [], models: [] }),
     messages: async () => [],
   } as unknown as OpenCodeClient
-  const controller = new SessionController(fake, { error: (error) => { throw new Error(error) } })
+  const controller = new SessionController(fake, {
+    error: (error) => {
+      throw new Error(error)
+    },
+  })
   await controller.reconcile()
   const internal = controller as unknown as {
     eventBus: { emit(event: { type: string; properties: Record<string, unknown> }): void; flush(): void }
   }
-  internal.eventBus.emit({ type: "message.updated", properties: { info: { id: "assistant", sessionID: "one", role: "assistant" } } })
-  internal.eventBus.emit({ type: "message.part.updated", properties: { part: { id: "text", messageID: "assistant", sessionID: "one", type: "text", text: "" } } })
+  internal.eventBus.emit({
+    type: "message.updated",
+    properties: { info: { id: "assistant", sessionID: "one", role: "assistant" } },
+  })
+  internal.eventBus.emit({
+    type: "message.part.updated",
+    properties: { part: { id: "text", messageID: "assistant", sessionID: "one", type: "text", text: "" } },
+  })
   for (let index = 0; index < 20_000; index += 1) {
     internal.eventBus.emit({
       type: "message.part.delta",
@@ -2790,7 +3758,9 @@ Deno.test("permission reconciliation preserves failed protocols and protocol ide
   await controller.reconcile()
   const internal = controller as unknown as { reconcilePermissions(): Promise<void> }
   await internal.reconcilePermissions()
-  if (controller.snapshot.sessions.one?.permissions.length !== 3) throw new Error("Same-ID permission protocols were deduplicated")
+  if (controller.snapshot.sessions.one?.permissions.length !== 3) {
+    throw new Error("Same-ID permission protocols were deduplicated")
+  }
 
   await controller.respondPermission("same", "once", "one", "current")
   const remaining = controller.snapshot.sessions.one?.permissions ?? []
@@ -2809,9 +3779,13 @@ Deno.test("permission reconciliation preserves failed protocols and protocol ide
   await internal.reconcilePermissions()
   await controller.respondPermission("same", "reject", "one", "v2")
   const afterV2Reject = controller.snapshot.sessions.one?.permissions ?? []
-  if (afterV2Reject.length !== 1 || afterV2Reject[0]?.protocol !== "current") throw new Error("V2 reject affected another permission system")
+  if (afterV2Reject.length !== 1 || afterV2Reject[0]?.protocol !== "current") {
+    throw new Error("V2 reject affected another permission system")
+  }
   await controller.respondPermission("other", "reject", "one", "current")
-  if (Number(controller.snapshot.sessions.one?.permissions.length) !== 0) throw new Error("Reject retained sibling requests from the same permission system")
+  if (Number(controller.snapshot.sessions.one?.permissions.length) !== 0) {
+    throw new Error("Reject retained sibling requests from the same permission system")
+  }
   controller.dispose()
 })
 
@@ -2827,15 +3801,23 @@ Deno.test("session hydration remains loading until transcript completion and exp
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   const reconciling = controller.reconcile()
-  for (let attempt = 0; attempt < 20 && controller.chatSnapshot().session?.loadState !== "loading"; attempt += 1) await Promise.resolve()
-  if (controller.chatSnapshot().session?.loadState !== "loading" || controller.chatSnapshot().session?.loaded !== false) throw new Error("Transcript hydration did not remain visible")
+  for (let attempt = 0; attempt < 20 && controller.chatSnapshot().session?.loadState !== "loading"; attempt += 1) {
+    await Promise.resolve()
+  }
+  if (
+    controller.chatSnapshot().session?.loadState !== "loading" || controller.chatSnapshot().session?.loaded !== false
+  ) throw new Error("Transcript hydration did not remain visible")
   transcript.resolve([])
   await reconciling
-  if (controller.chatSnapshot().session?.loadState !== "ready" || controller.chatSnapshot().session?.loaded !== true) throw new Error("Transcript hydration did not complete")
+  if (controller.chatSnapshot().session?.loadState !== "ready" || controller.chatSnapshot().session?.loaded !== true) {
+    throw new Error("Transcript hydration did not complete")
+  }
   const internal = controller as unknown as { loadTranscript(sessionID: string): Promise<void> }
   const refreshing = internal.loadTranscript("one")
   await Promise.resolve()
-  if (controller.chatSnapshot().session?.loadState !== "loading" || controller.chatSnapshot().session?.loaded !== true) {
+  if (
+    controller.chatSnapshot().session?.loadState !== "loading" || controller.chatSnapshot().session?.loaded !== true
+  ) {
     throw new Error("Background transcript refresh was mistaken for initial hydration")
   }
   refresh.resolve([])
@@ -2846,11 +3828,15 @@ Deno.test("session hydration remains loading until transcript completion and exp
     listSessions: async () => [session("failed", 1)],
     sessionStatuses: async () => ({}),
     catalogs: async () => ({ agents: [], models: [] }),
-    messages: async () => { throw new Error("unavailable") },
+    messages: async () => {
+      throw new Error("unavailable")
+    },
   } as unknown as OpenCodeClient
   const failedController = new SessionController(failed, { error: () => undefined })
   await failedController.reconcile()
-  if (failedController.chatSnapshot().session?.loadState !== "error") throw new Error("Transcript hydration failure was hidden")
+  if (failedController.chatSnapshot().session?.loadState !== "error") {
+    throw new Error("Transcript hydration failure was hidden")
+  }
   failedController.dispose()
 })
 
@@ -2863,22 +3849,43 @@ Deno.test("context uses actual response model limits and agent mentions remain s
       mentionAgents: [{ name: "research", mode: "subagent" }],
       models: [
         { id: "default", providerID: "acme", name: "Default", contextLimit: 1_000 },
-        { id: "actual", providerID: "acme", name: "Actual", contextLimit: 8_000, inputLimit: 7_000, outputLimit: 1_000 },
+        {
+          id: "actual",
+          providerID: "acme",
+          name: "Actual",
+          contextLimit: 8_000,
+          inputLimit: 7_000,
+          outputLimit: 1_000,
+        },
       ],
       defaults: { agent: "build", model: "acme/default" },
     }),
     messages: async () => [{
-      info: { id: "assistant", sessionID: "one", role: "assistant" as const, providerID: "acme", modelID: "actual", time: { completed: 1 }, tokens: { input: 400, output: 100 } },
+      info: {
+        id: "assistant",
+        sessionID: "one",
+        role: "assistant" as const,
+        providerID: "acme",
+        modelID: "actual",
+        time: { completed: 1 },
+        tokens: { input: 400, output: 100 },
+      },
       parts: [],
     }],
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
   const context = controller.chatSnapshot().session?.context
-  if (context?.model !== "acme/actual" || context.contextLimit !== 8_000 || context.inputLimit !== 7_000 || context.outputLimit !== 1_000) {
+  if (
+    context?.model !== "acme/actual" || context.contextLimit !== 8_000 || context.inputLimit !== 7_000 ||
+    context.outputLimit !== 1_000
+  ) {
     throw new Error("Context used composer model instead of actual response model")
   }
-  if (controller.mentionedAgents("Ask @research to inspect this").join(",") !== "research" || controller.mentionedAgents("Ask @unknown").length) {
+  if (
+    controller.mentionedAgents("Ask @research to inspect this").join(",") !== "research" ||
+    controller.mentionedAgents("Ask @unknown").length
+  ) {
     throw new Error("Agent mentions were not validated against visible subagents")
   }
   controller.dispose()
@@ -2900,7 +3907,12 @@ Deno.test("VCS events refresh branch state and deleted sessions purge private pr
   } as unknown as OpenCodeClient
   const controller = new SessionController(fake, { error: () => undefined })
   await controller.reconcile()
-  const pending = controller.send("payload", undefined, undefined, undefined, [{ type: "file", mime: "image/png", url: "data:image/png;base64,eA==", filename: "image.png" }])
+  const pending = controller.send("payload", undefined, undefined, undefined, [{
+    type: "file",
+    mime: "image/png",
+    url: "data:image/png;base64,eA==",
+    filename: "image.png",
+  }])
   const internal = controller as unknown as {
     handleEvent(event: { type: string; properties: Record<string, unknown> }): void
     promptFiles: Map<string, unknown>

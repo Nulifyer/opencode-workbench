@@ -10,8 +10,8 @@ import {
   failGoalAutoContinue,
   goalArchives,
   importLegacyGoalState,
-  pauseGoalContinuationRecovery,
   parseGoalState,
+  pauseGoalContinuationRecovery,
   recordGoalCheckpoint,
   recordGoalVerdict,
   refreshGoal,
@@ -33,7 +33,10 @@ Deno.test("native goals enforce lifecycle evidence and Plan-mode safety", async 
   equal(active.status, "active")
   const checkpoint = recordGoalCheckpoint(state, "plan-session", "Implemented the core and passed focused tests.", 103)
   equal(checkpoint.lastCheckpoint?.summary, "Implemented the core and passed focused tests.")
-  await rejects(() => Promise.resolve(closeGoal(state, "plan-session", "complete", undefined, 103)), /Completion evidence/)
+  await rejects(
+    () => Promise.resolve(closeGoal(state, "plan-session", "complete", undefined, 103)),
+    /Completion evidence/,
+  )
   const complete = closeGoal(state, "plan-session", "complete", "Focused tests and package verification passed.", 104)
   equal(complete.status, "complete")
   assert(Boolean(complete.completionEvidence))
@@ -144,19 +147,61 @@ Deno.test("completed and cancelled goals retain bounded session metrics", () => 
   equal(goalArchives(state, "session")[1]?.status, "cancelled")
 })
 
+Deno.test("goal usage remains cumulative when context compaction resets observed totals", () => {
+  const state = emptyGoalState()
+  createGoal(state, "compacted", { objective: "Track work across compaction" }, 10)
+  accountGoalTokens(state, "compacted", 1_000, 11, 100)
+  const before = accountGoalTokens(state, "compacted", 1_100, 12, 105)
+  equal(before?.tokensUsed, 100)
+  equal(before?.turnsUsed, 5)
+
+  const compacted = accountGoalTokens(state, "compacted", 20, 13, 1)
+  equal(compacted?.tokensUsed, 100)
+  equal(compacted?.turnsUsed, 5)
+  const continued = accountGoalTokens(state, "compacted", 30, 14, 3)
+  equal(continued?.tokensUsed, 110)
+  equal(continued?.turnsUsed, 7)
+})
+
 Deno.test("goal schema v2 tracks criteria, evidence, repeated blocks, and settlement continuation", () => {
   const state = emptyGoalState()
-  createGoal(state, "session", { objective: "Ship it", acceptanceCriteria: ["Tests pass"], verifier: { enabled: true, repeatedBlockThreshold: 2 }, planReference: "plan:1" }, 1)
+  createGoal(state, "session", {
+    objective: "Ship it",
+    acceptanceCriteria: ["Tests pass"],
+    verifier: { enabled: true, repeatedBlockThreshold: 2 },
+    planReference: "plan:1",
+  }, 1)
   configureGoalVerification(state, "session", { runGroupReference: "group" }, 2)
-  const first = recordGoalVerdict(state, "session", { verdict: "blocked", reason: "Test fails", missingCriteria: ["Tests pass"], confidence: "high" }, ["evidence:1"], 3)
+  const first = recordGoalVerdict(
+    state,
+    "session",
+    { verdict: "blocked", reason: "Test fails", missingCriteria: ["Tests pass"], confidence: "high" },
+    ["evidence:1"],
+    3,
+  )
   equal(first.status, "active")
   equal(first.consecutiveBlockedVerdicts, 1)
-  const second = recordGoalVerdict(state, "session", { verdict: "blocked", reason: "Test still fails", missingCriteria: ["Tests pass"], confidence: "high" }, ["evidence:2"], 4)
+  const second = recordGoalVerdict(
+    state,
+    "session",
+    { verdict: "blocked", reason: "Test still fails", missingCriteria: ["Tests pass"], confidence: "high" },
+    ["evidence:2"],
+    4,
+  )
   equal(second.status, "unmet")
   equal(second.evidenceReferences.length, 2)
   const continuationState = emptyGoalState()
   createGoal(continuationState, "continue", { objective: "Continue" }, 1)
-  equal(recordGoalVerdict(continuationState, "continue", { verdict: "continue", reason: "More work remains", missingCriteria: [], confidence: "high" }, [], 2).pendingContinuation, false)
+  equal(
+    recordGoalVerdict(
+      continuationState,
+      "continue",
+      { verdict: "continue", reason: "More work remains", missingCriteria: [], confidence: "high" },
+      [],
+      2,
+    ).pendingContinuation,
+    false,
+  )
   equal(reserveGoalAutoContinue(continuationState, "continue", 2)?.pendingContinuation, true)
   equal(commitGoalContinuation(continuationState, "continue", 3)?.pendingContinuation, false)
 })
@@ -166,7 +211,15 @@ Deno.test("goal verdict rejects a stale settlement generation atomically", async
   const created = createGoal(state, "session", { objective: "Ship it" }, 1)
   configureGoalVerification(state, "session", { acceptanceCriteria: ["Tests pass"] }, 2)
   await rejects(
-    () => recordGoalVerdict(state, "session", { verdict: "complete", reason: "Old result", missingCriteria: [], confidence: "high" }, [], 3, created.settlementGeneration),
+    () =>
+      recordGoalVerdict(
+        state,
+        "session",
+        { verdict: "complete", reason: "Old result", missingCriteria: [], confidence: "high" },
+        [],
+        3,
+        created.settlementGeneration,
+      ),
     /stale/,
   )
   equal(snapshotGoal(state.goals.session!, 3).latestVerdict, null)
@@ -180,7 +233,13 @@ Deno.test("goal configuration updates limits and independent verifier settings",
     tokenBudget: 2_000,
     maxAutoTurns: 4,
     maxDurationSeconds: 600,
-    verifier: { enabled: true, model: "provider/model", agent: "plan", timeoutMilliseconds: 45_000, repeatedBlockThreshold: 3 },
+    verifier: {
+      enabled: true,
+      model: "provider/model",
+      agent: "plan",
+      timeoutMilliseconds: 45_000,
+      repeatedBlockThreshold: 3,
+    },
   }, 2)
   equal(configured.tokenBudget, 2_000)
   equal(configured.maxAutoTurns, 4)
@@ -189,7 +248,11 @@ Deno.test("goal configuration updates limits and independent verifier settings",
   equal(configured.verifier.model, "provider/model")
   equal(configured.verifier.repeatedBlockThreshold, 3)
 
-  const unlimited = configureGoalVerification(state, "configured", { tokenBudget: null, maxAutoTurns: null, maxDurationSeconds: null }, 3)
+  const unlimited = configureGoalVerification(state, "configured", {
+    tokenBudget: null,
+    maxAutoTurns: null,
+    maxDurationSeconds: null,
+  }, 3)
   equal(unlimited.tokenBudget, null)
   equal(unlimited.maxAutoTurns, null)
   equal(unlimited.maxDurationSeconds, null)
@@ -202,12 +265,18 @@ Deno.test("goal configuration atomically updates the objective and verification 
     acceptanceCriteria: ["Original criterion"],
     verifier: { enabled: false },
   }, 1)
-  recordGoalVerdict(state, "atomic", {
-    verdict: "continue",
-    reason: "More work remains",
-    missingCriteria: ["Original criterion"],
-    confidence: "high",
-  }, ["evidence:old"], 2)
+  recordGoalVerdict(
+    state,
+    "atomic",
+    {
+      verdict: "continue",
+      reason: "More work remains",
+      missingCriteria: ["Original criterion"],
+      confidence: "high",
+    },
+    ["evidence:old"],
+    2,
+  )
   const reserved = reserveGoalAutoContinue(state, "atomic", 3, "part-old", "message-old")!
   const historyLength = reserved.history.length
 
@@ -246,23 +315,28 @@ Deno.test("goal configuration atomically updates the objective and verification 
 
 Deno.test("goal configuration rejects stale and invalid writes without mutation", async () => {
   const state = emptyGoalState()
-  const created = createGoal(state, "stale-config", { objective: "Original objective", acceptanceCriteria: ["Original criterion"] }, 1)
+  const created = createGoal(state, "stale-config", {
+    objective: "Original objective",
+    acceptanceCriteria: ["Original criterion"],
+  }, 1)
   const current = recordGoalCheckpoint(state, "stale-config", "The goal changed after the form opened.", 2)
   const beforeStale = JSON.stringify(state)
 
-  await rejects(() => configureGoalVerification(state, "stale-config", {
-    objective: "Stale objective",
-    acceptanceCriteria: ["Stale criterion"],
-    expectedSettlementGeneration: created.settlementGeneration,
-  }, 3), /stale/)
+  await rejects(() =>
+    configureGoalVerification(state, "stale-config", {
+      objective: "Stale objective",
+      acceptanceCriteria: ["Stale criterion"],
+      expectedSettlementGeneration: created.settlementGeneration,
+    }, 3), /stale/)
   equal(JSON.stringify(state), beforeStale)
 
   const beforeInvalid = JSON.stringify(state)
-  await rejects(() => configureGoalVerification(state, "stale-config", {
-    objective: "Would otherwise be applied",
-    acceptanceCriteria: ["   "],
-    expectedSettlementGeneration: current.settlementGeneration,
-  }, 3), /Acceptance criterion/)
+  await rejects(() =>
+    configureGoalVerification(state, "stale-config", {
+      objective: "Would otherwise be applied",
+      acceptanceCriteria: ["   "],
+      expectedSettlementGeneration: current.settlementGeneration,
+    }, 3), /Acceptance criterion/)
   equal(JSON.stringify(state), beforeInvalid)
 })
 

@@ -22,7 +22,9 @@ export function createOpenCodeMessageID(timestamp = Date.now()): string {
   messageIDCounter += 1
   const encoded = (BigInt(currentTimestamp) * 0x1000n + BigInt(messageIDCounter)) & 0xffffffffffffn
   const bytes = crypto.getRandomValues(new Uint8Array(OPEN_CODE_ID_RANDOM_LENGTH))
-  const random = Array.from(bytes, (byte) => OPEN_CODE_ID_RANDOM_CHARS[byte % OPEN_CODE_ID_RANDOM_CHARS.length]).join("")
+  const random = Array.from(bytes, (byte) => OPEN_CODE_ID_RANDOM_CHARS[byte % OPEN_CODE_ID_RANDOM_CHARS.length]).join(
+    "",
+  )
   return `msg_${encoded.toString(16).padStart(12, "0")}${random}`
 }
 
@@ -96,9 +98,13 @@ export function isNativeCompactionContinuationMessage(message: MessageBundle): b
   return message.parts.some((part) => {
     if (part.type !== "text" || part.synthetic !== true || typeof part.text !== "string") return false
     const metadata = part.metadata
-    if (typeof metadata === "object" && metadata !== null && !Array.isArray(metadata) &&
-      (metadata as Record<string, unknown>).compaction_continue === true) return true
-    return part.text.trimEnd().endsWith("Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.")
+    if (
+      typeof metadata === "object" && metadata !== null && !Array.isArray(metadata) &&
+      (metadata as Record<string, unknown>).compaction_continue === true
+    ) return true
+    return part.text.trimEnd().endsWith(
+      "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+    )
   })
 }
 
@@ -216,6 +222,10 @@ export interface FileChange {
   additions: number
   deletions: number
   status?: "added" | "deleted" | "modified"
+  /** Local review acknowledgement for the exact current patch signature. */
+  reviewed?: boolean
+  /** Local presentation scope; never accepted as server-side file authority. */
+  reviewScope?: "workspace" | "external"
 }
 
 export interface QuestionOption {
@@ -292,7 +302,10 @@ export function reusablePermissionScopes(request: PermissionRequest): string[] {
     candidates.add(`${parts[0]} *`)
   }
   return [...candidates]
-    .filter((candidate) => candidate.endsWith(" *") && !candidate.slice(0, -2).includes("*") && patterns.every((pattern) => permissionPatternMatches(pattern, candidate)))
+    .filter((candidate) =>
+      candidate.endsWith(" *") && !candidate.slice(0, -2).includes("*") &&
+      patterns.every((pattern) => permissionPatternMatches(pattern, candidate))
+    )
     .sort((left, right) => right.length - left.length || left.localeCompare(right))
     .concat("*")
 }
@@ -305,7 +318,9 @@ export function permissionRequestCharacters(request: PermissionRequest): number 
     return Number.POSITIVE_INFINITY
   }
   return request.id.length + request.sessionID.length + request.title.length + (request.type?.length ?? 0) +
-    (typeof request.pattern === "string" ? request.pattern.length : request.pattern?.reduce((sum, item) => sum + item.length, 0) ?? 0) +
+    (typeof request.pattern === "string"
+      ? request.pattern.length
+      : request.pattern?.reduce((sum, item) => sum + item.length, 0) ?? 0) +
     (request.always?.reduce((sum, item) => sum + item.length, 0) ?? 0) + metadata
 }
 

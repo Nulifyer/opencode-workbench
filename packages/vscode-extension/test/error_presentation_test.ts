@@ -2,7 +2,11 @@ import { assertEquals, assertStringIncludes } from "jsr:@std/assert"
 import { isUserCancellation, userFacingError } from "../src/application/error-presentation.ts"
 
 Deno.test("command errors are bounded and redact credential-shaped values", () => {
-  const presented = userFacingError(new Error("Authorization: \"Bearer abc123\"\nProxy-Authorization: 'Basic proxy-secret'\nCookie: first=one; second=two\npassword=private https://user:pass@example.com/path\nfailed"))
+  const presented = userFacingError(
+    new Error(
+      "Authorization: \"Bearer abc123\"\nProxy-Authorization: 'Basic proxy-secret'\nCookie: first=one; second=two\npassword=private https://user:pass@example.com/path\nfailed",
+    ),
+  )
   assertStringIncludes(presented, "Authorization: [redacted]")
   assertStringIncludes(presented, "password=[redacted]")
   assertStringIncludes(presented, "Cookie: [redacted]")

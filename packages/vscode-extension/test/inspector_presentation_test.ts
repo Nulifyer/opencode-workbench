@@ -38,12 +38,12 @@ function snapshot(): ChatSnapshot {
         id: "receipt",
         sessionID: "session",
         promptID: "prompt",
-      admittedAt: 10,
-      truncation: "explicit",
-      items: [
-        { id: "item", kind: "file", label: "File", uri: "file:///workspace/src/file.ts", revision: "10:20" },
-        { id: "missing", kind: "selection", label: "Unavailable selection" },
-      ],
+        admittedAt: 10,
+        truncation: "explicit",
+        items: [
+          { id: "item", kind: "file", label: "File", uri: "file:///workspace/src/file.ts", revision: "10:20" },
+          { id: "missing", kind: "selection", label: "Unavailable selection" },
+        ],
       }],
       goal: {
         sourceTool: "get_goal",
@@ -66,7 +66,10 @@ Deno.test("inspector presentation covers activity, changes, context, goal, and e
 
   const changes = inspectorPresentation(value, "changes")
   assertStringIncludes(changes.markup, "src/&lt;unsafe&gt;.ts")
-  assertStringIncludes(changes.markup, "+3 −1 · modified")
+  assertStringIncludes(changes.markup, "Unreviewed · +3 −1 · modified")
+  assertStringIncludes(changes.markup, "Review all changes")
+  assertStringIncludes(changes.markup, "Mark reviewed")
+  assertStringIncludes(changes.markup, "Timeline")
   assert(!changes.markup.includes("src/<unsafe>.ts"))
 
   const context = inspectorPresentation(value, "context", () => "STAMP")
@@ -85,7 +88,13 @@ Deno.test("inspector presentation covers activity, changes, context, goal, and e
   assertStringIncludes(goal.markup, "2/4")
   assertStringIncludes(goal.markup, "Need &amp; review")
 
-  const empty = inspectorPresentation({ connected: false, connectionState: "connecting", sessions: [], agents: [], models: [] }, "activity")
+  const empty = inspectorPresentation({
+    connected: false,
+    connectionState: "connecting",
+    sessions: [],
+    agents: [],
+    models: [],
+  }, "activity")
   assertStringIncludes(empty.markup, "Select a session to inspect.")
   assert(goal.signature !== context.signature)
 })
@@ -114,15 +123,23 @@ Deno.test("health presentation keeps the complete bounded trace and groups its f
   assertStringIncludes(markup, 'role="group" aria-label="Health actions"')
   assertStringIncludes(markup, "<span>20</span>")
   assertStringIncludes(markup, "2 event kinds across the 20 most recent sanitized events")
-  assertStringIncludes(markup, "protocol.event.published <span class=\"event-count\">×10</span>")
-  assertStringIncludes(markup, "controller.session.event <span class=\"event-count\">×10</span>")
+  assertStringIncludes(markup, 'protocol.event.published <span class="event-count">×10</span>')
+  assertStringIncludes(markup, 'controller.session.event <span class="event-count">×10</span>')
   assertEquals((markup.match(/data-health-action=/g) ?? []).length, 4)
 })
 
 Deno.test("consolidated Changes and Jobs pages expose every content lifecycle", () => {
   const value = snapshot()
   const changes = inspectorPresentation(value, "changes").markup
-  for (const marker of ["Changes &amp; quality", "Session changes", "Review findings", "Verification evidence", "Walkthrough"]) {
+  for (
+    const marker of [
+      "Changes &amp; quality",
+      "Session changes",
+      "Review findings",
+      "Verification evidence",
+      "Walkthrough",
+    ]
+  ) {
     assertStringIncludes(changes, marker)
   }
   assertStringIncludes(changes, 'data-workbench-action="review"')
@@ -130,7 +147,9 @@ Deno.test("consolidated Changes and Jobs pages expose every content lifecycle", 
   assertStringIncludes(changes, 'data-workbench-action="walkthrough"')
 
   const jobs = inspectorPresentation(value, "jobs").markup
-  for (const marker of ["Jobs &amp; runs", "Current jobs", "Isolated runs", "Session map"]) assertStringIncludes(jobs, marker)
+  for (const marker of ["Jobs &amp; runs", "Current jobs", "Isolated runs", "Session map"]) {
+    assertStringIncludes(jobs, marker)
+  }
   assertStringIncludes(jobs, 'data-workbench-action="compare-models"')
 })
 
@@ -145,9 +164,44 @@ Deno.test("inspector run presentation exposes only actions valid for pending, re
     isolation: "worktree",
     createdAt: 1,
     runs: [
-      { id: "pending", model: "one", phase: "failed", session: { sessionID: "pending", directory: "pending", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
-      { id: "kept", model: "two", phase: "completed", retained: true, session: { sessionID: "kept", directory: "/runs/kept", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
-      { id: "discarded", model: "three", phase: "cancelled", discarded: true, session: { sessionID: "discarded", directory: "/runs/discarded", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
+      {
+        id: "pending",
+        model: "one",
+        phase: "failed",
+        session: {
+          sessionID: "pending",
+          directory: "pending",
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "epoch",
+        },
+      },
+      {
+        id: "kept",
+        model: "two",
+        phase: "completed",
+        retained: true,
+        session: {
+          sessionID: "kept",
+          directory: "/runs/kept",
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "epoch",
+        },
+      },
+      {
+        id: "discarded",
+        model: "three",
+        phase: "cancelled",
+        discarded: true,
+        session: {
+          sessionID: "discarded",
+          directory: "/runs/discarded",
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "epoch",
+        },
+      },
     ],
   }]
 
@@ -175,22 +229,96 @@ Deno.test("objective comparison is sortable, export-bound, responsive, and eligi
     isolation: "worktree",
     createdAt: 1,
     runs: [
-      { id: "available", model: "zeta", phase: "completed", session: { sessionID: "available-session", directory: "/run/available", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
-      { id: "pending", model: "alpha", phase: "preparing", session: { sessionID: "pending", directory: "/run/pending", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
-      { id: "discarded", model: "beta", phase: "cancelled", discarded: true, session: { sessionID: "discarded-session", directory: "/run/discarded", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
-      { id: "retained", model: "gamma", phase: "completed", retained: true, session: { sessionID: "retained-session", directory: "/run/retained", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
+      {
+        id: "available",
+        model: "zeta",
+        phase: "completed",
+        session: {
+          sessionID: "available-session",
+          directory: "/run/available",
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "epoch",
+        },
+      },
+      {
+        id: "pending",
+        model: "alpha",
+        phase: "preparing",
+        session: {
+          sessionID: "pending",
+          directory: "/run/pending",
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "epoch",
+        },
+      },
+      {
+        id: "discarded",
+        model: "beta",
+        phase: "cancelled",
+        discarded: true,
+        session: {
+          sessionID: "discarded-session",
+          directory: "/run/discarded",
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "epoch",
+        },
+      },
+      {
+        id: "retained",
+        model: "gamma",
+        phase: "completed",
+        retained: true,
+        session: {
+          sessionID: "retained-session",
+          directory: "/run/retained",
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "epoch",
+        },
+      },
     ],
   }]
-  const row = (runID: string, model: string, tokens?: number, cost?: number): RunComparisonRow => ({ runID, model, status: "completed", elapsedMilliseconds: tokens, changedFiles: tokens ?? 0, additions: tokens ?? 0, deletions: 0, taskOutcomes: "not-recorded", diagnostics: "not-recorded", tokens, cost, complete: true })
-  const rows = [row("available", "zeta", 20, 2), row("pending", "alpha", undefined, undefined), row("discarded", "beta", 10, 1), row("retained", "gamma", 30, 3)]
+  const row = (runID: string, model: string, tokens?: number, cost?: number): RunComparisonRow => ({
+    runID,
+    model,
+    status: "completed",
+    elapsedMilliseconds: tokens,
+    changedFiles: tokens ?? 0,
+    additions: tokens ?? 0,
+    deletions: 0,
+    taskOutcomes: "not-recorded",
+    diagnostics: "not-recorded",
+    tokens,
+    cost,
+    complete: true,
+  })
+  const rows = [
+    row("available", "zeta", 20, 2),
+    row("pending", "alpha", undefined, undefined),
+    row("discarded", "beta", 10, 1),
+    row("retained", "gamma", 30, 3),
+  ]
   value.runComparisons = [{ artifactID: "comparison", revision: 4, groupID: "group", rows, updatedAt: 2 }]
 
-  assertEquals(sortRunComparisonRows(rows, { key: "cost", direction: "descending" }).map((entry) => entry.runID), ["retained", "available", "discarded", "pending"])
-  const markup = inspectorPresentation(value, "runs", undefined, { comparisonSorts: { comparison: { key: "tokens", direction: "descending" } } }).markup
+  assertEquals(sortRunComparisonRows(rows, { key: "cost", direction: "descending" }).map((entry) => entry.runID), [
+    "retained",
+    "available",
+    "discarded",
+    "pending",
+  ])
+  const markup = inspectorPresentation(value, "runs", undefined, {
+    comparisonSorts: { comparison: { key: "tokens", direction: "descending" } },
+  }).markup
   assertStringIncludes(markup, 'aria-sort="descending"')
   assertStringIncludes(markup, 'data-comparison-sort="tokens"')
   assertStringIncludes(markup, "Sort rows <select")
-  assertStringIncludes(markup, 'data-run-action="export-comparison" data-comparison-artifact-id="comparison" data-comparison-revision="4"')
+  assertStringIncludes(
+    markup,
+    'data-run-action="export-comparison" data-comparison-artifact-id="comparison" data-comparison-revision="4"',
+  )
   assertStringIncludes(markup, "No winner or score is inferred.")
   assert(markup.indexOf('data-run-id="retained"') < markup.indexOf('data-run-id="available"'))
   const comparisonRow = (runID: string): string => {
@@ -201,9 +329,13 @@ Deno.test("objective comparison is sortable, export-bound, responsive, and eligi
     assertStringIncludes(comparisonRow(runID), "Unavailable")
     assert(!comparisonRow(runID).includes("data-run-action"))
   }
-  for (const action of ["open", "diff", "review"]) assertStringIncludes(comparisonRow("retained"), `data-run-action="${action}"`)
+  for (const action of ["open", "diff", "review"]) {
+    assertStringIncludes(comparisonRow("retained"), `data-run-action="${action}"`)
+  }
   for (const action of ["keep", "discard"]) assert(!comparisonRow("retained").includes(`data-run-action="${action}"`))
-  for (const action of ["open", "diff", "review", "keep", "discard"]) assertStringIncludes(comparisonRow("available"), `data-run-action="${action}"`)
+  for (const action of ["open", "diff", "review", "keep", "discard"]) {
+    assertStringIncludes(comparisonRow("available"), `data-run-action="${action}"`)
+  }
 })
 
 Deno.test("inspector run presentation exposes standalone worktree failures as exact focus targets", () => {
@@ -232,15 +364,70 @@ Deno.test("inspector run presentation exposes standalone worktree failures as ex
 Deno.test("inspector lineage and Jobs include OpenCode grandchildren, cycles, and standalone worktrees", () => {
   const value = snapshot()
   value.lineage = [
-    { sessionID: "session", rootID: "session", depth: 0, relation: "root", title: "Root", status: { type: "idle" }, updatedAt: 10 },
-    { sessionID: "child", parentID: "session", rootID: "session", depth: 1, relation: "child", title: "Child", status: { type: "idle" }, updatedAt: 9 },
-    { sessionID: "grandchild", parentID: "child", rootID: "session", depth: 2, relation: "child", title: "Grandchild", status: { type: "busy" }, updatedAt: 11, tokens: 123, cost: 0.25 },
-    { sessionID: "cycle-a", parentID: "cycle-b", rootID: "cycle-a", depth: 1, relation: "child", title: "Cycle A", status: { type: "idle" }, updatedAt: 2 },
-    { sessionID: "cycle-b", parentID: "cycle-a", rootID: "cycle-a", depth: 1, relation: "child", title: "Cycle B", status: { type: "idle" }, updatedAt: 1 },
+    {
+      sessionID: "session",
+      rootID: "session",
+      depth: 0,
+      relation: "root",
+      title: "Root",
+      status: { type: "idle" },
+      updatedAt: 10,
+    },
+    {
+      sessionID: "child",
+      parentID: "session",
+      rootID: "session",
+      depth: 1,
+      relation: "child",
+      title: "Child",
+      status: { type: "idle" },
+      updatedAt: 9,
+    },
+    {
+      sessionID: "grandchild",
+      parentID: "child",
+      rootID: "session",
+      depth: 2,
+      relation: "child",
+      title: "Grandchild",
+      status: { type: "busy" },
+      updatedAt: 11,
+      tokens: 123,
+      cost: 0.25,
+    },
+    {
+      sessionID: "cycle-a",
+      parentID: "cycle-b",
+      rootID: "cycle-a",
+      depth: 1,
+      relation: "child",
+      title: "Cycle A",
+      status: { type: "idle" },
+      updatedAt: 2,
+    },
+    {
+      sessionID: "cycle-b",
+      parentID: "cycle-a",
+      rootID: "cycle-a",
+      depth: 1,
+      relation: "child",
+      title: "Cycle B",
+      status: { type: "idle" },
+      updatedAt: 1,
+    },
   ]
   value.worktrees = [{
-    id: "orphan-worktree", mutationID: "mutation", owner: "workbench", repository: "/repo", repositoryID: "git:repo",
-    path: "/repo-worktrees/orphan", branch: "workbench/orphan", baseRef: "main", phase: "cleanup-pending", createdAt: 1, updatedAt: 2,
+    id: "orphan-worktree",
+    mutationID: "mutation",
+    owner: "workbench",
+    repository: "/repo",
+    repositoryID: "git:repo",
+    path: "/repo-worktrees/orphan",
+    branch: "workbench/orphan",
+    baseRef: "main",
+    phase: "cleanup-pending",
+    createdAt: 1,
+    updatedAt: 2,
   }]
 
   const jobs = inspectorPresentation(value, "jobs").markup
@@ -266,24 +453,103 @@ Deno.test("inspector lineage and Jobs include OpenCode grandchildren, cycles, an
 Deno.test("Jobs needs-input controls route to the session projecting aggregated attention", () => {
   const value = snapshot()
   value.session!.delegations = [{
-    partID: "part-delegated", sessionID: "delegated", title: "Delegated attention", status: { type: "idle" }, messages: [], revision: 1,
+    partID: "part-delegated",
+    sessionID: "delegated",
+    title: "Delegated attention",
+    status: { type: "idle" },
+    messages: [],
+    revision: 1,
   }]
   value.session!.questions = [{
-    id: "question", sessionID: "delegated", protocol: "v2",
+    id: "question",
+    sessionID: "delegated",
+    protocol: "v2",
     questions: [{ header: "Choice", question: "Continue?", options: [{ label: "Yes", description: "Proceed" }] }],
   }]
   value.lineage = [
-    { sessionID: "session", rootID: "session", depth: 0, relation: "root", title: "Selected root", status: { type: "idle" }, updatedAt: 10 },
-    { sessionID: "child-attention", parentID: "session", rootID: "session", depth: 1, relation: "child", title: "Child attention", status: { type: "idle" }, updatedAt: 9, questionCount: 1 },
-    { sessionID: "grandchild", parentID: "child-attention", rootID: "session", depth: 2, relation: "child", title: "Grandchild work", status: { type: "busy" }, updatedAt: 8 },
-    { sessionID: "run-root", rootID: "run-root", depth: 0, relation: "root", title: "Run root", status: { type: "idle" }, updatedAt: 7 },
-    { sessionID: "run-child", parentID: "run-root", rootID: "run-root", depth: 1, relation: "child", title: "Run child", status: { type: "idle" }, updatedAt: 6 },
+    {
+      sessionID: "session",
+      rootID: "session",
+      depth: 0,
+      relation: "root",
+      title: "Selected root",
+      status: { type: "idle" },
+      updatedAt: 10,
+    },
+    {
+      sessionID: "child-attention",
+      parentID: "session",
+      rootID: "session",
+      depth: 1,
+      relation: "child",
+      title: "Child attention",
+      status: { type: "idle" },
+      updatedAt: 9,
+      questionCount: 1,
+    },
+    {
+      sessionID: "grandchild",
+      parentID: "child-attention",
+      rootID: "session",
+      depth: 2,
+      relation: "child",
+      title: "Grandchild work",
+      status: { type: "busy" },
+      updatedAt: 8,
+    },
+    {
+      sessionID: "run-root",
+      rootID: "run-root",
+      depth: 0,
+      relation: "root",
+      title: "Run root",
+      status: { type: "idle" },
+      updatedAt: 7,
+    },
+    {
+      sessionID: "run-child",
+      parentID: "run-root",
+      rootID: "run-root",
+      depth: 1,
+      relation: "child",
+      title: "Run child",
+      status: { type: "idle" },
+      updatedAt: 6,
+    },
   ]
   value.runGroups = [{
-    id: "group", title: "Runs", repository: "/repo", baseRef: "main", promptReceiptID: "receipt", isolation: "worktree", createdAt: 1,
+    id: "group",
+    title: "Runs",
+    repository: "/repo",
+    baseRef: "main",
+    promptReceiptID: "receipt",
+    isolation: "worktree",
+    createdAt: 1,
     runs: [
-      { id: "rooted", model: "Rooted run", phase: "needs-input", session: { sessionID: "run-child", directory: "/run/rooted", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
-      { id: "bounded", model: "Bounded run", phase: "needs-input", session: { sessionID: "run-bounded", directory: "/run/bounded", experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" } },
+      {
+        id: "rooted",
+        model: "Rooted run",
+        phase: "needs-input",
+        session: {
+          sessionID: "run-child",
+          directory: "/run/rooted",
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "epoch",
+        },
+      },
+      {
+        id: "bounded",
+        model: "Bounded run",
+        phase: "needs-input",
+        session: {
+          sessionID: "run-bounded",
+          directory: "/run/bounded",
+          experience: "workbench",
+          transport: "http-sse",
+          runtimeEpoch: "epoch",
+        },
+      },
     ],
   }]
 
@@ -305,13 +571,47 @@ Deno.test("Jobs needs-input controls route to the session projecting aggregated 
 Deno.test("inspector review exposes bounded finding triage and hides archived artifacts", () => {
   const value = snapshot()
   value.artifacts = [
-    { schemaVersion: 1, id: "active-review", kind: "review", sessionID: "session", lifecycle: "active", revision: 3, createdAt: 1, updatedAt: 4, state: "ready", itemCount: 1, stale: false },
-    { schemaVersion: 1, id: "archived-review", kind: "review", sessionID: "session", lifecycle: "archived", revision: 2, createdAt: 1, updatedAt: 3, state: "ready", itemCount: 1, stale: false },
+    {
+      schemaVersion: 1,
+      id: "active-review",
+      kind: "review",
+      sessionID: "session",
+      lifecycle: "active",
+      revision: 3,
+      createdAt: 1,
+      updatedAt: 4,
+      state: "ready",
+      itemCount: 1,
+      stale: false,
+    },
+    {
+      schemaVersion: 1,
+      id: "archived-review",
+      kind: "review",
+      sessionID: "session",
+      lifecycle: "archived",
+      revision: 2,
+      createdAt: 1,
+      updatedAt: 3,
+      state: "ready",
+      itemCount: 1,
+      stale: false,
+    },
   ]
   value.reviewFindings = [{
-    sessionID: "session", artifactID: "active-review", artifactRevision: 3, artifactUpdatedAt: 4, stale: false,
-    diffHash: `sha256:${"a".repeat(64)}`, findingID: "finding", title: "Unsafe <input>", detail: "Validate & reject it.",
-    category: "security", severity: "critical", anchors: [{ file: "src/main.ts", side: "modified", startLine: 2, endLine: 3 }], disposition: "open",
+    sessionID: "session",
+    artifactID: "active-review",
+    artifactRevision: 3,
+    artifactUpdatedAt: 4,
+    stale: false,
+    diffHash: `sha256:${"a".repeat(64)}`,
+    findingID: "finding",
+    title: "Unsafe <input>",
+    detail: "Validate & reject it.",
+    category: "security",
+    severity: "critical",
+    anchors: [{ file: "src/main.ts", side: "modified", startLine: 2, endLine: 3 }],
+    disposition: "open",
   }]
 
   const markup = inspectorPresentation(value, "review").markup
@@ -324,7 +624,10 @@ Deno.test("inspector review exposes bounded finding triage and hides archived ar
   assertStringIncludes(markup, 'data-review-filter="severity"')
   assertStringIncludes(markup, 'data-review-filter="category"')
   assertStringIncludes(markup, 'data-review-filter="disposition"')
-  assertStringIncludes(markup, 'data-review-severity="critical" data-review-category="security" data-review-disposition="open"')
+  assertStringIncludes(
+    markup,
+    'data-review-severity="critical" data-review-category="security" data-review-disposition="open"',
+  )
   assertStringIncludes(markup, 'role="status" aria-live="polite" data-review-filter-status')
   assertStringIncludes(markup, "1 archived review artifact is hidden")
   assert(!markup.includes('data-artifact-row="archived-review"'))
@@ -333,8 +636,32 @@ Deno.test("inspector review exposes bounded finding triage and hides archived ar
 Deno.test("inspector walkthrough presentation is deterministic, escaped, and newest-first", () => {
   const value = snapshot()
   value.walkthroughs = [
-    { id: "older", diffHash: "aaaaaaaaaaaaaaaa", model: "one", promptVersion: "1", language: "en", generatedAt: 1, coverage: "complete", stops: [{ id: "old", title: "Old", explanation: "Old", importance: "normal", anchors: [] }] },
-    { id: "newer", diffHash: "bbbbbbbbbbbbbbbb", model: "two", promptVersion: "1", language: "en", generatedAt: 2, coverage: "partial", stops: [{ id: "new", title: "New <step>", explanation: "Check & verify", importance: "key-change", anchors: [{ file: "a.ts", side: "modified", startLine: 1, endLine: 1 }] }] },
+    {
+      id: "older",
+      diffHash: "aaaaaaaaaaaaaaaa",
+      model: "one",
+      promptVersion: "1",
+      language: "en",
+      generatedAt: 1,
+      coverage: "complete",
+      stops: [{ id: "old", title: "Old", explanation: "Old", importance: "normal", anchors: [] }],
+    },
+    {
+      id: "newer",
+      diffHash: "bbbbbbbbbbbbbbbb",
+      model: "two",
+      promptVersion: "1",
+      language: "en",
+      generatedAt: 2,
+      coverage: "partial",
+      stops: [{
+        id: "new",
+        title: "New <step>",
+        explanation: "Check & verify",
+        importance: "key-change",
+        anchors: [{ file: "a.ts", side: "modified", startLine: 1, endLine: 1 }],
+      }],
+    },
   ]
   const presentation = inspectorPresentation(value, "walkthrough", (value) => `T${value}`)
 
@@ -363,7 +690,18 @@ Deno.test("inspector names records omitted by a bounded transport projection", (
 
 Deno.test("context presentation labels unavailable provider usage without hiding known limits", () => {
   const value = snapshot()
-  value.session!.context = { ...value.session!.context!, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, usageReported: false, usagePercent: undefined, contextLimit: 500_000 }
+  value.session!.context = {
+    ...value.session!.context!,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    usageReported: false,
+    usagePercent: undefined,
+    contextLimit: 500_000,
+  }
   const markup = inspectorPresentation(value, "context").markup
   assertStringIncludes(markup, "Not reported")
   assertStringIncludes(markup, "500,000")

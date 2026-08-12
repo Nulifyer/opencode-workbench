@@ -3,8 +3,8 @@ import {
   type Preference,
   type PreferenceCategory,
   type Provenance,
-  type Scope,
   sameScope,
+  type Scope,
   visibleInProject,
 } from "./model.ts"
 import { LIMITS, validateDurableText, validatePreferenceKey } from "./security.ts"
@@ -42,8 +42,10 @@ export function proposePreference(
 
 function supersedeApproved(state: PluginState, replacement: Preference, now: number): void {
   for (const preference of state.preferences) {
-    if (preference.status === "approved" && sameScope(preference.scope, replacement.scope) &&
-      preference.category === replacement.category && preference.key === replacement.key) {
+    if (
+      preference.status === "approved" && sameScope(preference.scope, replacement.scope) &&
+      preference.category === replacement.category && preference.key === replacement.key
+    ) {
       preference.status = "superseded"
       preference.supersededAt = now
       preference.supersededBy = replacement.id
@@ -98,7 +100,9 @@ export function listPreferences(state: PluginState, query: PreferenceQuery): Pre
     if (query.scope && query.scope !== "all" && preference.scope.kind !== query.scope) return false
     if (query.category && preference.category !== query.category) return false
     if (query.status && preference.status !== query.status) return false
-    if (term && !`${preference.category} ${preference.key} ${preference.value}`.toLocaleLowerCase().includes(term)) return false
+    if (term && !`${preference.category} ${preference.key} ${preference.value}`.toLocaleLowerCase().includes(term)) {
+      return false
+    }
     return true
   }).sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
 }

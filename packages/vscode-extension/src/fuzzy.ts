@@ -8,10 +8,17 @@ function boundaryBonus(value: string, index: number): number {
   return 0
 }
 
-function scorePrepared(needle: string, candidate: string, haystack: string, scratch?: { previous: Float64Array; next: Float64Array }): number | undefined {
+function scorePrepared(
+  needle: string,
+  candidate: string,
+  haystack: string,
+  scratch?: { previous: Float64Array; next: Float64Array },
+): number | undefined {
   if (!needle) return -candidate.length
   if (needle.length > haystack.length) return undefined
-  let previous = scratch && scratch.previous.length >= candidate.length ? scratch.previous : new Float64Array(candidate.length)
+  let previous = scratch && scratch.previous.length >= candidate.length
+    ? scratch.previous
+    : new Float64Array(candidate.length)
   let next = scratch && scratch.next.length >= candidate.length ? scratch.next : new Float64Array(candidate.length)
   previous.fill(Number.NEGATIVE_INFINITY, 0, candidate.length)
   for (let index = 0; index < candidate.length; index += 1) {
@@ -23,9 +30,10 @@ function scorePrepared(needle: string, candidate: string, haystack: string, scra
     for (let index = 0; index < candidate.length; index += 1) {
       if (index > 0) best = Math.max(best - 1, previous[index - 1]!)
       if (haystack[index] !== needle[queryIndex] || !Number.isFinite(best)) continue
-      const consecutive = index > 0 && haystack[index - 1] === needle[queryIndex - 1] && Number.isFinite(previous[index - 1]!)
-        ? previous[index - 1]! + 24
-        : Number.NEGATIVE_INFINITY
+      const consecutive =
+        index > 0 && haystack[index - 1] === needle[queryIndex - 1] && Number.isFinite(previous[index - 1]!)
+          ? previous[index - 1]! + 24
+          : Number.NEGATIVE_INFINITY
       next[index] = 16 + boundaryBonus(candidate, index) + Math.max(best, consecutive)
     }
     const swap = previous
@@ -79,7 +87,8 @@ export function rankPreparedFzf(query: string, index: PreparedFzfIndex, limit = 
   const scratch = { previous: new Float64Array(index.maxLength), next: new Float64Array(index.maxLength) }
   const best: Array<{ candidate: string; score: number }> = []
   const compare = (left: { candidate: string; score: number }, right: { candidate: string; score: number }) =>
-    right.score - left.score || left.candidate.length - right.candidate.length || left.candidate.localeCompare(right.candidate)
+    right.score - left.score || left.candidate.length - right.candidate.length ||
+    left.candidate.localeCompare(right.candidate)
   for (const candidate of index.candidates) {
     const score = scorePrepared(needle, candidate.value, candidate.lower, scratch)
     if (score === undefined) continue

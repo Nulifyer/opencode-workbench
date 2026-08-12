@@ -26,7 +26,10 @@ Deno.test("pinned ACP fixture records the provider-free OpenCode contract", asyn
   assert(contract.opencode.version === "1.18.15", "ACP fixture must remain pinned to OpenCode 1.18.15")
   assert(contract.opencode.acpSdkVersion === "0.21.0", "ACP SDK version drifted")
   assert(contract.opencode.protocolVersion === 1, "ACP protocol version drifted")
-  assert(contract.providerRequestMode === "disabled" && !contract.modelPromptProbe.enabled, "Default fixture sent a provider/model request")
+  assert(
+    contract.providerRequestMode === "disabled" && !contract.modelPromptProbe.enabled,
+    "Default fixture sent a provider/model request",
+  )
 
   const expectedRequests = [
     "authenticate",
@@ -42,12 +45,30 @@ Deno.test("pinned ACP fixture records the provider-free OpenCode contract", asyn
     "session/set_model",
     "workbench/unknown",
   ]
-  assert(JSON.stringify(contract.protocol.agentRequestMethods) === JSON.stringify(expectedRequests), "ACP request method inventory drifted")
-  assert(JSON.stringify(contract.protocol.agentNotificationMethods) === JSON.stringify(["session/cancel"]), "ACP notification inventory drifted")
-  assert(JSON.stringify(contract.protocol.clientNotificationMethods) === JSON.stringify(["session/update"]), "ACP client notification inventory drifted")
-  assert(contract.protocol.clientRequestMethods.length === 0, "Provider-free recording unexpectedly triggered a client request")
-  assert(!contract.protocol.agentRequestMethods.includes("session/prompt"), "Provider-free recording contains session/prompt")
-  assert(contract.protocol.unknownMethodErrorCode === -32601 && contract.protocol.invalidParamsErrorCode === -32602, "JSON-RPC error contract drifted")
+  assert(
+    JSON.stringify(contract.protocol.agentRequestMethods) === JSON.stringify(expectedRequests),
+    "ACP request method inventory drifted",
+  )
+  assert(
+    JSON.stringify(contract.protocol.agentNotificationMethods) === JSON.stringify(["session/cancel"]),
+    "ACP notification inventory drifted",
+  )
+  assert(
+    JSON.stringify(contract.protocol.clientNotificationMethods) === JSON.stringify(["session/update"]),
+    "ACP client notification inventory drifted",
+  )
+  assert(
+    contract.protocol.clientRequestMethods.length === 0,
+    "Provider-free recording unexpectedly triggered a client request",
+  )
+  assert(
+    !contract.protocol.agentRequestMethods.includes("session/prompt"),
+    "Provider-free recording contains session/prompt",
+  )
+  assert(
+    contract.protocol.unknownMethodErrorCode === -32601 && contract.protocol.invalidParamsErrorCode === -32602,
+    "JSON-RPC error contract drifted",
+  )
   assert(contract.protocol.malformedInputSurvived, "ACP process did not recover from malformed NDJSON")
   assert(contract.protocol.simultaneousProcesses, "ACP simultaneous-process probe failed")
   assert(contract.protocol.terminatedProcessObserved, "ACP termination probe failed")
@@ -58,16 +79,28 @@ Deno.test("ACP fixture proves sessions, plugin commands, and restart persistence
   assert(contract.session.persistedAcrossRestart, "ACP session did not persist across restart")
   assert(contract.session.forkReturnedDistinctID, "ACP fork reused the source session ID")
   assert(contract.session.listFilteredByWorkingDirectory, "ACP session/list ignored cwd filtering")
-  assert(JSON.stringify(contract.session.configOptionIDs) === JSON.stringify(["mode", "model"]), "ACP config options drifted")
+  assert(
+    JSON.stringify(contract.session.configOptionIDs) === JSON.stringify(["mode", "model"]),
+    "ACP config options drifted",
+  )
   assert(JSON.stringify(contract.session.modeIDs) === JSON.stringify(["build", "plan"]), "ACP mode inventory drifted")
   assert(contract.session.modelSelection, "ACP model selection was not proven")
   assert(!contract.session.variantSelection, "The fixture should not claim an unobserved variant selector")
   for (const command of ["goal", "goal-unlimited"]) {
     assert(contract.session.availableCommands.includes(command), `Companion plugin command ${command} is missing`)
   }
-  assert(!contract.session.undoAdvertised && !contract.session.redoAdvertised, "ACP unexpectedly advertised /undo or /redo")
-  assert(contract.processes.filter((process) => process.cleanExit).length === 3, "Expected three clean ACP process exits")
-  assert(contract.processes.some((process) => process.name === "terminated" && !process.cleanExit), "Terminated process was not recorded")
+  assert(
+    !contract.session.undoAdvertised && !contract.session.redoAdvertised,
+    "ACP unexpectedly advertised /undo or /redo",
+  )
+  assert(
+    contract.processes.filter((process) => process.cleanExit).length === 3,
+    "Expected three clean ACP process exits",
+  )
+  assert(
+    contract.processes.some((process) => process.name === "terminated" && !process.cleanExit),
+    "Terminated process was not recorded",
+  )
 })
 
 Deno.test("ACP capability classifications are complete, honest, and sanitized", async () => {
@@ -93,10 +126,21 @@ Deno.test("ACP capability classifications are complete, honest, and sanitized", 
     "malformed input recovery",
     "process crash recovery",
   ]
-  assert(JSON.stringify(sorted(contract.classifications.map((entry) => entry.capability))) === JSON.stringify(sorted(required)), "ACP capability matrix is incomplete")
-  assert(contract.classifications.every((entry) => ["supported", "mapped", "missing", "unknown"].includes(entry.classification)), "ACP fixture contains an invalid classification")
+  assert(
+    JSON.stringify(sorted(contract.classifications.map((entry) => entry.capability))) ===
+      JSON.stringify(sorted(required)),
+    "ACP capability matrix is incomplete",
+  )
+  assert(
+    contract.classifications.every((entry) =>
+      ["supported", "mapped", "missing", "unknown"].includes(entry.classification)
+    ),
+    "ACP fixture contains an invalid classification",
+  )
   const serialized = JSON.stringify(contract)
-  for (const forbidden of [/\/home\//, /\/tmp\//, /ses_[0-9A-Za-z]+/, /(?:token|secret|password|credential)[=:][^,}\s]+/i]) {
+  for (
+    const forbidden of [/\/home\//, /\/tmp\//, /ses_[0-9A-Za-z]+/, /(?:token|secret|password|credential)[=:][^,}\s]+/i]
+  ) {
     assert(!forbidden.test(serialized), `ACP fixture contains unsanitized data matching ${forbidden}`)
   }
 })
@@ -113,5 +157,8 @@ Deno.test("installed OpenCode ACP matches the pinned fixture when explicitly ena
   })
   const expectedSignature = JSON.stringify(contractCompatibilitySignature(expected))
   const actualSignature = JSON.stringify(contractCompatibilitySignature(actual))
-  assert(actualSignature === expectedSignature, `OpenCode ACP contract drifted. Re-record only after reviewing the diff.\nExpected: ${expectedSignature}\nActual: ${actualSignature}`)
+  assert(
+    actualSignature === expectedSignature,
+    `OpenCode ACP contract drifted. Re-record only after reviewing the diff.\nExpected: ${expectedSignature}\nActual: ${actualSignature}`,
+  )
 })

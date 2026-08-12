@@ -4,8 +4,14 @@ import { lstat, open, readlink } from "node:fs/promises"
 import type { DiffFileSummary, DiffScope, DiffSnapshot } from "@opencode-workbench/shared"
 import type { GitResult, GitRunner } from "./worktree-service.js"
 
-export interface DiffCapture { snapshot: DiffSnapshot; unifiedDiff: string }
-export interface DiffBaseline { headRef: string; clean: boolean }
+export interface DiffCapture {
+  snapshot: DiffSnapshot
+  unifiedDiff: string
+}
+export interface DiffBaseline {
+  headRef: string
+  clean: boolean
+}
 
 const MAXIMUM_NATIVE_DIFF_TEXT_BYTES = 8 * 1024 * 1024
 
@@ -32,7 +38,9 @@ export function parseGitNumstatZ(value: string): DiffFileSummary[] {
     const addedEnd = value.indexOf("\t", offset)
     const removedEnd = addedEnd < 0 ? -1 : value.indexOf("\t", addedEnd + 1)
     const pathEnd = removedEnd < 0 ? -1 : value.indexOf("\0", removedEnd + 1)
-    if (addedEnd < 0 || removedEnd < 0 || pathEnd < 0) throw new Error("Git returned unterminated NUL-delimited numstat metadata")
+    if (addedEnd < 0 || removedEnd < 0 || pathEnd < 0) {
+      throw new Error("Git returned unterminated NUL-delimited numstat metadata")
+    }
     const added = count(value.slice(offset, addedEnd))
     const removed = count(value.slice(addedEnd + 1, removedEnd))
     let file = value.slice(removedEnd + 1, pathEnd)
@@ -72,19 +80,30 @@ function patchSections(unifiedDiff: string): string[] {
   return sections
 }
 
-function files(unifiedDiff: string, summaries: DiffFileSummary[]): { files: DiffFileSummary[]; complete: boolean; truncationReason?: string } {
+function files(
+  unifiedDiff: string,
+  summaries: DiffFileSummary[],
+): { files: DiffFileSummary[]; complete: boolean; truncationReason?: string } {
   const result: DiffFileSummary[] = summaries.map((summary) => ({ ...summary, hunks: [] }))
   const sections = patchSections(unifiedDiff)
   const uniquePaths = new Set(result.map((summary) => summary.path))
-  if (sections.length !== result.length || uniquePaths.size !== result.length) return {
-    files: result,
-    complete: false,
-    truncationReason: "Git diff content could not be reconciled with its NUL-delimited file metadata",
+  if (sections.length !== result.length || uniquePaths.size !== result.length) {
+    return {
+      files: result,
+      complete: false,
+      truncationReason: "Git diff content could not be reconciled with its NUL-delimited file metadata",
+    }
   }
   for (let index = 0; index < sections.length; index++) {
     for (const line of sections[index]!.split("\n")) {
       const hunk = /^@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@/.exec(line)
-      if (hunk) result[index]!.hunks!.push({ header: line.slice(0, 1_024), oldRange: range(hunk[1]!), newRange: range(hunk[2]!) })
+      if (hunk) {
+        result[index]!.hunks!.push({
+          header: line.slice(0, 1_024),
+          oldRange: range(hunk[1]!),
+          newRange: range(hunk[2]!),
+        })
+      }
     }
   }
   return { files: result, complete: true }
@@ -113,7 +132,9 @@ async function allowNoIndexDifference(git: GitRunner, args: string[], repository
     return await git.run(args, repository)
   } catch (error) {
     const failure = gitFailure(error)
-    if (failure.code === 1 && typeof failure.stdout === "string") return { stdout: failure.stdout, stderr: typeof failure.stderr === "string" ? failure.stderr : "" }
+    if (failure.code === 1 && typeof failure.stdout === "string") {
+      return { stdout: failure.stdout, stderr: typeof failure.stderr === "string" ? failure.stderr : "" }
+    }
     throw error
   }
 }
@@ -134,34 +155,50 @@ async function captureUntracked(
   let unifiedDiff = ""
   const summaries: DiffFileSummary[] = []
   const candidates = names.slice(0, maximumFiles)
-  if (maximumBytes <= 0 && candidates.length) return {
-    unifiedDiff,
-    files: summaries,
-    complete: false,
-    truncationReason: "Untracked diff exceeds the complete diff byte limit",
-  }
-  for (const file of candidates) {
-    const [diff, stats] = await Promise.all([
-      allowNoIndexDifference(git, ["diff", "--no-index", "--binary", "--full-index", "--", "/dev/null", file], repository),
-      allowNoIndexDifference(git, ["diff", "--no-index", "--numstat", "-z", "--", "/dev/null", file], repository),
-    ])
-    const nextDiff = appendDiff(unifiedDiff, diff.stdout)
-    if (Buffer.byteLength(nextDiff) > maximumBytes) return {
+  if (maximumBytes <= 0 && candidates.length) {
+    return {
       unifiedDiff,
       files: summaries,
       complete: false,
       truncationReason: "Untracked diff exceeds the complete diff byte limit",
     }
+  }
+  for (const file of candidates) {
+    const [diff, stats] = await Promise.all([
+      allowNoIndexDifference(
+        git,
+        ["diff", "--no-index", "--binary", "--full-index", "--", "/dev/null", file],
+        repository,
+      ),
+      allowNoIndexDifference(git, ["diff", "--no-index", "--numstat", "-z", "--", "/dev/null", file], repository),
+    ])
+    const nextDiff = appendDiff(unifiedDiff, diff.stdout)
+    if (Buffer.byteLength(nextDiff) > maximumBytes) {
+      return {
+        unifiedDiff,
+        files: summaries,
+        complete: false,
+        truncationReason: "Untracked diff exceeds the complete diff byte limit",
+      }
+    }
     const parsed = parseGitNumstatZ(stats.stdout)
     if (parsed.length !== 1) throw new Error("Git returned unexpected numstat metadata for an untracked file")
-    summaries.push({ path: file, additions: parsed[0]!.additions, deletions: parsed[0]!.deletions, binary: parsed[0]!.binary, hunks: [] })
+    summaries.push({
+      path: file,
+      additions: parsed[0]!.additions,
+      deletions: parsed[0]!.deletions,
+      binary: parsed[0]!.binary,
+      hunks: [],
+    })
     unifiedDiff = nextDiff
   }
-  if (names.length > candidates.length) return {
-    unifiedDiff,
-    files: summaries,
-    complete: false,
-    truncationReason: `Untracked file count exceeds the ${maximumFiles}-file complete diff limit`,
+  if (names.length > candidates.length) {
+    return {
+      unifiedDiff,
+      files: summaries,
+      complete: false,
+      truncationReason: `Untracked file count exceeds the ${maximumFiles}-file complete diff limit`,
+    }
   }
   return { unifiedDiff, files: summaries, complete: true }
 }
@@ -172,12 +209,22 @@ export class DiffService {
   async captureTurnBaseline(repository: string): Promise<DiffBaseline> {
     const result = await this.git.run(["rev-parse", "--verify", "HEAD^{commit}"], repository)
     const headRef = result.stdout.trim()
-    if (!/^[0-9a-f]{40,64}$/i.test(headRef)) throw new Error("Git did not return a valid commit identity for the turn baseline")
+    if (!/^[0-9a-f]{40,64}$/i.test(headRef)) {
+      throw new Error("Git did not return a valid commit identity for the turn baseline")
+    }
     const capture = await this.capture({ repository, scope: "session", baseRef: headRef })
-    return { headRef, clean: capture.snapshot.complete && capture.snapshot.files.length === 0 && capture.unifiedDiff.length === 0 }
+    return {
+      headRef,
+      clean: capture.snapshot.complete && capture.snapshot.files.length === 0 && capture.unifiedDiff.length === 0,
+    }
   }
 
-  async readRevisionText(repository: string, revision: string, gitPath: string, maximumBytes = MAXIMUM_NATIVE_DIFF_TEXT_BYTES): Promise<string> {
+  async readRevisionText(
+    repository: string,
+    revision: string,
+    gitPath: string,
+    maximumBytes = MAXIMUM_NATIVE_DIFF_TEXT_BYTES,
+  ): Promise<string> {
     this.validateReadLimit(maximumBytes)
     const result = await this.git.run(["show", `${revision}:${gitPath}`], repository)
     this.assertText(result.stdout, maximumBytes)
@@ -215,7 +262,9 @@ export class DiffService {
   }
 
   private validateReadLimit(maximumBytes: number): void {
-    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > MAXIMUM_NATIVE_DIFF_TEXT_BYTES) throw new Error("Invalid native diff text byte limit")
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > MAXIMUM_NATIVE_DIFF_TEXT_BYTES) {
+      throw new Error("Invalid native diff text byte limit")
+    }
   }
 
   private assertText(value: string, maximumBytes: number): void {
@@ -223,18 +272,35 @@ export class DiffService {
     if (value.includes("\0")) throw new Error("Binary files are not available in the text diff editor")
   }
 
-  async capture(input: { repository: string; scope: DiffScope; baseRef?: string; headRef?: string; baselineClean?: boolean }): Promise<DiffCapture> {
-    const rangeArgs = input.scope === "staged" ? ["--cached"] : input.scope === "unstaged" ? [] : input.baseRef && input.headRef ? [`${input.baseRef}..${input.headRef}`] : input.baseRef ? [input.baseRef] : []
+  async capture(
+    input: { repository: string; scope: DiffScope; baseRef?: string; headRef?: string; baselineClean?: boolean },
+  ): Promise<DiffCapture> {
+    const rangeArgs = input.scope === "staged"
+      ? ["--cached"]
+      : input.scope === "unstaged"
+      ? []
+      : input.baseRef && input.headRef
+      ? [`${input.baseRef}..${input.headRef}`]
+      : input.baseRef
+      ? [input.baseRef]
+      : []
     const common = ["--find-renames", "--no-ext-diff", ...rangeArgs, "--"]
     const [diff, stats, untrackedNames] = await Promise.all([
       this.git.run(["diff", "--binary", "--full-index", ...common], input.repository),
       this.git.run(["diff", "--numstat", "-z", ...common], input.repository),
       includeUntracked(input.scope, input.headRef)
-        ? this.git.run(["ls-files", "--others", "--exclude-standard", "-z", "--"], input.repository).then((result) => result.stdout.split("\0").filter(Boolean))
+        ? this.git.run(["ls-files", "--others", "--exclude-standard", "-z", "--"], input.repository).then((result) =>
+          result.stdout.split("\0").filter(Boolean)
+        )
         : Promise.resolve([]),
     ])
     const trackedBytes = Buffer.byteLength(diff.stdout)
-    const untracked = await captureUntracked(this.git, input.repository, untrackedNames, Math.max(0, this.completeLimit - trackedBytes))
+    const untracked = await captureUntracked(
+      this.git,
+      input.repository,
+      untrackedNames,
+      Math.max(0, this.completeLimit - trackedBytes),
+    )
     const unifiedDiff = appendDiff(diff.stdout, untracked.unifiedDiff)
     const bytes = Buffer.byteLength(unifiedDiff)
     const baselineIncomplete = input.scope === "turn" && input.baselineClean === false
@@ -244,8 +310,15 @@ export class DiffService {
     return {
       unifiedDiff,
       snapshot: {
-        id: randomUUID(), scope: input.scope, repository: input.repository, baseRef: input.baseRef, headRef: input.headRef,
-        unifiedDiffHash: hash, files: reconciled.files, generatedAt: Date.now(), complete,
+        id: randomUUID(),
+        scope: input.scope,
+        repository: input.repository,
+        baseRef: input.baseRef,
+        headRef: input.headRef,
+        unifiedDiffHash: hash,
+        files: reconciled.files,
+        generatedAt: Date.now(),
+        complete,
         truncationReason: baselineIncomplete
           ? "Turn did not begin from a verified clean baseline; its changes cannot be attributed exactly"
           : trackedBytes > this.completeLimit

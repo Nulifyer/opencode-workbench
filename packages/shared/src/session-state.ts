@@ -78,7 +78,13 @@ function copySessions(sessions: Record<string, SessionViewState>): Record<string
   return Object.assign(Object.create(null) as Record<string, SessionViewState>, sessions)
 }
 
-function appendPartDelta(messages: MessageBundle[], messageID: string, partID: string, field: string, delta: string): MessageBundle[] {
+function appendPartDelta(
+  messages: MessageBundle[],
+  messageID: string,
+  partID: string,
+  field: string,
+  delta: string,
+): MessageBundle[] {
   if (!delta || delta.length > 512 * 1024) return messages
   const messageIndex = messages.findIndex((message) => message.info.id === messageID)
   if (messageIndex < 0) return messages
@@ -87,8 +93,13 @@ function appendPartDelta(messages: MessageBundle[], messageID: string, partID: s
   const current = messages[messageIndex]!
   const part = current.parts[partIndex]!
   let updated: MessagePart | undefined
-  if (field === "text" && typeof part.text === "string" && part.text.length + delta.length <= 4_000_000) updated = { ...part, text: part.text + delta }
-  if (field === "input" && part.type === "tool" && part.state && typeof part.state.input === "string" && part.state.input.length + delta.length <= 4_000_000) {
+  if (field === "text" && typeof part.text === "string" && part.text.length + delta.length <= 4_000_000) {
+    updated = { ...part, text: part.text + delta }
+  }
+  if (
+    field === "input" && part.type === "tool" && part.state && typeof part.state.input === "string" &&
+    part.state.input.length + delta.length <= 4_000_000
+  ) {
     updated = { ...part, state: { ...part.state, input: part.state.input + delta } }
   }
   if (!updated) return messages
@@ -112,7 +123,24 @@ function sessionErrorMessage(value: unknown): string {
 
 function newSession(info: SessionInfo, status: SessionStatus = { type: "idle" }): SessionViewState {
   const model = info.model ? `${info.model.providerID}/${info.model.id}` : undefined
-  return { info, messages: [], loaded: false, loadState: "idle", draft: "", unread: 0, status, agent: info.agent, model, variant: info.model?.variant, queue: [], permissions: [], todos: [], changes: [], questions: [], autoApproval: false }
+  return {
+    info,
+    messages: [],
+    loaded: false,
+    loadState: "idle",
+    draft: "",
+    unread: 0,
+    status,
+    agent: info.agent,
+    model,
+    variant: info.model?.variant,
+    queue: [],
+    permissions: [],
+    todos: [],
+    changes: [],
+    questions: [],
+    autoApproval: false,
+  }
 }
 
 function eventSessionID(event: OpenCodeEvent): string | undefined {
@@ -156,16 +184,22 @@ function removeMessage(messages: MessageBundle[], messageID: string): MessageBun
 
 function removePart(messages: MessageBundle[], messageID: string, partID: string): MessageBundle[] {
   return messages.map((message) =>
-    message.info.id === messageID
-      ? { ...message, parts: message.parts.filter((part) => part.id !== partID) }
-      : message,
+    message.info.id === messageID ? { ...message, parts: message.parts.filter((part) => part.id !== partID) } : message
   )
 }
 
 export function sessionReducer(state: WorkbenchState, action: SessionAction): WorkbenchState {
-  if (action.type === "connected") return { ...state, connected: action.connected, connectionState: action.connectionState ?? (action.connected ? "connected" : "reconnecting") }
+  if (action.type === "connected") {
+    return {
+      ...state,
+      connected: action.connected,
+      connectionState: action.connectionState ?? (action.connected ? "connected" : "reconnecting"),
+    }
+  }
   if (action.type === "autoApproval") {
-    if (!hasSession(state.sessions, action.sessionID) || state.sessions[action.sessionID]!.autoApproval === action.enabled) return state
+    if (
+      !hasSession(state.sessions, action.sessionID) || state.sessions[action.sessionID]!.autoApproval === action.enabled
+    ) return state
     const sessions = copySessions(state.sessions)
     sessions[action.sessionID] = { ...sessions[action.sessionID]!, autoApproval: action.enabled }
     return { ...state, sessions }
@@ -178,13 +212,13 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
       const status = action.statuses && Object.hasOwn(action.statuses, info.id) ? action.statuses[info.id] : undefined
       sessions[info.id] = existing
         ? {
-            ...existing,
-            info,
-            status: status ?? { type: "idle" },
-            agent: info.agent ?? existing.agent,
-            model: info.model ? `${info.model.providerID}/${info.model.id}` : existing.model,
-            variant: info.model ? info.model.variant : existing.variant,
-          }
+          ...existing,
+          info,
+          status: status ?? { type: "idle" },
+          agent: info.agent ?? existing.agent,
+          model: info.model ? `${info.model.providerID}/${info.model.id}` : existing.model,
+          variant: info.model ? info.model.variant : existing.variant,
+        }
         : newSession(info, status)
     }
     const order = action.sessions
@@ -193,7 +227,9 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
       .map((session) => session.id)
     const selectedID = state.selectedID && hasSession(sessions, state.selectedID)
       ? state.selectedID
-      : state.selectionExplicitlyCleared ? undefined : order.find((id) => !sessions[id]?.info.parentID) ?? order[0]
+      : state.selectionExplicitlyCleared
+      ? undefined
+      : order.find((id) => !sessions[id]?.info.parentID) ?? order[0]
     return { ...state, sessions, order, selectedID }
   }
 
@@ -201,7 +237,12 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
     if (action.sessionID && !hasSession(state.sessions, action.sessionID)) return state
     const sessions = copySessions(state.sessions)
     if (action.sessionID) sessions[action.sessionID] = { ...sessions[action.sessionID]!, unread: 0 }
-    return { ...state, selectedID: action.sessionID, selectionExplicitlyCleared: action.sessionID === undefined, sessions }
+    return {
+      ...state,
+      selectedID: action.sessionID,
+      selectionExplicitlyCleared: action.sessionID === undefined,
+      sessions,
+    }
   }
 
   if (action.type === "draft") {
@@ -258,7 +299,9 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
   if (action.type === "reorderQueue") {
     if (!hasSession(state.sessions, action.sessionID)) return state
     const current = state.sessions[action.sessionID]!
-    if (action.promptIDs.length !== current.queue.length || new Set(action.promptIDs).size !== action.promptIDs.length) return state
+    if (
+      action.promptIDs.length !== current.queue.length || new Set(action.promptIDs).size !== action.promptIDs.length
+    ) return state
     const prompts = new Map(current.queue.map((prompt) => [prompt.id, prompt]))
     const queue = action.promptIDs.map((id) => prompts.get(id))
     if (queue.some((prompt) => !prompt)) return state
@@ -266,7 +309,9 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
     sessions[action.sessionID] = { ...current, queue: queue as QueuedPrompt[] }
     return { ...state, sessions }
   }
-  if (action.type === "permissions" || action.type === "todos" || action.type === "changes" || action.type === "questions") {
+  if (
+    action.type === "permissions" || action.type === "todos" || action.type === "changes" || action.type === "questions"
+  ) {
     if (!hasSession(state.sessions, action.sessionID)) return state
     const current = state.sessions[action.sessionID]!
     const sessions = copySessions(state.sessions)
@@ -306,15 +351,22 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
     if (!info?.id) return state
     const existing = hasSession(state.sessions, info.id) ? state.sessions[info.id] : undefined
     const sessions = copySessions(state.sessions)
-    sessions[info.id] = existing ? {
-      ...existing,
-      info,
-      agent: info.agent ?? existing.agent,
-      model: info.model ? `${info.model.providerID}/${info.model.id}` : existing.model,
-      variant: info.model?.variant ?? existing.variant,
-    } : newSession(info)
+    sessions[info.id] = existing
+      ? {
+        ...existing,
+        info,
+        agent: info.agent ?? existing.agent,
+        model: info.model ? `${info.model.providerID}/${info.model.id}` : existing.model,
+        variant: info.model?.variant ?? existing.variant,
+      }
+      : newSession(info)
     const order = [info.id, ...state.order.filter((id) => id !== info.id)]
-    return { ...state, sessions, order, selectedID: state.selectedID ?? (state.selectionExplicitlyCleared ? undefined : info.id) }
+    return {
+      ...state,
+      sessions,
+      order,
+      selectedID: state.selectedID ?? (state.selectionExplicitlyCleared ? undefined : info.id),
+    }
   }
   if (event.type === "session.deleted") {
     const info = event.properties.info as SessionInfo | undefined
@@ -367,16 +419,28 @@ export function sessionReducer(state: WorkbenchState, action: SessionAction): Wo
   } else if (event.type === "message.part.updated") {
     const part = event.properties.part as MessagePart | undefined
     if (part?.id) updated = { ...session, messages: upsertPart(session.messages, part) }
-  } else if (event.type === "message.part.delta" && typeof event.properties.messageID === "string" && typeof event.properties.partID === "string" &&
-    typeof event.properties.field === "string" && typeof event.properties.delta === "string") {
-    const messages = appendPartDelta(session.messages, event.properties.messageID, event.properties.partID, event.properties.field, event.properties.delta)
+  } else if (
+    event.type === "message.part.delta" && typeof event.properties.messageID === "string" &&
+    typeof event.properties.partID === "string" &&
+    typeof event.properties.field === "string" && typeof event.properties.delta === "string"
+  ) {
+    const messages = appendPartDelta(
+      session.messages,
+      event.properties.messageID,
+      event.properties.partID,
+      event.properties.field,
+      event.properties.delta,
+    )
     if (messages !== session.messages) updated = { ...session, messages }
   } else if (
     event.type === "message.part.removed" &&
     typeof event.properties.messageID === "string" &&
     typeof event.properties.partID === "string"
   ) {
-    updated = { ...session, messages: removePart(session.messages, event.properties.messageID, event.properties.partID) }
+    updated = {
+      ...session,
+      messages: removePart(session.messages, event.properties.messageID, event.properties.partID),
+    }
   }
 
   if (updated === session) return state

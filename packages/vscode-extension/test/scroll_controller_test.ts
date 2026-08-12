@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert"
-import { ScrollController, type ScrollAnchor } from "../src/webview/controllers/scroll-controller.ts"
+import { type ScrollAnchor, ScrollController } from "../src/webview/controllers/scroll-controller.ts"
 
 interface FakeNode {
   dataset: { messageId?: string }
@@ -19,8 +19,16 @@ function anchor(node: FakeNode, overrides: Partial<ScrollAnchor> = {}): ScrollAn
 }
 
 Deno.test("prepend restoration follows a stable message identity when its turn node is replaced", () => {
-  const original: FakeNode = { dataset: { messageId: "boundary-message" }, isConnected: false, getBoundingClientRect: () => ({ top: 120 }) }
-  const replacement: FakeNode = { dataset: { messageId: "boundary-message" }, isConnected: true, getBoundingClientRect: () => ({ top: 520 }) }
+  const original: FakeNode = {
+    dataset: { messageId: "boundary-message" },
+    isConnected: false,
+    getBoundingClientRect: () => ({ top: 120 }),
+  }
+  const replacement: FakeNode = {
+    dataset: { messageId: "boundary-message" },
+    isConnected: true,
+    getBoundingClientRect: () => ({ top: 520 }),
+  }
   const container = {
     scrollTop: 100,
     scrollHeight: 1_500,

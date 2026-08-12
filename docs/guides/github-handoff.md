@@ -46,18 +46,18 @@ userinfo, and unsafe control characters are redacted before handoff.
 
 The command stays bounded even for very large issues and pull requests:
 
-| Context | Limit |
-| --- | ---: |
-| Title | 1,024 bytes |
-| Issue or pull-request body | 65,536 bytes |
-| Labels / assignees | 50 / 20 |
-| Changed files | First 100 files |
-| Patch per changed file | 12,288 bytes |
-| All included patches | 196,608 bytes |
-| Optional editor selection | 102,400 bytes |
-| GitHub metadata response | 1 MiB |
-| GitHub changed-files response | 4 MiB |
-| Each API request | 15 seconds |
+| Context                       |           Limit |
+| ----------------------------- | --------------: |
+| Title                         |     1,024 bytes |
+| Issue or pull-request body    |    65,536 bytes |
+| Labels / assignees            |         50 / 20 |
+| Changed files                 | First 100 files |
+| Patch per changed file        |    12,288 bytes |
+| All included patches          |   196,608 bytes |
+| Optional editor selection     |   102,400 bytes |
+| GitHub metadata response      |           1 MiB |
+| GitHub changed-files response |           4 MiB |
+| Each API request              |      15 seconds |
 
 Title, body, and patch clipping is reported as truncated, binary or unavailable
 patches are reported as unavailable, and omitted changed files are counted.
@@ -78,7 +78,6 @@ Authentication failures, missing/private resources, rate limits, timeouts,
 malformed responses, and oversized responses are reported without including
 the access token or GitHub's remote error body.
 
-For the underlying platform behavior, see the [VS Code authentication
-API](https://code.visualstudio.com/api/references/vscode-api#authentication),
+For the underlying platform behavior, see the [VS Code authentication API](https://code.visualstudio.com/api/references/vscode-api#authentication),
 GitHub's [Issues REST API](https://docs.github.com/en/rest/issues/issues), and
 [Pull request files REST API](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files).

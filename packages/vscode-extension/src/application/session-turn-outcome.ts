@@ -33,9 +33,10 @@ export function sessionTurnOutcome(
   if (!assistant) return { state: "active" }
   if (assistant.info.error !== undefined && assistant.info.error !== null) return { state: "failed" }
 
-  const completed = assistant.info.time?.completed !== undefined || assistant.parts.some((part) =>
-    part.type === "step-finish" || part.type === "tool" || (part.type === "text" && Boolean(part.text?.trim()))
-  )
+  const completed = assistant.info.time?.completed !== undefined ||
+    assistant.parts.some((part) =>
+      part.type === "step-finish" || part.type === "tool" || (part.type === "text" && Boolean(part.text?.trim()))
+    )
   return completed ? { state: "completed" } : { state: "active" }
 }
 

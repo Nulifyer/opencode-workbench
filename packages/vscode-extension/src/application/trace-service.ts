@@ -20,21 +20,34 @@ const URL_CREDENTIAL = /(https?:\/\/)[^/@\s]+@/gi
 
 function bounded(value: string | undefined, limit = 1_024): string | undefined {
   if (!value) return undefined
-  return value.replace(AUTHORIZATION_VALUE, "$1[redacted]").replace(COOKIE_VALUE, "$1[redacted]").replace(SECRET_VALUE, "$1[redacted]").replace(URL_CREDENTIAL, "$1[redacted]@").replace(/[\r\n\t]+/g, " ").slice(0, limit)
+  return value.replace(AUTHORIZATION_VALUE, "$1[redacted]").replace(COOKIE_VALUE, "$1[redacted]").replace(
+    SECRET_VALUE,
+    "$1[redacted]",
+  ).replace(URL_CREDENTIAL, "$1[redacted]@").replace(/[\r\n\t]+/g, " ").slice(0, limit)
 }
 
 export function controllerTraceCategory(updateType: string, eventType?: string): string {
   const value = `${updateType}.${eventType ?? ""}`.toLowerCase()
-  const category = /admit|prompt/.test(value) ? "admission"
-    : /permission/.test(value) ? "permission"
-    : /question|input/.test(value) ? "question"
-    : /status|idle|busy|retry/.test(value) ? "status"
-    : /queue/.test(value) ? "queue"
-    : /change|diff|file/.test(value) ? "changes"
-    : /message|part/.test(value) ? "message"
-    : /session|select|reconcile/.test(value) ? "session"
-    : /connect|server/.test(value) ? "connection"
-    : /goal|settle/.test(value) ? "settlement"
+  const category = /admit|prompt/.test(value)
+    ? "admission"
+    : /permission/.test(value)
+    ? "permission"
+    : /question|input/.test(value)
+    ? "question"
+    : /status|idle|busy|retry/.test(value)
+    ? "status"
+    : /queue/.test(value)
+    ? "queue"
+    : /change|diff|file/.test(value)
+    ? "changes"
+    : /message|part/.test(value)
+    ? "message"
+    : /session|select|reconcile/.test(value)
+    ? "session"
+    : /connect|server/.test(value)
+    ? "connection"
+    : /goal|settle/.test(value)
+    ? "settlement"
     : "runtime"
   return `controller.${category}.${eventType ? "event" : "update"}`
 }
@@ -44,7 +57,9 @@ export class TraceService {
   private sequence = 0
 
   constructor(private readonly capacity = 2_000, private readonly clock: () => number = Date.now) {
-    if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 20_000) throw new Error("Trace capacity must be between 1 and 20,000")
+    if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 20_000) {
+      throw new Error("Trace capacity must be between 1 and 20,000")
+    }
   }
 
   record(entry: Omit<TraceEntry, "sequence" | "timestamp"> & { timestamp?: number }): TraceEntry {

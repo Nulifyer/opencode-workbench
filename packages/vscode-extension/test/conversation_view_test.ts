@@ -35,11 +35,18 @@ Deno.test("conversation projection groups turns, coalesces reasoning updates, an
     message("next", "user", [part("next", "next-text", "text", { text: "Continue" })], 2),
     message("tool", "assistant", [part("tool", "tool-call", "tool", { tool: "bash", state: { status: "running" } })]),
   ]
-  const projected = projectConversationTurns(session(messages, Object.fromEntries(messages.map((entry, index) => [entry.info.id, index + 1]))), true)
+  const projected = projectConversationTurns(
+    session(messages, Object.fromEntries(messages.map((entry, index) => [entry.info.id, index + 1]))),
+    true,
+  )
 
   assertEquals(projected.map((turn) => turn.key), ["assistant:preface", "user:prompt", "user:next"])
   assertEquals(projected[0]?.assistantOnly, true)
-  assertEquals(projected[1]?.displayEntries.map((entry) => entry.message.info.id), ["prompt", "thoughts:reason-one:reason-two:2", "answer"])
+  assertEquals(projected[1]?.displayEntries.map((entry) => entry.message.info.id), [
+    "prompt",
+    "thoughts:reason-one:reason-two:2",
+    "answer",
+  ])
   assertEquals(projected[1]?.displayEntries[1]?.message.parts.map((entry) => entry.id), ["r1", "r2"])
   assertEquals(projected[1]?.hasActivity, true)
   assertEquals(projected[1]?.finalTextPartKeys, ["answer:answer-text"])
@@ -55,10 +62,18 @@ Deno.test("conversation projection keeps reasoning separated by output and respe
     message("middle", "assistant", [part("middle", "middle-text", "text", { text: "Update" })], 2),
     message("reason-two", "assistant", [part("reason-two", "r2", "reasoning", { text: "Second" })]),
   ]
-  const projected = projectConversationTurns(session(messages, { prompt: 1, "reason-one": 2, middle: 3, "reason-two": 4 }), false)
+  const projected = projectConversationTurns(
+    session(messages, { prompt: 1, "reason-one": 2, middle: 3, "reason-two": 4 }),
+    false,
+  )
 
   assertEquals(projected.length, 1)
-  assertEquals(projected[0]?.displayEntries.map((entry) => entry.message.info.id), ["prompt", "reason-one", "middle", "reason-two"])
+  assertEquals(projected[0]?.displayEntries.map((entry) => entry.message.info.id), [
+    "prompt",
+    "reason-one",
+    "middle",
+    "reason-two",
+  ])
   assertEquals(projected[0]?.displayEntries.some((entry) => entry.live), false)
   assertEquals(projected[0]?.working, false)
   assertEquals(projected[0]?.finalTextPartKeys, [])

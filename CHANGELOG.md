@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Split transcript history, multi-run selection, metrics, and modal state out of
+  the main webview module into focused controllers.
+- Kept acknowledged Needs Attention items visible until their underlying issue
+  resolves, while badges count only unread revisions.
+- Clarified that goal cancellation archives its metrics and that displayed
+  session and goal durations are elapsed time.
+
+### Fixed
+
+- Enforced multi-run concurrency for active model jobs, queued excess runs, and
+  avoided rewriting unchanged run journals on each status poll.
+- Kept the send-options menu hidden for an empty composer and stable across
+  streaming updates, and preserved drafts edited while multi-run starts.
+- Preserved keyboard focus in the multi-model dialog, added roving checkbox
+  navigation, and restored focus to a visible control.
+- Bounded aggregate server-history loading, retried transient history transport
+  failures, and checked complete legacy history before prompt admission.
+- Preserved cumulative goal usage across context compaction, bounded archived
+  goal storage, and sanitized errors before displaying them in chat.
+- Prevented continuity-export failures after prompt admission from presenting an
+  active multi-run as failed and inviting duplicate runs.
+- Made proposed edits and failed patches use the same highlighted diff block as
+  completed edits. Workspace changes now open in named native two-sided or
+  multi-file review editors without Untitled documents, support durable
+  reviewed state and Timeline navigation, and keep external changes as
+  explicitly bounded transcript patch previews.
+- Grouped identical permission requests from the same owning session into one
+  approval card with explicit Allow all and Reject all actions.
+- Allowed edited-file links to open exact source-bound files outside the current
+  workspace, including isolated worktrees, while ordinary file links remain
+  workspace-contained.
+
+### Release
+
+- Reject release builds that reuse a version tag from an older commit or lack a
+  matching dated changelog entry.
+
 ## 0.4.7 - 2026-08-10
 
 ### Added

@@ -3,7 +3,9 @@ import { localDevelopmentVersion } from "./local-version.ts"
 
 const root = dirname(dirname(fromFileUrl(import.meta.url)))
 const manifest = JSON.parse(await Deno.readTextFile(join(root, "package.json"))) as { version: string }
-const extensionManifest = JSON.parse(await Deno.readTextFile(join(root, "packages", "vscode-extension", "package.json"))) as {
+const extensionManifest = JSON.parse(
+  await Deno.readTextFile(join(root, "packages", "vscode-extension", "package.json")),
+) as {
   name: string
   publisher: string
 }

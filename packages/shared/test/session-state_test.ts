@@ -19,11 +19,25 @@ const two: SessionInfo = {
 }
 
 Deno.test("connection state distinguishes startup from a failed reconnect", () => {
-  assert(initialWorkbenchState.connectionState === "connecting" && !initialWorkbenchState.connected, "Initial connection was not represented as loading")
-  const connected = sessionReducer(initialWorkbenchState, { type: "connected", connected: true, connectionState: "connected" })
-  const reconnecting = sessionReducer(connected, { type: "connected", connected: false, connectionState: "reconnecting" })
+  assert(
+    initialWorkbenchState.connectionState === "connecting" && !initialWorkbenchState.connected,
+    "Initial connection was not represented as loading",
+  )
+  const connected = sessionReducer(initialWorkbenchState, {
+    type: "connected",
+    connected: true,
+    connectionState: "connected",
+  })
+  const reconnecting = sessionReducer(connected, {
+    type: "connected",
+    connected: false,
+    connectionState: "reconnecting",
+  })
   assert(connected.connected && connected.connectionState === "connected", "Successful connection was not settled")
-  assert(!reconnecting.connected && reconnecting.connectionState === "reconnecting", "Failed connection was mistaken for startup loading")
+  assert(
+    !reconnecting.connected && reconnecting.connectionState === "reconnecting",
+    "Failed connection was mistaken for startup loading",
+  )
 })
 
 Deno.test("reconcile preserves per-session local state", () => {
@@ -42,7 +56,11 @@ Deno.test("reconcile treats status omissions as idle", () => {
     type: "event",
     event: { type: "session.status", properties: { sessionID: "one", status: { type: "busy" } } },
   })
-  state = sessionReducer(state, { type: "reconcile", sessions: [{ ...one, time: { ...one.time, updated: 2 } }], statuses: {} })
+  state = sessionReducer(state, {
+    type: "reconcile",
+    sessions: [{ ...one, time: { ...one.time, updated: 2 } }],
+    statuses: {},
+  })
   assert(state.sessions.one?.status.type === "idle", "missing status was not treated as idle")
 })
 
@@ -62,17 +80,26 @@ Deno.test("deleting the selected session leaves an intentional empty selection",
 
   state = sessionReducer(state, { type: "reconcile", sessions: [two] })
   assert(state.selectedID === undefined, "refreshing sessions replaced the intentional empty selection")
-  state = sessionReducer(state, { type: "event", event: { type: "session.updated", properties: { info: { ...two, title: "Updated" } } } })
+  state = sessionReducer(state, {
+    type: "event",
+    event: { type: "session.updated", properties: { info: { ...two, title: "Updated" } } },
+  })
   assert(state.selectedID === undefined, "session metadata selected a session after an intentional clear")
 
   state = sessionReducer(state, { type: "select", sessionID: "two" })
-  assert(state.selectedID === "two" && !state.selectionExplicitlyCleared, "an explicit session choice did not restore normal selection")
+  assert(
+    state.selectedID === "two" && !state.selectionExplicitlyCleared,
+    "an explicit session choice did not restore normal selection",
+  )
 })
 
 Deno.test("background completion marks unread without changing selection", () => {
   let state = sessionReducer(initialWorkbenchState, { type: "reconcile", sessions: [one, two] })
   state = sessionReducer(state, { type: "select", sessionID: "one" })
-  state = sessionReducer(state, { type: "event", event: { type: "session.status", properties: { sessionID: "two", status: { type: "busy" } } } })
+  state = sessionReducer(state, {
+    type: "event",
+    event: { type: "session.status", properties: { sessionID: "two", status: { type: "busy" } } },
+  })
   state = sessionReducer(state, { type: "event", event: { type: "session.idle", properties: { sessionID: "two" } } })
   assert(state.selectedID === "one", "selection changed")
   assert(state.sessions.two.unread === 1, "background completion was not marked unread")
@@ -98,24 +125,53 @@ Deno.test("streamed parts update only their owning session", () => {
   assert(state.sessions.two.messages.length === 0, "unrelated session changed")
   state = sessionReducer(state, {
     type: "event",
-    event: { type: "message.part.delta", properties: { sessionID: "one", messageID: "m1", partID: "p1", field: "text", delta: " world" } },
+    event: {
+      type: "message.part.delta",
+      properties: { sessionID: "one", messageID: "m1", partID: "p1", field: "text", delta: " world" },
+    },
   })
   assert(state.sessions.one.messages[0].parts[0].text === "hello world", "part delta was not appended")
 })
 
 Deno.test("session events preserve error details and synchronize preferences", () => {
   let state = sessionReducer(initialWorkbenchState, { type: "reconcile", sessions: [one] })
-  state = sessionReducer(state, { type: "event", event: { type: "session.error", properties: { sessionID: "one", error: { data: { message: "Provider unavailable" } } } } })
-  assert(state.sessions.one.status.type === "error" && state.sessions.one.status.message === "Provider unavailable", "session error detail was lost")
-  state = sessionReducer(state, { type: "event", event: { type: "session.updated", properties: { info: { ...one, agent: "build", model: { providerID: "acme", id: "model", variant: "high" } } } } })
-  assert(state.sessions.one.agent === "build" && state.sessions.one.model === "acme/model" && state.sessions.one.variant === "high", "session update left composer preferences stale")
+  state = sessionReducer(state, {
+    type: "event",
+    event: {
+      type: "session.error",
+      properties: { sessionID: "one", error: { data: { message: "Provider unavailable" } } },
+    },
+  })
+  assert(
+    state.sessions.one.status.type === "error" && state.sessions.one.status.message === "Provider unavailable",
+    "session error detail was lost",
+  )
+  state = sessionReducer(state, {
+    type: "event",
+    event: {
+      type: "session.updated",
+      properties: { info: { ...one, agent: "build", model: { providerID: "acme", id: "model", variant: "high" } } },
+    },
+  })
+  assert(
+    state.sessions.one.agent === "build" && state.sessions.one.model === "acme/model" &&
+      state.sessions.one.variant === "high",
+    "session update left composer preferences stale",
+  )
 })
 
 Deno.test("queued prompts can be edited without changing their order", () => {
   let state = sessionReducer(initialWorkbenchState, { type: "reconcile", sessions: [one] })
-  state = sessionReducer(state, { type: "queue", sessionID: "one", prompt: { id: "msg_one", text: "before", createdAt: 1 } })
+  state = sessionReducer(state, {
+    type: "queue",
+    sessionID: "one",
+    prompt: { id: "msg_one", text: "before", createdAt: 1 },
+  })
   state = sessionReducer(state, { type: "editQueued", sessionID: "one", promptID: "msg_one", text: "after" })
-  assert(state.sessions.one.queue.length === 1 && state.sessions.one.queue[0]?.text === "after", "queued prompt edit changed order or text was not updated")
+  assert(
+    state.sessions.one.queue.length === 1 && state.sessions.one.queue[0]?.text === "after",
+    "queued prompt edit changed order or text was not updated",
+  )
 })
 
 Deno.test("prototype-like session IDs remain ordinary data", () => {
@@ -142,7 +198,12 @@ Deno.test("changes and questions remain separate session state", () => {
   state = sessionReducer(state, {
     type: "questions",
     sessionID: "one",
-    questions: [{ id: "question", sessionID: "one", protocol: "v2", questions: [{ header: "Choice", question: "Continue?", options: [] }] }],
+    questions: [{
+      id: "question",
+      sessionID: "one",
+      protocol: "v2",
+      questions: [{ header: "Choice", question: "Continue?", options: [] }],
+    }],
   })
   assert(state.sessions.one.changes[0]?.file === "src/main.ts", "session changes were not stored")
   assert(state.sessions.one.questions[0]?.id === "question", "session questions were not stored")

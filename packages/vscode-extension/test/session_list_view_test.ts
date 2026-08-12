@@ -95,7 +95,10 @@ Deno.test("session navigation puts pins first and renders discoverable metadata 
   assert(markup.indexOf('data-session-id="pinned-attention"') < markup.indexOf('data-session-id="pinned"'))
   assertStringIncludes(markup, "Pinned work; Pinned; Shared; Idle; project · 3 changed")
   assertStringIncludes(markup, '<span class="session-badge" aria-hidden="true">Pinned</span>')
-  assertStringIncludes(markup, "Model anthropic/claude · Agent build · 12,345 tokens · $0.2500 · Branch feature/pin · Worktree wt-pin")
+  assertStringIncludes(
+    markup,
+    "Model anthropic/claude · Agent build · 12,345 tokens · $0.2500 · Branch feature/pin · Worktree wt-pin",
+  )
 })
 
 Deno.test("session navigation applies archive, shared, changed, and state filters", () => {

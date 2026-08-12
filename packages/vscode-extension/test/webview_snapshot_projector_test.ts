@@ -12,7 +12,10 @@ import {
   type WalkthroughDocument,
   type WorktreeJournalEntry,
 } from "@opencode-workbench/shared"
-import { projectChatSnapshotForWebview, WEBVIEW_SNAPSHOT_BYTE_LIMIT } from "../src/application/webview-snapshot-projector.ts"
+import {
+  projectChatSnapshotForWebview,
+  WEBVIEW_SNAPSHOT_BYTE_LIMIT,
+} from "../src/application/webview-snapshot-projector.ts"
 
 function baseSnapshot(): ChatSnapshot {
   return {
@@ -28,7 +31,16 @@ function baseSnapshot(): ChatSnapshot {
       status: { type: "idle" },
       loaded: true,
       loadState: "ready",
-      messages: [{ info: { id: "message-current", sessionID: "selected", role: "assistant" }, parts: [{ id: "part-current", sessionID: "selected", messageID: "message-current", type: "text", text: "Current answer" }] }],
+      messages: [{
+        info: { id: "message-current", sessionID: "selected", role: "assistant" },
+        parts: [{
+          id: "part-current",
+          sessionID: "selected",
+          messageID: "message-current",
+          type: "text",
+          text: "Current answer",
+        }],
+      }],
       messageRevisions: { "message-current": 7 },
       history: { totalMessages: 1, visibleMessages: 1, hasOlder: false },
       agent: "build",
@@ -47,7 +59,10 @@ function aggregateSnapshot(): ChatSnapshot {
     promptID: `prompt-${receiptIndex}`,
     admittedAt: receiptIndex,
     truncation: "none",
-    items: Array.from({ length: 20 }, (_, itemIndex) => ({ id: `item-${itemIndex}`, kind: "file", label: unicodeLabel })),
+    items: Array.from(
+      { length: 20 },
+      (_, itemIndex) => ({ id: `item-${itemIndex}`, kind: "file", label: unicodeLabel }),
+    ),
   }))
   value.session!.contextReceipts = receipts
 
@@ -65,7 +80,13 @@ function aggregateSnapshot(): ChatSnapshot {
       model: `provider/model-${runIndex}`,
       phase: groupIndex === 0 && runIndex === 0 ? "needs-input" : "completed",
       worktreeID: groupIndex === 0 && runIndex === 0 ? "worktree-important" : undefined,
-      session: { sessionID: `session-${groupIndex}-${runIndex}`, directory, experience: "workbench", transport: "http-sse", runtimeEpoch: "epoch" },
+      session: {
+        sessionID: `session-${groupIndex}-${runIndex}`,
+        directory,
+        experience: "workbench",
+        transport: "http-sse",
+        runtimeEpoch: "epoch",
+      },
     })),
   }))
   value.runGroups = groups
@@ -163,8 +184,26 @@ Deno.test("webview snapshot projection prioritizes running PTYs and accounts for
 Deno.test("webview snapshot projection keeps selected OpenCode lineage and accounts for descendants", () => {
   const source = baseSnapshot()
   source.lineage = [
-    { sessionID: "selected", rootID: "selected", depth: 0, relation: "root", title: "Current session", status: { type: "idle" }, updatedAt: 10 },
-    { sessionID: "active-child", parentID: "selected", rootID: "selected", depth: 1, relation: "child", title: "Active child", status: { type: "busy" }, updatedAt: 20, attention: 1 },
+    {
+      sessionID: "selected",
+      rootID: "selected",
+      depth: 0,
+      relation: "root",
+      title: "Current session",
+      status: { type: "idle" },
+      updatedAt: 10,
+    },
+    {
+      sessionID: "active-child",
+      parentID: "selected",
+      rootID: "selected",
+      depth: 1,
+      relation: "child",
+      title: "Active child",
+      status: { type: "busy" },
+      updatedAt: 20,
+      attention: 1,
+    },
     ...Array.from({ length: 998 }, (_, index) => ({
       sessionID: `child-${index}`,
       parentID: "selected",
@@ -179,17 +218,22 @@ Deno.test("webview snapshot projection keeps selected OpenCode lineage and accou
 
   const projected = projectChatSnapshotForWebview(source, 1_024 * 1_024)
   assert(projected.lineage?.some((node) => node.sessionID === "selected"), "Selected lineage root was not retained")
-  assert(projected.lineage?.some((node) => node.sessionID === "active-child"), "Active child lineage was not prioritized")
+  assert(
+    projected.lineage?.some((node) => node.sessionID === "active-child"),
+    "Active child lineage was not prioritized",
+  )
   assertGreater(projected.projection?.omitted.lineage ?? 0, 0)
   assertEquals(projected.projection?.omitted.lineage, source.lineage.length - (projected.lineage?.length ?? 0))
-  assert(parseHostMessage({ type: "snapshot", snapshot: projected }), "Projected lineage violated host protocol validation")
+  assert(
+    parseHostMessage({ type: "snapshot", snapshot: projected }),
+    "Projected lineage violated host protocol validation",
+  )
 })
 
 Deno.test("webview snapshot projection bounds and prioritizes selected-session artifact, evidence, and comparison metadata", () => {
   const source = baseSnapshot()
   const selectedSessionID = "s".repeat(1_024)
-  const longID = (prefix: string, fill: string): string =>
-    `${prefix}${fill.repeat(1_024 - prefix.length)}`
+  const longID = (prefix: string, fill: string): string => `${prefix}${fill.repeat(1_024 - prefix.length)}`
   source.sessions[0] = { ...source.sessions[0]!, id: selectedSessionID }
   source.session = {
     ...source.session!,
@@ -311,9 +355,7 @@ Deno.test("webview snapshot projection bounds and prioritizes selected-session a
     "Projected durable surface metadata must remain valid protocol state",
   )
   assert(
-    projected.artifacts?.some((artifact) =>
-      artifact.id === importantArtifactID
-    ),
+    projected.artifacts?.some((artifact) => artifact.id === importantArtifactID),
     "Stale active artifact was not prioritized",
   )
   assert(
@@ -321,9 +363,7 @@ Deno.test("webview snapshot projection bounds and prioritizes selected-session a
     "Failed evidence was not prioritized",
   )
   assert(
-    projected.runComparisons?.some((comparison) =>
-      comparison.artifactID === importantComparisonID
-    ),
+    projected.runComparisons?.some((comparison) => comparison.artifactID === importantComparisonID),
     "Newest run comparison was not prioritized",
   )
   assertGreater(projected.projection?.omitted.taskArtifacts ?? 0, 0)
@@ -405,7 +445,10 @@ Deno.test("webview snapshot projection deterministically bounds aggregate durabl
   assert(bytes <= WEBVIEW_SNAPSHOT_BYTE_LIMIT)
   assertEquals(projected.projection?.encodedBytes, bytes)
   assertEquals(JSON.stringify(projected), JSON.stringify(repeated))
-  assert(parseHostMessage({ type: "snapshot", snapshot: projected }), "The bounded projection must remain valid host protocol state")
+  assert(
+    parseHostMessage({ type: "snapshot", snapshot: projected }),
+    "The bounded projection must remain valid host protocol state",
+  )
   enforceProtocolLimits({
     protocol: 2,
     kind: "event",
@@ -413,23 +456,35 @@ Deno.test("webview snapshot projection deterministically bounds aggregate durabl
     sequence: 0,
     revision: 0,
     type: "workbench.snapshot",
-    payload: { snapshot: { epoch: "epoch", sequence: 0, revision: 0, state: [{ type: "snapshot", snapshot: projected }] } },
+    payload: {
+      snapshot: { epoch: "epoch", sequence: 0, revision: 0, state: [{ type: "snapshot", snapshot: projected }] },
+    },
   }, { ...PROTOCOL_V2_SCHEMA_SOURCE.defaultLimits })
   assertEquals(projected.session?.messages.at(-1)?.info.id, "message-current")
   assert(projected.sessions.some((session) => session.id === "selected"))
   assert(projected.runGroups?.some((group) => group.id === "group-0"), "The needs-input run group was not retained")
-  assert(projected.worktrees?.some((entry) => entry.id === "worktree-important"), "The referenced active worktree was not retained")
+  assert(
+    projected.worktrees?.some((entry) => entry.id === "worktree-important"),
+    "The referenced active worktree was not retained",
+  )
   assertEquals(projected.session?.contextReceipts?.at(-1)?.id, "receipt-399")
-  assert(projected.walkthroughs?.some((document) => document.id === "walkthrough-29"), "The newest walkthrough was not retained")
+  assert(
+    projected.walkthroughs?.some((document) => document.id === "walkthrough-29"),
+    "The newest walkthrough was not retained",
+  )
 
   const omitted = projected.projection!.omitted
-  assertEquals(omitted.contextReceipts ?? 0, source.session!.contextReceipts!.length - projected.session!.contextReceipts!.length)
+  assertEquals(
+    omitted.contextReceipts ?? 0,
+    source.session!.contextReceipts!.length - projected.session!.contextReceipts!.length,
+  )
   assertEquals(omitted.runGroups ?? 0, source.runGroups!.length - projected.runGroups!.length)
   assertEquals(omitted.worktrees ?? 0, source.worktrees!.length - projected.worktrees!.length)
   assertEquals(omitted.walkthroughs ?? 0, source.walkthroughs!.length - projected.walkthroughs!.length)
   assertEquals(
     omitted.walkthroughStops ?? 0,
-    source.walkthroughs!.reduce((total, document) => total + document.stops.length, 0) - projected.walkthroughs!.reduce((total, document) => total + document.stops.length, 0),
+    source.walkthroughs!.reduce((total, document) => total + document.stops.length, 0) -
+      projected.walkthroughs!.reduce((total, document) => total + document.stops.length, 0),
   )
   assertStringIncludes(projected.projection!.message, "were not deleted")
 })

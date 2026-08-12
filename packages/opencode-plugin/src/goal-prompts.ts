@@ -40,7 +40,8 @@ If the objective is empty, ask the user to provide one and do not create a goal.
 Otherwise call create_goal with the full arguments as the objective and explicitly set token_budget, max_auto_turns, and max_duration_seconds to null.
 Create a goal only from these explicit command arguments. Do not infer one from unrelated context.`
 
-export const GOAL_CONTINUATION_PROMPT = `Continue working autonomously toward the active goal. Call get_goal first and stop if its status is not active. Make concrete progress, use the available tools, and verify the result. Before ending this turn, update the goal with an evidence-based checkpoint; mark it complete only after auditing real evidence, or unmet only when a concrete blocker prevents completion. Do not ask for more user input unless permissions, destructive actions, remote writes, purchases, or material scope expansion require it.`
+export const GOAL_CONTINUATION_PROMPT =
+  `Continue working autonomously toward the active goal. Call get_goal first and stop if its status is not active. Make concrete progress, use the available tools, and verify the result. Before ending this turn, update the goal with an evidence-based checkpoint; mark it complete only after auditing real evidence, or unmet only when a concrete blocker prevents completion. Do not ask for more user input unless permissions, destructive actions, remote writes, purchases, or material scope expansion require it.`
 
 export const GOAL_CONTINUATION_METADATA = {
   "opencode-workbench": { kind: "goal-continuation", version: 1 },

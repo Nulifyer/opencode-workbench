@@ -52,6 +52,8 @@ export interface AttentionItem {
   sessionID?: string
   title: string
   detail?: string
+  /** The item is still unresolved, but the user has acknowledged this revision. */
+  acknowledged?: boolean
   createdAt: number
   target: { surface: "conversation" | "goal" | "runs" | "health"; itemID?: string }
 }
@@ -88,7 +90,15 @@ export interface WorktreeJournalEntry {
   error?: StructuredError
 }
 
-export type RunPhase = "pending" | "preparing" | "admitting" | "working" | "needs-input" | "completed" | "failed" | "cancelled"
+export type RunPhase =
+  | "pending"
+  | "preparing"
+  | "admitting"
+  | "working"
+  | "needs-input"
+  | "completed"
+  | "failed"
+  | "cancelled"
 
 export const MULTI_RUN_MAX_CANDIDATES = 100
 export const MULTI_RUN_MAX_CONCURRENCY = 20
@@ -401,13 +411,26 @@ export interface TaskArtifactSummary {
   stale?: boolean
 }
 
-const CONTEXT_KINDS = new Set<ContextKind>(["selection", "unsaved-buffer", "file", "diagnostics", "terminal", "notebook", "debug", "mcp-resource", "url", "attachment"])
+const CONTEXT_KINDS = new Set<ContextKind>([
+  "selection",
+  "unsaved-buffer",
+  "file",
+  "diagnostics",
+  "terminal",
+  "notebook",
+  "debug",
+  "mcp-resource",
+  "url",
+  "attachment",
+])
 const METADATA_AUTHORIZATION = /\b((?:proxy-)?authorization\s*:\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n,;]+)/gi
 const METADATA_COOKIE = /\b((?:set-)?cookie\s*:\s*)[^\r\n]*/gi
-const METADATA_SECRET = /\b((?:[a-z][a-z0-9]*[_-])*(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?access[_-]?key|authorization|cookie|password|secret|token|credential|signature|sig|sas)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi
+const METADATA_SECRET =
+  /\b((?:[a-z][a-z0-9]*[_-])*(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?access[_-]?key|authorization|cookie|password|secret|token|credential|signature|sig|sas)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi
 const METADATA_URL_CREDENTIAL = /([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi
 const METADATA_PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi
-const METADATA_KNOWN_TOKEN = /\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{20,}|(?:sk|rk)_live_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g
+const METADATA_KNOWN_TOKEN =
+  /\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{20,}|(?:sk|rk)_live_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g
 const METADATA_CONTROL = /[\u0000-\u001f\u007f]+/g
 const DURABLE_URI_PROTOCOLS = new Set(["file:", "http:", "https:", "vscode-remote:", "untitled:"])
 
@@ -419,7 +442,9 @@ function bounded(value: string, limit: number, label: string): string {
 
 function boundedOpaque(value: string, limit: number, label: string): string {
   const normalized = bounded(value, limit, label)
-  if (sanitizeDurableMetadataText(normalized, limit, label) !== normalized) throw new Error(`${label} contains credential-shaped metadata`)
+  if (sanitizeDurableMetadataText(normalized, limit, label) !== normalized) {
+    throw new Error(`${label} contains credential-shaped metadata`)
+  }
   return normalized
 }
 
@@ -455,8 +480,14 @@ export function sanitizeDurableMetadataUri(value: string | undefined): string | 
 }
 
 export function sanitizeContextReceipt(receipt: ContextReceipt): ContextReceipt {
-  if (!Number.isSafeInteger(receipt.admittedAt) || receipt.admittedAt < 0 || receipt.items.length > 100 || !["none", "explicit", "unknown"].includes(receipt.truncation)) throw new Error("Invalid context receipt")
-  if (receipt.estimatedTokens !== undefined && (!Number.isSafeInteger(receipt.estimatedTokens) || receipt.estimatedTokens < 0)) throw new Error("Invalid context token estimate")
+  if (
+    !Number.isSafeInteger(receipt.admittedAt) || receipt.admittedAt < 0 || receipt.items.length > 100 ||
+    !["none", "explicit", "unknown"].includes(receipt.truncation)
+  ) throw new Error("Invalid context receipt")
+  if (
+    receipt.estimatedTokens !== undefined &&
+    (!Number.isSafeInteger(receipt.estimatedTokens) || receipt.estimatedTokens < 0)
+  ) throw new Error("Invalid context token estimate")
   const ids = new Set<string>()
   let tokens = 0
   const items = receipt.items.map((item) => {
@@ -465,27 +496,42 @@ export function sanitizeContextReceipt(receipt: ContextReceipt): ContextReceipt 
     ids.add(id)
     if (!CONTEXT_KINDS.has(item.kind)) throw new Error("Invalid context item kind")
     if (item.uri !== undefined && item.uri.length > 4_096) throw new Error("Context item URI exceeds 4,096 characters")
-    if (item.revision !== undefined && item.revision.length > 256) throw new Error("Context item revision exceeds 256 characters")
-    if (item.contentHash !== undefined && item.contentHash.length > 256) throw new Error("Context item hash exceeds 256 characters")
+    if (item.revision !== undefined && item.revision.length > 256) {
+      throw new Error("Context item revision exceeds 256 characters")
+    }
+    if (item.contentHash !== undefined && item.contentHash.length > 256) {
+      throw new Error("Context item hash exceeds 256 characters")
+    }
     if (item.range) {
       const { startLine, startColumn, endLine, endColumn } = item.range
-      if (![startLine, startColumn, endLine, endColumn].every((value) => Number.isSafeInteger(value) && value >= 1) || endLine < startLine || (endLine === startLine && endColumn < startColumn)) throw new Error("Invalid context item range")
+      if (
+        ![startLine, startColumn, endLine, endColumn].every((value) => Number.isSafeInteger(value) && value >= 1) ||
+        endLine < startLine || (endLine === startLine && endColumn < startColumn)
+      ) throw new Error("Invalid context item range")
     }
-    if (item.truncated !== undefined && typeof item.truncated !== "boolean") throw new Error("Invalid context truncation marker")
+    if (item.truncated !== undefined && typeof item.truncated !== "boolean") {
+      throw new Error("Invalid context truncation marker")
+    }
     const sanitized: ContextReceiptItem = {
       id,
       kind: item.kind,
       label: sanitizeDurableMetadataText(item.label, 1_024, "Context label"),
       uri: sanitizeDurableMetadataUri(item.uri),
       range: item.range,
-      revision: item.revision === undefined ? undefined : sanitizeDurableMetadataText(item.revision, 256, "Context item revision"),
-      contentHash: item.contentHash === undefined ? undefined : boundedOpaque(item.contentHash, 256, "Context item hash"),
+      revision: item.revision === undefined
+        ? undefined
+        : sanitizeDurableMetadataText(item.revision, 256, "Context item revision"),
+      contentHash: item.contentHash === undefined
+        ? undefined
+        : boundedOpaque(item.contentHash, 256, "Context item hash"),
       bytes: item.bytes,
       estimatedTokens: item.estimatedTokens,
       truncated: item.truncated,
     }
     for (const value of [sanitized.bytes, sanitized.estimatedTokens]) {
-      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new Error("Invalid context item size")
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+        throw new Error("Invalid context item size")
+      }
     }
     tokens += sanitized.estimatedTokens ?? 0
     return sanitized
@@ -510,7 +556,10 @@ function validateAnchors(stops: WalkthroughStop[], snapshot: DiffSnapshot): Set<
     for (const anchor of stop.anchors) {
       const file = files.get(anchor.file)
       if (!file) throw new Error(`Walkthrough anchor references unknown file: ${anchor.file}`)
-      if (!Number.isSafeInteger(anchor.startLine) || !Number.isSafeInteger(anchor.endLine) || anchor.startLine < 1 || anchor.endLine < anchor.startLine) {
+      if (
+        !Number.isSafeInteger(anchor.startLine) || !Number.isSafeInteger(anchor.endLine) || anchor.startLine < 1 ||
+        anchor.endLine < anchor.startLine
+      ) {
         throw new Error(`Walkthrough anchor has an invalid line range: ${anchor.file}`)
       }
       if (!anchor.hunkHeader) throw new Error(`Walkthrough anchor must identify an exact hunk: ${anchor.file}`)
@@ -532,21 +581,40 @@ export function validateWalkthrough(document: WalkthroughDocument, snapshot: Dif
   const anchoredFiles = validateAnchors(document.stops, snapshot)
   const knownFiles = new Set(snapshot.files.map((file) => file.path))
   const uncoveredFiles = new Set(document.uncoveredFiles ?? [])
-  for (const file of uncoveredFiles) if (!knownFiles.has(file)) throw new Error(`Walkthrough coverage references unknown file: ${file}`)
+  for (const file of uncoveredFiles) {
+    if (!knownFiles.has(file)) throw new Error(`Walkthrough coverage references unknown file: ${file}`)
+  }
   const missingFiles = snapshot.files.map((file) => file.path).filter((file) => !anchoredFiles.has(file))
   if (document.coverage === "complete") {
-    if (uncoveredFiles.size || missingFiles.length) throw new Error(`Walkthrough claims complete coverage but omits: ${missingFiles.join(", ") || [...uncoveredFiles].join(", ")}`)
+    if (uncoveredFiles.size || missingFiles.length) {
+      throw new Error(
+        `Walkthrough claims complete coverage but omits: ${missingFiles.join(", ") || [...uncoveredFiles].join(", ")}`,
+      )
+    }
   } else {
     if (!uncoveredFiles.size) throw new Error("Partial walkthrough coverage must identify uncovered files")
-    for (const file of missingFiles) if (!uncoveredFiles.has(file)) throw new Error(`Partial walkthrough does not disclose uncovered file: ${file}`)
-    for (const file of uncoveredFiles) if (anchoredFiles.has(file)) throw new Error(`Walkthrough file cannot be both anchored and uncovered: ${file}`)
+    for (const file of missingFiles) {
+      if (!uncoveredFiles.has(file)) throw new Error(`Partial walkthrough does not disclose uncovered file: ${file}`)
+    }
+    for (const file of uncoveredFiles) {
+      if (anchoredFiles.has(file)) throw new Error(`Walkthrough file cannot be both anchored and uncovered: ${file}`)
+    }
   }
 }
 
 export function validateReview(document: ReviewDocument, snapshot: DiffSnapshot): void {
   if (!snapshot.complete) throw new Error("Review generation requires a complete diff snapshot")
   if (document.diffHash !== snapshot.unifiedDiffHash) throw new Error("Review is stale for this diff")
-  validateAnchors(document.findings.map((finding) => ({ id: finding.id, title: finding.title, explanation: finding.detail, importance: finding.severity === "critical" || finding.severity === "high" ? "key-change" : "normal", anchors: finding.anchors })), snapshot)
+  validateAnchors(
+    document.findings.map((finding) => ({
+      id: finding.id,
+      title: finding.title,
+      explanation: finding.detail,
+      importance: finding.severity === "critical" || finding.severity === "high" ? "key-change" : "normal",
+      anchors: finding.anchors,
+    })),
+    snapshot,
+  )
 }
 
 export function runGroupStatus(group: RunGroup): RunPhase {
@@ -558,7 +626,13 @@ export function runGroupStatus(group: RunGroup): RunPhase {
   return "cancelled"
 }
 
-const TASK_ARTIFACT_KINDS = new Set<TaskArtifactKind>(["plan", "review", "goal-verification", "run-comparison", "context-capture"])
+const TASK_ARTIFACT_KINDS = new Set<TaskArtifactKind>([
+  "plan",
+  "review",
+  "goal-verification",
+  "run-comparison",
+  "context-capture",
+])
 const TASK_ARTIFACT_LIFECYCLES = new Set<TaskArtifactLifecycle>(["active", "archived"])
 const SHA256_REVISION = /^sha256:[a-f0-9]{64}$/
 const PLAN_URI_PROTOCOLS = new Set(["file:", "untitled:", "vscode-remote:"])
@@ -588,17 +662,26 @@ function artifactOptionalOpaque(value: unknown, limit: number, label: string): s
 }
 
 function artifactInteger(value: unknown, label: string, minimum = 0, maximum = Number.MAX_SAFE_INTEGER): number {
-  if (!Number.isSafeInteger(value) || Number(value) < minimum || Number(value) > maximum) throw new Error(`${label} must be a safe integer from ${minimum} to ${maximum}`)
+  if (!Number.isSafeInteger(value) || Number(value) < minimum || Number(value) > maximum) {
+    throw new Error(`${label} must be a safe integer from ${minimum} to ${maximum}`)
+  }
   return Number(value)
 }
 
-function artifactOptionalInteger(value: unknown, label: string, minimum = 0, maximum = Number.MAX_SAFE_INTEGER): number | undefined {
+function artifactOptionalInteger(
+  value: unknown,
+  label: string,
+  minimum = 0,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number | undefined {
   return value === undefined ? undefined : artifactInteger(value, label, minimum, maximum)
 }
 
 function artifactCost(value: unknown, label: string): number | undefined {
   if (value === undefined) return undefined
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1_000_000_000_000) throw new Error(`${label} is invalid`)
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1_000_000_000_000) {
+    throw new Error(`${label} is invalid`)
+  }
   return value
 }
 
@@ -627,8 +710,14 @@ function normalizeArtifactProducer(value: unknown, label: string): TaskArtifactP
 
 function normalizePlanPayload(value: unknown, ownerSessionID: string): PlanArtifactPayload {
   const payload = artifactRecord(value, "Plan artifact payload")
-  artifactExactKeys(payload, ["phase", "uri", "revision", "approvedAt", "relatedSessionIDs", "handoffs"], "Plan artifact payload")
-  if (!["generating", "ready", "approved", "handed-off", "failed", "unavailable"].includes(String(payload.phase))) throw new Error("Plan artifact phase is invalid")
+  artifactExactKeys(
+    payload,
+    ["phase", "uri", "revision", "approvedAt", "relatedSessionIDs", "handoffs"],
+    "Plan artifact payload",
+  )
+  if (!["generating", "ready", "approved", "handed-off", "failed", "unavailable"].includes(String(payload.phase))) {
+    throw new Error("Plan artifact phase is invalid")
+  }
   if (typeof payload.uri !== "string") throw new Error("Plan artifact URI must be a string")
   const uri = sanitizeDurableMetadataUri(payload.uri)
   if (!uri) throw new Error("Plan artifact URI is not durable")
@@ -641,29 +730,70 @@ function normalizePlanPayload(value: unknown, ownerSessionID: string): PlanArtif
   if (!PLAN_URI_PROTOCOLS.has(protocol)) throw new Error("Plan artifact URI must identify a VS Code document")
   const phase = payload.phase as PlanArtifactPhase
   const approvedAt = artifactOptionalInteger(payload.approvedAt, "Plan artifact approvedAt")
-  const relatedSessionIDs = payload.relatedSessionIDs === undefined ? undefined : uniqueArtifactIDs(payload.relatedSessionIDs, 100, "Plan artifact relatedSessionIDs")
-  if (relatedSessionIDs?.includes(ownerSessionID)) throw new Error("Plan artifact related sessions cannot repeat its owner")
+  const relatedSessionIDs = payload.relatedSessionIDs === undefined
+    ? undefined
+    : uniqueArtifactIDs(payload.relatedSessionIDs, 100, "Plan artifact relatedSessionIDs")
+  if (relatedSessionIDs?.includes(ownerSessionID)) {
+    throw new Error("Plan artifact related sessions cannot repeat its owner")
+  }
   let handoffs: PlanArtifactHandoff[] | undefined
   if (payload.handoffs !== undefined) {
-    if (!Array.isArray(payload.handoffs) || payload.handoffs.length > 100) throw new Error("Plan artifact handoffs must contain at most 100 records")
+    if (!Array.isArray(payload.handoffs) || payload.handoffs.length > 100) {
+      throw new Error("Plan artifact handoffs must contain at most 100 records")
+    }
     handoffs = payload.handoffs.map((candidate, index) => {
       const handoff = artifactRecord(candidate, `Plan artifact handoff ${index}`)
-      artifactExactKeys(handoff, ["mode", "createdAt", "sessionIDs", "runGroupID", "worktreeID"], `Plan artifact handoff ${index}`)
-      if (!["implementation", "isolated", "multi-run", "goal"].includes(String(handoff.mode))) throw new Error("Plan artifact handoff mode is invalid")
-      const sessionIDs = handoff.sessionIDs === undefined ? undefined : uniqueArtifactIDs(handoff.sessionIDs, 5, `Plan artifact handoff ${index} sessionIDs`)
-      if (sessionIDs?.includes(ownerSessionID)) throw new Error("Plan artifact handoff sessions cannot repeat its owner")
+      artifactExactKeys(
+        handoff,
+        ["mode", "createdAt", "sessionIDs", "runGroupID", "worktreeID"],
+        `Plan artifact handoff ${index}`,
+      )
+      if (!["implementation", "isolated", "multi-run", "goal"].includes(String(handoff.mode))) {
+        throw new Error("Plan artifact handoff mode is invalid")
+      }
+      const sessionIDs = handoff.sessionIDs === undefined
+        ? undefined
+        : uniqueArtifactIDs(handoff.sessionIDs, 5, `Plan artifact handoff ${index} sessionIDs`)
+      if (sessionIDs?.includes(ownerSessionID)) {
+        throw new Error("Plan artifact handoff sessions cannot repeat its owner")
+      }
       const runGroupID = artifactOptionalOpaque(handoff.runGroupID, 1_024, `Plan artifact handoff ${index} runGroupID`)
       const worktreeID = artifactOptionalOpaque(handoff.worktreeID, 1_024, `Plan artifact handoff ${index} worktreeID`)
-      if (!sessionIDs?.length && !runGroupID && !worktreeID) throw new Error("Plan artifact handoff requires a related OpenCode session, run group, or worktree")
-      for (const sessionID of sessionIDs ?? []) if (!relatedSessionIDs?.includes(sessionID)) throw new Error("Plan artifact handoff session is missing from relatedSessionIDs")
-      return { mode: handoff.mode as PlanHandoffMode, createdAt: artifactInteger(handoff.createdAt, `Plan artifact handoff ${index} createdAt`), sessionIDs, runGroupID, worktreeID }
+      if (!sessionIDs?.length && !runGroupID && !worktreeID) {
+        throw new Error("Plan artifact handoff requires a related OpenCode session, run group, or worktree")
+      }
+      for (const sessionID of sessionIDs ?? []) {
+        if (!relatedSessionIDs?.includes(sessionID)) {
+          throw new Error("Plan artifact handoff session is missing from relatedSessionIDs")
+        }
+      }
+      return {
+        mode: handoff.mode as PlanHandoffMode,
+        createdAt: artifactInteger(handoff.createdAt, `Plan artifact handoff ${index} createdAt`),
+        sessionIDs,
+        runGroupID,
+        worktreeID,
+      }
     })
   }
-  if (["approved", "handed-off"].includes(phase) && approvedAt === undefined) throw new Error("Approved plan artifacts require approvedAt")
-  if (!["approved", "handed-off"].includes(phase) && approvedAt !== undefined) throw new Error("Unapproved plan artifacts cannot have approvedAt")
+  if (["approved", "handed-off"].includes(phase) && approvedAt === undefined) {
+    throw new Error("Approved plan artifacts require approvedAt")
+  }
+  if (!["approved", "handed-off"].includes(phase) && approvedAt !== undefined) {
+    throw new Error("Unapproved plan artifacts cannot have approvedAt")
+  }
   if (phase === "handed-off" && !handoffs?.length) throw new Error("Handed-off plan artifacts require handoff metadata")
-  if (phase !== "handed-off" && handoffs?.length) throw new Error("Only handed-off plan artifacts can contain handoff metadata")
-  return { phase, uri, revision: artifactHash(payload.revision, "Plan artifact revision"), approvedAt, relatedSessionIDs, handoffs }
+  if (phase !== "handed-off" && handoffs?.length) {
+    throw new Error("Only handed-off plan artifacts can contain handoff metadata")
+  }
+  return {
+    phase,
+    uri,
+    revision: artifactHash(payload.revision, "Plan artifact revision"),
+    approvedAt,
+    relatedSessionIDs,
+    handoffs,
+  }
 }
 
 function normalizeDiffAnchor(value: unknown, label: string): DiffAnchor {
@@ -677,14 +807,22 @@ function normalizeDiffAnchor(value: unknown, label: string): DiffAnchor {
     side: anchor.side as DiffAnchor["side"],
     startLine,
     endLine,
-    hunkHeader: anchor.hunkHeader === undefined ? undefined : artifactString(anchor.hunkHeader, 2_000, `${label}.hunkHeader`),
+    hunkHeader: anchor.hunkHeader === undefined
+      ? undefined
+      : artifactString(anchor.hunkHeader, 2_000, `${label}.hunkHeader`),
   }
 }
 
 function normalizeReviewDocument(value: unknown): ReviewDocument {
   const document = artifactRecord(value, "Review document")
-  artifactExactKeys(document, ["id", "diffHash", "model", "promptVersion", "generatedAt", "findings"], "Review document")
-  if (!Array.isArray(document.findings) || document.findings.length > 100) throw new Error("Review document must contain at most 100 findings")
+  artifactExactKeys(
+    document,
+    ["id", "diffHash", "model", "promptVersion", "generatedAt", "findings"],
+    "Review document",
+  )
+  if (!Array.isArray(document.findings) || document.findings.length > 100) {
+    throw new Error("Review document must contain at most 100 findings")
+  }
   const findingIDs = new Set<string>()
   const findings = document.findings.map((candidate, index): ReviewFinding => {
     const finding = artifactRecord(candidate, `Review finding ${index}`)
@@ -692,16 +830,26 @@ function normalizeReviewDocument(value: unknown): ReviewDocument {
     const id = artifactOpaque(finding.id, 1_024, `Review finding ${index}.id`)
     if (findingIDs.has(id)) throw new Error("Review document contains duplicate finding IDs")
     findingIDs.add(id)
-    if (!["correctness", "security", "performance", "maintainability", "tests", "regression"].includes(String(finding.category))) throw new Error("Review finding category is invalid")
-    if (!["critical", "high", "medium", "low"].includes(String(finding.severity))) throw new Error("Review finding severity is invalid")
-    if (!Array.isArray(finding.anchors) || !finding.anchors.length || finding.anchors.length > 20) throw new Error("Review finding requires 1-20 exact anchors")
+    if (
+      !["correctness", "security", "performance", "maintainability", "tests", "regression"].includes(
+        String(finding.category),
+      )
+    ) throw new Error("Review finding category is invalid")
+    if (!["critical", "high", "medium", "low"].includes(String(finding.severity))) {
+      throw new Error("Review finding severity is invalid")
+    }
+    if (!Array.isArray(finding.anchors) || !finding.anchors.length || finding.anchors.length > 20) {
+      throw new Error("Review finding requires 1-20 exact anchors")
+    }
     return {
       id,
       title: artifactString(finding.title, 500, `Review finding ${index}.title`),
       detail: artifactString(finding.detail, 10_000, `Review finding ${index}.detail`),
       category: finding.category as ReviewFinding["category"],
       severity: finding.severity as ReviewFinding["severity"],
-      anchors: finding.anchors.map((anchor, anchorIndex) => normalizeDiffAnchor(anchor, `Review finding ${index} anchor ${anchorIndex}`)),
+      anchors: finding.anchors.map((anchor, anchorIndex) =>
+        normalizeDiffAnchor(anchor, `Review finding ${index} anchor ${anchorIndex}`)
+      ),
     }
   })
   return {
@@ -716,13 +864,21 @@ function normalizeReviewDocument(value: unknown): ReviewDocument {
 
 function normalizeReviewPayload(value: unknown): ReviewArtifactPayload {
   const payload = artifactRecord(value, "Review artifact payload")
-  artifactExactKeys(payload, ["document", "repository", "baseRef", "scope", "diffHash", "stale", "dispositions"], "Review artifact payload")
+  artifactExactKeys(
+    payload,
+    ["document", "repository", "baseRef", "scope", "diffHash", "stale", "dispositions"],
+    "Review artifact payload",
+  )
   const document = normalizeReviewDocument(payload.document)
   const diffHash = artifactHash(payload.diffHash, "Review artifact diffHash")
   if (document.diffHash !== diffHash) throw new Error("Review artifact diff hash does not match its document")
-  if (!["turn", "session", "staged", "unstaged", "branch", "pull-request"].includes(String(payload.scope))) throw new Error("Review artifact diff scope is invalid")
+  if (!["turn", "session", "staged", "unstaged", "branch", "pull-request"].includes(String(payload.scope))) {
+    throw new Error("Review artifact diff scope is invalid")
+  }
   if (typeof payload.stale !== "boolean") throw new Error("Review artifact stale flag is invalid")
-  if (!Array.isArray(payload.dispositions) || payload.dispositions.length > document.findings.length) throw new Error("Review artifact dispositions are invalid")
+  if (!Array.isArray(payload.dispositions) || payload.dispositions.length > document.findings.length) {
+    throw new Error("Review artifact dispositions are invalid")
+  }
   const findingIDs = new Set(document.findings.map((finding) => finding.id))
   const dispositionIDs = new Set<string>()
   const dispositions = payload.dispositions.map((candidate, index): ReviewFindingDisposition => {
@@ -732,12 +888,16 @@ function normalizeReviewPayload(value: unknown): ReviewArtifactPayload {
     if (!findingIDs.has(findingID)) throw new Error("Review disposition references an unknown finding")
     if (dispositionIDs.has(findingID)) throw new Error("Review artifact contains duplicate dispositions")
     dispositionIDs.add(findingID)
-    if (!["open", "fixed", "dismissed", "accepted-risk"].includes(String(disposition.state))) throw new Error("Review disposition state is invalid")
+    if (!["open", "fixed", "dismissed", "accepted-risk"].includes(String(disposition.state))) {
+      throw new Error("Review disposition state is invalid")
+    }
     return {
       findingID,
       state: disposition.state as ReviewFindingDispositionState,
       updatedAt: artifactInteger(disposition.updatedAt, `Review disposition ${index}.updatedAt`),
-      note: disposition.note === undefined ? undefined : artifactString(disposition.note, 2_000, `Review disposition ${index}.note`),
+      note: disposition.note === undefined
+        ? undefined
+        : artifactString(disposition.note, 2_000, `Review disposition ${index}.note`),
     }
   })
   return {
@@ -754,31 +914,64 @@ function normalizeReviewPayload(value: unknown): ReviewArtifactPayload {
 function normalizeGoalVerdict(value: unknown): GoalVerdict {
   const verdict = artifactRecord(value, "Goal verification verdict")
   artifactExactKeys(verdict, ["verdict", "reason", "missingCriteria", "confidence"], "Goal verification verdict")
-  if (!["continue", "complete", "blocked", "needs-user"].includes(String(verdict.verdict))) throw new Error("Goal verification verdict is invalid")
-  if (!["low", "medium", "high"].includes(String(verdict.confidence))) throw new Error("Goal verification confidence is invalid")
-  if (!Array.isArray(verdict.missingCriteria) || verdict.missingCriteria.length > 100) throw new Error("Goal verification has too many missing criteria")
+  if (!["continue", "complete", "blocked", "needs-user"].includes(String(verdict.verdict))) {
+    throw new Error("Goal verification verdict is invalid")
+  }
+  if (!["low", "medium", "high"].includes(String(verdict.confidence))) {
+    throw new Error("Goal verification confidence is invalid")
+  }
+  if (!Array.isArray(verdict.missingCriteria) || verdict.missingCriteria.length > 100) {
+    throw new Error("Goal verification has too many missing criteria")
+  }
   return {
     verdict: verdict.verdict as GoalVerdict["verdict"],
     reason: artifactString(verdict.reason, 4_000, "Goal verification reason"),
-    missingCriteria: verdict.missingCriteria.map((criterion, index) => artifactString(criterion, 2_000, `Goal verification missing criterion ${index}`)),
+    missingCriteria: verdict.missingCriteria.map((criterion, index) =>
+      artifactString(criterion, 2_000, `Goal verification missing criterion ${index}`)
+    ),
     confidence: verdict.confidence as GoalVerdict["confidence"],
   }
 }
 
 function normalizeGoalVerificationPayload(value: unknown): GoalVerificationArtifactPayload {
   const payload = artifactRecord(value, "Goal verification artifact payload")
-  artifactExactKeys(payload, ["settlementGeneration", "verdict", "attempts", "evidenceIDs", "applied", "stale", "appliedAt"], "Goal verification artifact payload")
-  if (!Array.isArray(payload.attempts) || payload.attempts.length > 10) throw new Error("Goal verification must contain at most 10 attempts")
+  artifactExactKeys(payload, [
+    "settlementGeneration",
+    "verdict",
+    "attempts",
+    "evidenceIDs",
+    "applied",
+    "stale",
+    "appliedAt",
+  ], "Goal verification artifact payload")
+  if (!Array.isArray(payload.attempts) || payload.attempts.length > 10) {
+    throw new Error("Goal verification must contain at most 10 attempts")
+  }
   const attemptNumbers = new Set<number>()
   const attempts = payload.attempts.map((candidate, index): GoalVerificationAttemptRecord => {
     const attempt = artifactRecord(candidate, `Goal verification attempt ${index}`)
-    artifactExactKeys(attempt, ["attempt", "startedAt", "completedAt", "outcome", "sessionID", "model", "tokens", "cost"], `Goal verification attempt ${index}`)
+    artifactExactKeys(attempt, [
+      "attempt",
+      "startedAt",
+      "completedAt",
+      "outcome",
+      "sessionID",
+      "model",
+      "tokens",
+      "cost",
+    ], `Goal verification attempt ${index}`)
     const number = artifactInteger(attempt.attempt, `Goal verification attempt ${index}.attempt`, 1, 10)
     if (attemptNumbers.has(number)) throw new Error("Goal verification contains duplicate attempt numbers")
     attemptNumbers.add(number)
     const startedAt = artifactInteger(attempt.startedAt, `Goal verification attempt ${index}.startedAt`)
-    const completedAt = artifactInteger(attempt.completedAt, `Goal verification attempt ${index}.completedAt`, startedAt)
-    if (!["completed", "invalid-output", "failed"].includes(String(attempt.outcome))) throw new Error("Goal verification attempt outcome is invalid")
+    const completedAt = artifactInteger(
+      attempt.completedAt,
+      `Goal verification attempt ${index}.completedAt`,
+      startedAt,
+    )
+    if (!["completed", "invalid-output", "failed"].includes(String(attempt.outcome))) {
+      throw new Error("Goal verification attempt outcome is invalid")
+    }
     return {
       attempt: number,
       startedAt,
@@ -790,10 +983,14 @@ function normalizeGoalVerificationPayload(value: unknown): GoalVerificationArtif
       cost: artifactCost(attempt.cost, `Goal verification attempt ${index}.cost`),
     }
   }).sort((left, right) => left.attempt - right.attempt)
-  if (typeof payload.applied !== "boolean" || typeof payload.stale !== "boolean") throw new Error("Goal verification state flags are invalid")
+  if (typeof payload.applied !== "boolean" || typeof payload.stale !== "boolean") {
+    throw new Error("Goal verification state flags are invalid")
+  }
   const verdict = payload.verdict === undefined ? undefined : normalizeGoalVerdict(payload.verdict)
   const appliedAt = artifactOptionalInteger(payload.appliedAt, "Goal verification appliedAt")
-  if (payload.applied && (!verdict || appliedAt === undefined)) throw new Error("Applied goal verification requires a verdict and appliedAt")
+  if (payload.applied && (!verdict || appliedAt === undefined)) {
+    throw new Error("Applied goal verification requires a verdict and appliedAt")
+  }
   if (!payload.applied && appliedAt !== undefined) throw new Error("Advisory goal verification cannot have appliedAt")
   return {
     settlementGeneration: artifactInteger(payload.settlementGeneration, "Goal verification settlementGeneration"),
@@ -808,10 +1005,36 @@ function normalizeGoalVerificationPayload(value: unknown): GoalVerificationArtif
 
 function normalizeRunComparisonRow(value: unknown, index: number): RunComparisonRow {
   const row = artifactRecord(value, `Run comparison row ${index}`)
-  artifactExactKeys(row, ["runID", "status", "model", "agent", "variant", "elapsedMilliseconds", "changedFiles", "additions", "deletions", "taskOutcomes", "diagnostics", "verifierState", "tokens", "cost", "blocker", "complete", "limitation"], `Run comparison row ${index}`)
-  if (!["pending", "preparing", "admitting", "working", "needs-input", "completed", "failed", "cancelled"].includes(String(row.status))) throw new Error("Run comparison status is invalid")
-  if (!["not-recorded", "passed", "failed", "mixed"].includes(String(row.taskOutcomes))) throw new Error("Run comparison task outcome is invalid")
-  if (!["not-recorded", "clean", "has-errors"].includes(String(row.diagnostics))) throw new Error("Run comparison diagnostics state is invalid")
+  artifactExactKeys(row, [
+    "runID",
+    "status",
+    "model",
+    "agent",
+    "variant",
+    "elapsedMilliseconds",
+    "changedFiles",
+    "additions",
+    "deletions",
+    "taskOutcomes",
+    "diagnostics",
+    "verifierState",
+    "tokens",
+    "cost",
+    "blocker",
+    "complete",
+    "limitation",
+  ], `Run comparison row ${index}`)
+  if (
+    !["pending", "preparing", "admitting", "working", "needs-input", "completed", "failed", "cancelled"].includes(
+      String(row.status),
+    )
+  ) throw new Error("Run comparison status is invalid")
+  if (!["not-recorded", "passed", "failed", "mixed"].includes(String(row.taskOutcomes))) {
+    throw new Error("Run comparison task outcome is invalid")
+  }
+  if (!["not-recorded", "clean", "has-errors"].includes(String(row.diagnostics))) {
+    throw new Error("Run comparison diagnostics state is invalid")
+  }
   if (typeof row.complete !== "boolean") throw new Error("Run comparison completeness is invalid")
   return {
     runID: artifactOpaque(row.runID, 1_024, `Run comparison row ${index}.runID`),
@@ -819,27 +1042,40 @@ function normalizeRunComparisonRow(value: unknown, index: number): RunComparison
     model: artifactOpaque(row.model, 1_024, `Run comparison row ${index}.model`),
     agent: artifactOptionalOpaque(row.agent, 1_024, `Run comparison row ${index}.agent`),
     variant: artifactOptionalOpaque(row.variant, 1_024, `Run comparison row ${index}.variant`),
-    elapsedMilliseconds: artifactOptionalInteger(row.elapsedMilliseconds, `Run comparison row ${index}.elapsedMilliseconds`),
+    elapsedMilliseconds: artifactOptionalInteger(
+      row.elapsedMilliseconds,
+      `Run comparison row ${index}.elapsedMilliseconds`,
+    ),
     changedFiles: artifactInteger(row.changedFiles, `Run comparison row ${index}.changedFiles`),
     additions: artifactInteger(row.additions, `Run comparison row ${index}.additions`),
     deletions: artifactInteger(row.deletions, `Run comparison row ${index}.deletions`),
     taskOutcomes: row.taskOutcomes as RunComparisonRow["taskOutcomes"],
     diagnostics: row.diagnostics as RunComparisonRow["diagnostics"],
-    verifierState: row.verifierState === undefined ? undefined : artifactString(row.verifierState, 2_000, `Run comparison row ${index}.verifierState`),
+    verifierState: row.verifierState === undefined
+      ? undefined
+      : artifactString(row.verifierState, 2_000, `Run comparison row ${index}.verifierState`),
     tokens: artifactOptionalInteger(row.tokens, `Run comparison row ${index}.tokens`),
     cost: artifactCost(row.cost, `Run comparison row ${index}.cost`),
-    blocker: row.blocker === undefined ? undefined : artifactString(row.blocker, 4_000, `Run comparison row ${index}.blocker`),
+    blocker: row.blocker === undefined
+      ? undefined
+      : artifactString(row.blocker, 4_000, `Run comparison row ${index}.blocker`),
     complete: row.complete,
-    limitation: row.limitation === undefined ? undefined : artifactString(row.limitation, 4_000, `Run comparison row ${index}.limitation`),
+    limitation: row.limitation === undefined
+      ? undefined
+      : artifactString(row.limitation, 4_000, `Run comparison row ${index}.limitation`),
   }
 }
 
 function normalizeRunComparisonPayload(value: unknown): RunComparisonArtifactPayload {
   const payload = artifactRecord(value, "Run comparison artifact payload")
   artifactExactKeys(payload, ["groupID", "rows"], "Run comparison artifact payload")
-  if (!Array.isArray(payload.rows) || payload.rows.length > MULTI_RUN_MAX_CANDIDATES) throw new Error(`Run comparison must contain at most ${MULTI_RUN_MAX_CANDIDATES} rows`)
+  if (!Array.isArray(payload.rows) || payload.rows.length > MULTI_RUN_MAX_CANDIDATES) {
+    throw new Error(`Run comparison must contain at most ${MULTI_RUN_MAX_CANDIDATES} rows`)
+  }
   const rows = payload.rows.map(normalizeRunComparisonRow)
-  if (new Set(rows.map((row) => row.runID)).size !== rows.length) throw new Error("Run comparison contains duplicate run IDs")
+  if (new Set(rows.map((row) => row.runID)).size !== rows.length) {
+    throw new Error("Run comparison contains duplicate run IDs")
+  }
   return { groupID: artifactOpaque(payload.groupID, 1_024, "Run comparison groupID"), rows }
 }
 
@@ -857,21 +1093,41 @@ function normalizeContextRange(value: unknown, label: string): ContextCaptureSou
 
 function normalizeContextCapturePayload(value: unknown): ContextCaptureArtifactPayload {
   const payload = artifactRecord(value, "Context capture artifact payload")
-  artifactExactKeys(payload, ["promptID", "receiptID", "admittedAt", "truncation", "estimatedTokens", "sources"], "Context capture artifact payload")
+  artifactExactKeys(
+    payload,
+    ["promptID", "receiptID", "admittedAt", "truncation", "estimatedTokens", "sources"],
+    "Context capture artifact payload",
+  )
   const promptID = artifactOpaque(payload.promptID, 1_016, "Context capture promptID")
   const receiptID = artifactOpaque(payload.receiptID, 1_024, "Context capture receiptID")
   if (receiptID !== `context:${promptID}`) throw new Error("Context capture receiptID does not match its promptID")
-  if (!["none", "explicit", "unknown"].includes(String(payload.truncation))) throw new Error("Context capture truncation state is invalid")
-  if (!Array.isArray(payload.sources) || payload.sources.length > 100) throw new Error("Context capture must contain at most 100 source records")
+  if (!["none", "explicit", "unknown"].includes(String(payload.truncation))) {
+    throw new Error("Context capture truncation state is invalid")
+  }
+  if (!Array.isArray(payload.sources) || payload.sources.length > 100) {
+    throw new Error("Context capture must contain at most 100 source records")
+  }
   const sourceIDs = new Set<string>()
   const sources = payload.sources.map((candidate, index): ContextCaptureSourceMetadata => {
     const source = artifactRecord(candidate, `Context capture source ${index}`)
-    artifactExactKeys(source, ["id", "kind", "label", "uri", "range", "revision", "contentHash", "estimatedTokens", "truncated"], `Context capture source ${index}`)
+    artifactExactKeys(source, [
+      "id",
+      "kind",
+      "label",
+      "uri",
+      "range",
+      "revision",
+      "contentHash",
+      "estimatedTokens",
+      "truncated",
+    ], `Context capture source ${index}`)
     const id = artifactOpaque(source.id, 1_024, `Context capture source ${index}.id`)
     if (sourceIDs.has(id)) throw new Error("Context capture contains duplicate source IDs")
     sourceIDs.add(id)
     if (!CONTEXT_KINDS.has(source.kind as ContextKind)) throw new Error("Context capture source kind is invalid")
-    if (source.truncated !== undefined && typeof source.truncated !== "boolean") throw new Error("Context capture source truncation marker is invalid")
+    if (source.truncated !== undefined && typeof source.truncated !== "boolean") {
+      throw new Error("Context capture source truncation marker is invalid")
+    }
     const uri = source.uri === undefined ? undefined : (() => {
       if (typeof source.uri !== "string") throw new Error("Context capture source URI must be a string")
       return sanitizeDurableMetadataUri(source.uri)
@@ -882,9 +1138,16 @@ function normalizeContextCapturePayload(value: unknown): ContextCaptureArtifactP
       label: artifactString(source.label, 1_024, `Context capture source ${index}.label`),
       uri,
       range: normalizeContextRange(source.range, `Context capture source ${index}.range`),
-      revision: source.revision === undefined ? undefined : artifactString(source.revision, 256, `Context capture source ${index}.revision`),
-      contentHash: source.contentHash === undefined ? undefined : artifactHash(source.contentHash, `Context capture source ${index}.contentHash`),
-      estimatedTokens: artifactOptionalInteger(source.estimatedTokens, `Context capture source ${index}.estimatedTokens`),
+      revision: source.revision === undefined
+        ? undefined
+        : artifactString(source.revision, 256, `Context capture source ${index}.revision`),
+      contentHash: source.contentHash === undefined
+        ? undefined
+        : artifactHash(source.contentHash, `Context capture source ${index}.contentHash`),
+      estimatedTokens: artifactOptionalInteger(
+        source.estimatedTokens,
+        `Context capture source ${index}.estimatedTokens`,
+      ),
       truncated: source.truncated as boolean | undefined,
     }
   })
@@ -901,20 +1164,47 @@ function normalizeContextCapturePayload(value: unknown): ContextCaptureArtifactP
 /** Strictly validates, sanitizes, and deep-clones one durable task artifact. */
 export function normalizeTaskArtifact(value: unknown): TaskArtifact {
   const artifact = artifactRecord(value, "Task artifact")
-  artifactExactKeys(artifact, ["schemaVersion", "id", "kind", "sessionID", "lifecycle", "revision", "createdAt", "updatedAt", "producer", "payload"], "Task artifact")
-  if (artifact.schemaVersion !== TASK_ARTIFACT_SCHEMA_VERSION) throw new Error("Task artifact schema version is unsupported")
+  artifactExactKeys(artifact, [
+    "schemaVersion",
+    "id",
+    "kind",
+    "sessionID",
+    "lifecycle",
+    "revision",
+    "createdAt",
+    "updatedAt",
+    "producer",
+    "payload",
+  ], "Task artifact")
+  if (artifact.schemaVersion !== TASK_ARTIFACT_SCHEMA_VERSION) {
+    throw new Error("Task artifact schema version is unsupported")
+  }
   if (!TASK_ARTIFACT_KINDS.has(artifact.kind as TaskArtifactKind)) throw new Error("Task artifact kind is invalid")
-  if (!TASK_ARTIFACT_LIFECYCLES.has(artifact.lifecycle as TaskArtifactLifecycle)) throw new Error("Task artifact lifecycle is invalid")
+  if (!TASK_ARTIFACT_LIFECYCLES.has(artifact.lifecycle as TaskArtifactLifecycle)) {
+    throw new Error("Task artifact lifecycle is invalid")
+  }
   const id = artifactOpaque(artifact.id, 1_024, "Task artifact ID")
   const sessionID = artifactOpaque(artifact.sessionID, 1_024, "Task artifact sessionID")
   const revision = artifactInteger(artifact.revision, "Task artifact revision", 1)
   const createdAt = artifactInteger(artifact.createdAt, "Task artifact createdAt")
   const updatedAt = artifactInteger(artifact.updatedAt, "Task artifact updatedAt", createdAt)
-  const producer = artifact.producer === undefined ? undefined : normalizeArtifactProducer(artifact.producer, "Task artifact producer")
-  const common = { schemaVersion: TASK_ARTIFACT_SCHEMA_VERSION, id, sessionID, lifecycle: artifact.lifecycle as TaskArtifactLifecycle, revision, createdAt, updatedAt }
+  const producer = artifact.producer === undefined
+    ? undefined
+    : normalizeArtifactProducer(artifact.producer, "Task artifact producer")
+  const common = {
+    schemaVersion: TASK_ARTIFACT_SCHEMA_VERSION,
+    id,
+    sessionID,
+    lifecycle: artifact.lifecycle as TaskArtifactLifecycle,
+    revision,
+    createdAt,
+    updatedAt,
+  }
 
   if (artifact.kind === "plan") {
-    if (!producer || producer.sessionID !== sessionID) throw new Error("Plan artifacts require their owning OpenCode session as producer")
+    if (!producer || producer.sessionID !== sessionID) {
+      throw new Error("Plan artifacts require their owning OpenCode session as producer")
+    }
     return { ...common, kind: "plan", producer, payload: normalizePlanPayload(artifact.payload, sessionID) }
   }
   if (artifact.kind === "review") {
@@ -924,7 +1214,9 @@ export function normalizeTaskArtifact(value: unknown): TaskArtifact {
   if (artifact.kind === "goal-verification") {
     const payload = normalizeGoalVerificationPayload(artifact.payload)
     if (payload.verdict && !producer) throw new Error("Goal verification verdicts require OpenCode producer provenance")
-    if (producer && !payload.attempts.some((attempt) => attempt.sessionID === producer.sessionID)) throw new Error("Goal verification producer must identify one of its OpenCode attempts")
+    if (producer && !payload.attempts.some((attempt) => attempt.sessionID === producer.sessionID)) {
+      throw new Error("Goal verification producer must identify one of its OpenCode attempts")
+    }
     return { ...common, kind: "goal-verification", producer, payload }
   }
   if (artifact.kind === "run-comparison") {
@@ -948,12 +1240,35 @@ export function taskArtifactSummary(value: TaskArtifact): TaskArtifactSummary {
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
   }
-  if (artifact.kind === "plan") return { ...common, state: artifact.payload.phase, itemCount: artifact.payload.handoffs?.length }
-  if (artifact.kind === "review") return { ...common, state: artifact.payload.stale ? "stale" : "ready", itemCount: artifact.payload.document.findings.length, stale: artifact.payload.stale }
+  if (artifact.kind === "plan") {
+    return { ...common, state: artifact.payload.phase, itemCount: artifact.payload.handoffs?.length }
+  }
+  if (artifact.kind === "review") {
+    return {
+      ...common,
+      state: artifact.payload.stale ? "stale" : "ready",
+      itemCount: artifact.payload.document.findings.length,
+      stale: artifact.payload.stale,
+    }
+  }
   if (artifact.kind === "goal-verification") {
-    const state = artifact.payload.stale ? "stale" : artifact.payload.applied ? "applied" : artifact.payload.verdict?.verdict ?? "pending"
+    const state = artifact.payload.stale
+      ? "stale"
+      : artifact.payload.applied
+      ? "applied"
+      : artifact.payload.verdict?.verdict ?? "pending"
     return { ...common, state, itemCount: artifact.payload.evidenceIDs.length, stale: artifact.payload.stale }
   }
-  if (artifact.kind === "run-comparison") return { ...common, state: artifact.payload.rows.every((row) => row.complete) ? "complete" : "incomplete", itemCount: artifact.payload.rows.length }
-  return { ...common, state: artifact.payload.truncation === "none" ? "complete" : "limited", itemCount: artifact.payload.sources.length }
+  if (artifact.kind === "run-comparison") {
+    return {
+      ...common,
+      state: artifact.payload.rows.every((row) => row.complete) ? "complete" : "incomplete",
+      itemCount: artifact.payload.rows.length,
+    }
+  }
+  return {
+    ...common,
+    state: artifact.payload.truncation === "none" ? "complete" : "limited",
+    itemCount: artifact.payload.sources.length,
+  }
 }

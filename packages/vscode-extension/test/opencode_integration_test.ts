@@ -18,7 +18,9 @@ function deferred<T>(): Deferred<T> {
 function isolatedEnvironment(root: string): NodeJS.ProcessEnv {
   const environment = { ...process.env }
   for (const key of Object.keys(environment)) {
-    if (key.startsWith("OPENCODE_") || /(?:TOKEN|KEY|SECRET|PASSWORD|AUTH|CREDENTIAL|API)/i.test(key)) delete environment[key]
+    if (key.startsWith("OPENCODE_") || /(?:TOKEN|KEY|SECRET|PASSWORD|AUTH|CREDENTIAL|API)/i.test(key)) {
+      delete environment[key]
+    }
   }
   environment.HOME = path.join(root, "home")
   environment.XDG_CONFIG_HOME = path.join(root, "config")
@@ -33,7 +35,9 @@ async function within<T>(promise: Promise<T>, milliseconds = 10_000): Promise<T>
   try {
     return await Promise.race([
       promise,
-      new Promise<T>((_resolve, reject) => timer = setTimeout(() => reject(new Error(`Timed out after ${milliseconds}ms`)), milliseconds)),
+      new Promise<T>((_resolve, reject) =>
+        timer = setTimeout(() => reject(new Error(`Timed out after ${milliseconds}ms`)), milliseconds)
+      ),
     ])
   } finally {
     if (timer) clearTimeout(timer)
@@ -42,7 +46,9 @@ async function within<T>(promise: Promise<T>, milliseconds = 10_000): Promise<T>
 
 Deno.test("installed OpenCode serves Workbench contracts without a model prompt", async () => {
   const integrationExecutable = Deno.env.get("OPENCODE_INTEGRATION_EXECUTABLE")
-  if (!integrationExecutable) throw new Error("Set OPENCODE_INTEGRATION_EXECUTABLE to an absolute OpenCode executable path")
+  if (!integrationExecutable) {
+    throw new Error("Set OPENCODE_INTEGRATION_EXECUTABLE to an absolute OpenCode executable path")
+  }
   const expectedVersion = Deno.env.get("OPENCODE_INTEGRATION_VERSION") ?? "1.18.11"
   const root = await Deno.makeTempDir({ prefix: "opencode-workbench-real-" })
   const workspace = path.join(root, "workspace")
@@ -50,22 +56,25 @@ Deno.test("installed OpenCode serves Workbench contracts without a model prompt"
   const environment = isolatedEnvironment(root)
   const pluginStateDirectory = path.join(environment.XDG_DATA_HOME!, "opencode-workbench", "plugin")
   await Deno.mkdir(pluginStateDirectory, { recursive: true })
-  await Deno.writeTextFile(path.join(pluginStateDirectory, "state.json"), JSON.stringify({
-    version: 1,
-    preferences: [{
-      id: "integration-preference",
-      scope: { kind: "global" },
-      category: "workflow",
-      key: "integration_source",
-      value: "Use the integration source.",
-      status: "approved",
-      provenance: { sessionID: "integration", messageID: "integration", source: "explicit_tool" },
-      createdAt: 1,
-      approvedAt: 1,
-    }],
-    evidence: [],
-    skillCandidates: [],
-  }))
+  await Deno.writeTextFile(
+    path.join(pluginStateDirectory, "state.json"),
+    JSON.stringify({
+      version: 1,
+      preferences: [{
+        id: "integration-preference",
+        scope: { kind: "global" },
+        category: "workflow",
+        key: "integration_source",
+        value: "Use the integration source.",
+        status: "approved",
+        provenance: { sessionID: "integration", messageID: "integration", source: "explicit_tool" },
+        createdAt: 1,
+        approvedAt: 1,
+      }],
+      evidence: [],
+      skillCandidates: [],
+    }),
+  )
   const extensionPath = fileURLToPath(new URL("../../../", import.meta.url))
   const output: string[] = []
   const manager = new ManagedOpenCodeServer({
@@ -84,19 +93,46 @@ Deno.test("installed OpenCode serves Workbench contracts without a model prompt"
     const connection = await manager.start()
     client = new OpenCodeClient(connection)
     const health = await client.health()
-    if (health.version !== expectedVersion) throw new Error(`Expected OpenCode ${expectedVersion}, received ${health.version}`)
+    if (health.version !== expectedVersion) {
+      throw new Error(`Expected OpenCode ${expectedVersion}, received ${health.version}`)
+    }
     const formatterStatus = await client.formatter()
     const mcpStatus = await client.mcp()
-    if (!Array.isArray(formatterStatus) || !formatterStatus.every((formatter) => typeof formatter === "object" && formatter !== null &&
-      "name" in formatter && typeof formatter.name === "string" && "extensions" in formatter && Array.isArray(formatter.extensions) &&
-      "enabled" in formatter && typeof formatter.enabled === "boolean") || typeof mcpStatus !== "object" || mcpStatus === null || Array.isArray(mcpStatus)) {
+    if (
+      !Array.isArray(formatterStatus) || !formatterStatus.every((formatter) =>
+        typeof formatter === "object" && formatter !== null &&
+        "name" in formatter && typeof formatter.name === "string" && "extensions" in formatter &&
+        Array.isArray(formatter.extensions) &&
+        "enabled" in formatter && typeof formatter.enabled === "boolean"
+      ) || typeof mcpStatus !== "object" || mcpStatus === null || Array.isArray(mcpStatus)
+    ) {
       throw new Error("OpenCode returned an incompatible formatter or MCP status contract")
     }
     const commands = await client.commands()
-    if (!commands.some((command) => command.name === "goal")) throw new Error("Bundled plugin did not register the native /goal command")
-    if (!commands.some((command) => command.name === "goal-unlimited")) throw new Error("Bundled plugin did not register the native /goal-unlimited command")
+    if (
+      !commands.some((command) =>
+        command.name === "goal"
+      )
+    ) {
+      throw new Error("Bundled plugin did not register the native /goal command")
+    }
+    if (!commands.some((command) => command.name === "goal-unlimited")) {
+      throw new Error("Bundled plugin did not register the native /goal-unlimited command")
+    }
     const toolIDs = new Set(await client.toolIDs())
-    for (const tool of ["get_goal", "get_goal_history", "create_goal", "set_goal", "update_goal_objective", "update_goal", "update_goal_status", "update_goal_checkpoint", "clear_goal"]) {
+    for (
+      const tool of [
+        "get_goal",
+        "get_goal_history",
+        "create_goal",
+        "set_goal",
+        "update_goal_objective",
+        "update_goal",
+        "update_goal_status",
+        "update_goal_checkpoint",
+        "clear_goal",
+      ]
+    ) {
       if (!toolIDs.has(tool)) throw new Error(`Bundled plugin did not register native goal tool ${tool}`)
     }
 
@@ -109,12 +145,22 @@ Deno.test("installed OpenCode serves Workbench contracts without a model prompt"
       () => opened.resolve(undefined),
       (event) => {
         const info = event.properties.info
-        if (event.type === "session.created" && typeof info === "object" && info && "id" in info && typeof info.id === "string") createdEvent.resolve(info.id)
+        if (
+          event.type === "session.created" && typeof info === "object" && info && "id" in info &&
+          typeof info.id === "string"
+        ) createdEvent.resolve(info.id)
         const part = event.properties.part
-        if (event.type === "message.part.updated" && typeof part === "object" && part && "sessionID" in part && part.sessionID === createdID &&
-          "type" in part && part.type === "text" && "text" in part && part.text === GOAL_CONTINUATION_PROMPT) admittedPart.resolve(undefined)
-        if (event.type === "message.part.updated" && typeof part === "object" && part && "sessionID" in part && part.sessionID === createdID &&
-          "type" in part && part.type === "text" && "text" in part && typeof part.text === "string" && part.text.includes("<approved_preference_data>")) admittedPreference.resolve(undefined)
+        if (
+          event.type === "message.part.updated" && typeof part === "object" && part && "sessionID" in part &&
+          part.sessionID === createdID &&
+          "type" in part && part.type === "text" && "text" in part && part.text === GOAL_CONTINUATION_PROMPT
+        ) admittedPart.resolve(undefined)
+        if (
+          event.type === "message.part.updated" && typeof part === "object" && part && "sessionID" in part &&
+          part.sessionID === createdID &&
+          "type" in part && part.type === "text" && "text" in part && typeof part.text === "string" &&
+          part.text.includes("<approved_preference_data>")
+        ) admittedPreference.resolve(undefined)
       },
     ).catch((error) => {
       if (!streamAbort.signal.aborted) throw error
@@ -122,9 +168,13 @@ Deno.test("installed OpenCode serves Workbench contracts without a model prompt"
     await within(opened.promise)
     const created = await client.createSession("Workbench integration")
     createdID = created.id
-    if (await within(createdEvent.promise) !== created.id) throw new Error("OpenCode SSE did not report the created session")
+    if (await within(createdEvent.promise) !== created.id) {
+      throw new Error("OpenCode SSE did not report the created session")
+    }
     const renamed = await client.renameSession(created.id, "Workbench integration renamed")
-    if (renamed.title !== "Workbench integration renamed") throw new Error("OpenCode did not return the renamed session")
+    if (renamed.title !== "Workbench integration renamed") {
+      throw new Error("OpenCode did not return the renamed session")
+    }
     const forked = await client.forkSession(created.id)
     forkedID = forked.id
     if (forked.id === created.id) throw new Error("OpenCode fork reused the source session ID")
@@ -140,27 +190,52 @@ Deno.test("installed OpenCode serves Workbench contracts without a model prompt"
         authorization: `Basic ${Buffer.from(`${connection.username}:${connection.password}`).toString("base64")}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ noReply: true, parts: [{ type: "text", text: GOAL_CONTINUATION_PROMPT, synthetic: true, metadata: GOAL_CONTINUATION_METADATA }] }),
+      body: JSON.stringify({
+        noReply: true,
+        parts: [{
+          type: "text",
+          text: GOAL_CONTINUATION_PROMPT,
+          synthetic: true,
+          metadata: GOAL_CONTINUATION_METADATA,
+        }],
+      }),
     })
-    if (promptResponse.status !== 204) throw new Error(`OpenCode rejected the provider-free goal continuation payload: HTTP ${promptResponse.status}`)
+    if (promptResponse.status !== 204) {
+      throw new Error(`OpenCode rejected the provider-free goal continuation payload: HTTP ${promptResponse.status}`)
+    }
     await Promise.all([within(admittedPart.promise), within(admittedPreference.promise)])
     const history = await client.messageHistory(created.id)
     const userParts = history.messages.find((message) => message.info.role === "user")?.parts ?? []
     const admitted = userParts.find((part) => part.type === "text" && part.text === GOAL_CONTINUATION_PROMPT)
-    const preference = userParts.find((part) => part.type === "text" && part.text?.includes("<approved_preference_data>"))
-    if (admitted?.text !== GOAL_CONTINUATION_PROMPT || admitted.synthetic !== true || JSON.stringify(admitted.metadata) !== JSON.stringify(GOAL_CONTINUATION_METADATA)) {
-      throw new Error(`OpenCode did not persist the complete synthetic goal continuation payload: ${JSON.stringify(history.messages)}`)
+    const preference = userParts.find((part) =>
+      part.type === "text" && part.text?.includes("<approved_preference_data>")
+    )
+    if (
+      admitted?.text !== GOAL_CONTINUATION_PROMPT || admitted.synthetic !== true ||
+      JSON.stringify(admitted.metadata) !== JSON.stringify(GOAL_CONTINUATION_METADATA)
+    ) {
+      throw new Error(
+        `OpenCode did not persist the complete synthetic goal continuation payload: ${
+          JSON.stringify(history.messages)
+        }`,
+      )
     }
     if (!preference || !/^prt_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(preference.id) || preference.synthetic !== true) {
-      throw new Error(`OpenCode did not persist the injected preference with a compatible part ID: ${JSON.stringify(userParts)}`)
+      throw new Error(
+        `OpenCode did not persist the injected preference with a compatible part ID: ${JSON.stringify(userParts)}`,
+      )
     }
-    if (await client.deleteSession(forked.id) !== true || await client.deleteSession(created.id) !== true) throw new Error("OpenCode did not delete integration sessions")
+    if (await client.deleteSession(forked.id) !== true || await client.deleteSession(created.id) !== true) {
+      throw new Error("OpenCode did not delete integration sessions")
+    }
     forkedID = undefined
     createdID = undefined
     streamAbort.abort()
     await stream
   } catch (error) {
-    failure = new Error(`${error instanceof Error ? error.message : String(error)}\nManaged OpenCode output:\n${output.join("\n")}`)
+    failure = new Error(
+      `${error instanceof Error ? error.message : String(error)}\nManaged OpenCode output:\n${output.join("\n")}`,
+    )
   } finally {
     const cleanupErrors: unknown[] = []
     streamAbort.abort()
@@ -170,7 +245,9 @@ Deno.test("installed OpenCode serves Workbench contracts without a model prompt"
     await Deno.remove(root, { recursive: true }).catch((error) => cleanupErrors.push(error))
     if (cleanupErrors.length) {
       const cleanupFailure = new AggregateError(cleanupErrors, "Real integration cleanup failed")
-      failure = failure ? new AggregateError([failure, cleanupFailure], "Real integration and cleanup failed") : cleanupFailure
+      failure = failure
+        ? new AggregateError([failure, cleanupFailure], "Real integration and cleanup failed")
+        : cleanupFailure
     }
   }
   if (failure) throw failure

@@ -14,7 +14,9 @@ function validSessionID(value: unknown): value is string {
 function sanitizedPin(value: unknown): SessionPinRecord | undefined {
   if (!value || typeof value !== "object") return undefined
   const record = value as Record<string, unknown>
-  if (!validSessionID(record.sessionID) || !Number.isSafeInteger(record.pinnedAt) || Number(record.pinnedAt) < 0) return undefined
+  if (!validSessionID(record.sessionID) || !Number.isSafeInteger(record.pinnedAt) || Number(record.pinnedAt) < 0) {
+    return undefined
+  }
   return { sessionID: record.sessionID, pinnedAt: Number(record.pinnedAt) }
 }
 

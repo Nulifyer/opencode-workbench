@@ -2,7 +2,9 @@ import type { Evidence, Scope } from "./model.ts"
 import { safeSubject } from "./security.ts"
 
 function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
 }
 
 function string(value: unknown): string | undefined {
@@ -27,7 +29,9 @@ export function evidenceFromEvent(
     const messageID = string(part.messageID)
     const callID = string(part.callID)
     const tool = safeSubject(part.tool, "unknown_tool")
-    if (state.status === "error") return { id, scope, kind: "tool_failure", subject: tool, sessionID, messageID, callID, createdAt: now }
+    if (state.status === "error") {
+      return { id, scope, kind: "tool_failure", subject: tool, sessionID, messageID, callID, createdAt: now }
+    }
     if (state.status === "completed" && tool === "skill") {
       const metadata = record(state.metadata)
       const input = record(state.input)

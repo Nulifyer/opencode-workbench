@@ -210,24 +210,24 @@ The extension refreshes its registry entry every five seconds. Entries become st
 
 The allowlisted operations are:
 
-| Operation | Behavior |
-| --- | --- |
-| `vscode_list_open_editors` | Lists worktree-contained text and diff editors. |
-| `vscode_get_selection` | Returns the active worktree selection. |
-| `vscode_get_active_buffer` | Returns bounded selection, visible-range, or document text from the last active worktree editor, including unsaved changes. |
-| `vscode_get_definitions` | Returns contained definition locations from VS Code language providers. |
-| `vscode_get_references` | Returns contained reference locations from VS Code language providers. |
-| `vscode_get_symbols` | Returns bounded document symbols from VS Code language providers. |
-| `vscode_get_diagnostics` | Returns bounded worktree diagnostics. |
-| `vscode_open_file` | Opens a realpath-contained file. |
-| `vscode_get_debug_context` | Returns the active debug session, a bounded contained stack, and worktree breakpoints. |
-| `vscode_execute_terminal` | Executes an executable and argument array through terminal shell integration. |
-| `vscode_list_tasks` | Lists bounded task metadata scoped to the selected workspace root. |
-| `vscode_run_task` | Starts one root-scoped task matched unambiguously by name and source. |
-| `vscode_get_code_actions` | Previews code actions and contained text edits without executing commands. |
-| `vscode_preview_rename` | Previews contained text edits from a rename provider without applying them. |
-| `vscode_open_url` | Opens an `http:` or `https:` URL. |
-| `vscode_request_opencode_reload` | Requests one managed reload after the requesting session becomes idle; the tool returns before reload starts. |
+| Operation                        | Behavior                                                                                                                    |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `vscode_list_open_editors`       | Lists worktree-contained text and diff editors.                                                                             |
+| `vscode_get_selection`           | Returns the active worktree selection.                                                                                      |
+| `vscode_get_active_buffer`       | Returns bounded selection, visible-range, or document text from the last active worktree editor, including unsaved changes. |
+| `vscode_get_definitions`         | Returns contained definition locations from VS Code language providers.                                                     |
+| `vscode_get_references`          | Returns contained reference locations from VS Code language providers.                                                      |
+| `vscode_get_symbols`             | Returns bounded document symbols from VS Code language providers.                                                           |
+| `vscode_get_diagnostics`         | Returns bounded worktree diagnostics.                                                                                       |
+| `vscode_open_file`               | Opens a realpath-contained file.                                                                                            |
+| `vscode_get_debug_context`       | Returns the active debug session, a bounded contained stack, and worktree breakpoints.                                      |
+| `vscode_execute_terminal`        | Executes an executable and argument array through terminal shell integration.                                               |
+| `vscode_list_tasks`              | Lists bounded task metadata scoped to the selected workspace root.                                                          |
+| `vscode_run_task`                | Starts one root-scoped task matched unambiguously by name and source.                                                       |
+| `vscode_get_code_actions`        | Previews code actions and contained text edits without executing commands.                                                  |
+| `vscode_preview_rename`          | Previews contained text edits from a rename provider without applying them.                                                 |
+| `vscode_open_url`                | Opens an `http:` or `https:` URL.                                                                                           |
+| `vscode_request_opencode_reload` | Requests one managed reload after the requesting session becomes idle; the tool returns before reload starts.               |
 
 The bridge does not accept caller-provided VS Code command IDs, apply provider edits, invoke `child_process`, or use `shell: true`. Language-provider command IDs are fixed in extension code. Requests, responses, context, and filesystem paths are bounded and validated.
 

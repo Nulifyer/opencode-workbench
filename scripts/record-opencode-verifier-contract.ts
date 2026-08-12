@@ -1,49 +1,49 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { ManagedOpenCodeServer } from "../packages/vscode-extension/src/managed-server.ts";
-import { OpenCodeClient } from "../packages/vscode-extension/src/opencode-client.ts";
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+import { ManagedOpenCodeServer } from "../packages/vscode-extension/src/managed-server.ts"
+import { OpenCodeClient } from "../packages/vscode-extension/src/opencode-client.ts"
 
-type JsonObject = Record<string, unknown>;
+type JsonObject = Record<string, unknown>
 
 export interface VerifierContractFixture {
-  schemaVersion: 1;
-  recordedAt: string;
-  providerRequestMode: "disabled" | "opt-in-enabled";
-  opencodeVersion: string;
+  schemaVersion: 1
+  recordedAt: string
+  providerRequestMode: "disabled" | "opt-in-enabled"
+  opencodeVersion: string
   verifier: {
-    executionPath: "separate-opencode-session";
-    agentName: "workbench-verifier";
-    agentMode: string;
-    wildcardPermissionDenied: boolean;
-    requestToolsDisabled: boolean;
-    transcriptVisible: boolean;
-    noAssistantMessageWithoutProvider: boolean;
-    selectedModelPersisted: boolean;
-    structuredOutputFormatAccepted: boolean;
-    jsonSchemaAccepted: boolean;
-    structuredOutputLegacyTranscriptCompatible: boolean;
-    retryCountAcceptedOnPrompt: boolean;
-    retryCountTranscriptCompatible: boolean;
-    idleCancellationAccepted: boolean;
-    providerSdkAdded: false;
-  };
+    executionPath: "separate-opencode-session"
+    agentName: "workbench-verifier"
+    agentMode: string
+    wildcardPermissionDenied: boolean
+    requestToolsDisabled: boolean
+    transcriptVisible: boolean
+    noAssistantMessageWithoutProvider: boolean
+    selectedModelPersisted: boolean
+    structuredOutputFormatAccepted: boolean
+    jsonSchemaAccepted: boolean
+    structuredOutputLegacyTranscriptCompatible: boolean
+    retryCountAcceptedOnPrompt: boolean
+    retryCountTranscriptCompatible: boolean
+    idleCancellationAccepted: boolean
+    providerSdkAdded: false
+  }
   classifications: Array<{
-    concern: string;
+    concern: string
     status:
       | "proven-provider-free"
       | "requires-opt-in-model-probe"
-      | "workbench-owned";
-    evidence: string;
-  }>;
+      | "workbench-owned"
+    evidence: string
+  }>
 }
 
 export interface RecordVerifierContractOptions {
-  executable: string;
-  expectedVersion?: string;
-  allowModelPrompt?: boolean;
+  executable: string
+  expectedVersion?: string
+  allowModelPrompt?: boolean
 }
 
-const AGENT_NAME = "workbench-verifier" as const;
+const AGENT_NAME = "workbench-verifier" as const
 const VERDICT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -68,44 +68,42 @@ const VERDICT_SCHEMA = {
       },
     },
   },
-} as const;
+} as const
 
 function isRecord(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 function isolatedEnvironment(root: string): Record<string, string> {
-  const environment: Record<string, string> = {};
+  const environment: Record<string, string> = {}
   for (const [key, value] of Object.entries(Deno.env.toObject())) {
     if (
       key.startsWith("OPENCODE_") ||
       /(?:TOKEN|KEY|SECRET|PASSWORD|AUTH|CREDENTIAL|API)/i.test(key)
-    ) continue;
-    environment[key] = value;
+    ) continue
+    environment[key] = value
   }
-  environment.HOME = path.join(root, "home");
-  environment.XDG_CONFIG_HOME = path.join(root, "config");
-  environment.XDG_DATA_HOME = path.join(root, "data");
-  environment.XDG_CACHE_HOME = path.join(root, "cache");
-  environment.XDG_STATE_HOME = path.join(root, "state");
-  environment.OPENCODE_DISABLE_AUTOUPDATE = "true";
+  environment.HOME = path.join(root, "home")
+  environment.XDG_CONFIG_HOME = path.join(root, "config")
+  environment.XDG_DATA_HOME = path.join(root, "data")
+  environment.XDG_CACHE_HOME = path.join(root, "cache")
+  environment.XDG_STATE_HOME = path.join(root, "state")
+  environment.OPENCODE_DISABLE_AUTOUPDATE = "true"
   environment.OPENCODE_CONFIG_CONTENT = JSON.stringify({
     agent: {
       [AGENT_NAME]: {
-        description:
-          "Evaluate supplied evidence and return only the requested verdict schema.",
+        description: "Evaluate supplied evidence and return only the requested verdict schema.",
         mode: "primary",
-        prompt:
-          "Evaluate only the supplied evidence. Do not inspect or modify the filesystem and do not call tools.",
+        prompt: "Evaluate only the supplied evidence. Do not inspect or modify the filesystem and do not call tools.",
         permission: { "*": "deny" },
       },
     },
-  });
-  return environment;
+  })
+  return environment
 }
 
 function authorization(username: string, password: string): string {
-  return `Basic ${btoa(`${username}:${password}`)}`;
+  return `Basic ${btoa(`${username}:${password}`)}`
 }
 
 async function request(
@@ -116,8 +114,8 @@ async function request(
   pathname: string,
   body?: unknown,
 ): Promise<unknown> {
-  const url = new URL(pathname, baseUrl);
-  url.searchParams.set("directory", directory);
+  const url = new URL(pathname, baseUrl)
+  url.searchParams.set("directory", directory)
   const response = await fetch(url, {
     method,
     headers: {
@@ -126,16 +124,14 @@ async function request(
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
-  });
+  })
   if (!response.ok) {
     throw new Error(
-      `${method} ${pathname} failed with HTTP ${response.status}: ${
-        (await response.text()).slice(0, 2_048)
-      }`,
-    );
+      `${method} ${pathname} failed with HTTP ${response.status}: ${(await response.text()).slice(0, 2_048)}`,
+    )
   }
-  if (response.status === 204) return undefined;
-  return await response.json();
+  if (response.status === 204) return undefined
+  return await response.json()
 }
 
 async function responseStatus(
@@ -146,8 +142,8 @@ async function responseStatus(
   pathname: string,
   body?: unknown,
 ): Promise<{ status: number; text: string }> {
-  const url = new URL(pathname, baseUrl);
-  url.searchParams.set("directory", directory);
+  const url = new URL(pathname, baseUrl)
+  url.searchParams.set("directory", directory)
   const response = await fetch(url, {
     method,
     headers: {
@@ -156,8 +152,8 @@ async function responseStatus(
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
-  });
-  return { status: response.status, text: await response.text() };
+  })
+  return { status: response.status, text: await response.text() }
 }
 
 function wildcardDenied(value: unknown): boolean {
@@ -165,7 +161,7 @@ function wildcardDenied(value: unknown): boolean {
     value.some((rule) =>
       isRecord(rule) && rule.permission === "*" && rule.action === "deny" &&
       rule.pattern === "*"
-    );
+    )
 }
 
 export async function recordVerifierContract(
@@ -174,49 +170,49 @@ export async function recordVerifierContract(
   if (options.allowModelPrompt) {
     throw new Error(
       "The Phase 0 recorder intentionally has no model-producing prompt. Exercise model output through the later verifier service integration test.",
-    );
+    )
   }
   const root = await Deno.makeTempDir({
     prefix: "opencode-workbench-verifier-",
-  });
-  const workspace = path.join(root, "workspace");
-  await Deno.mkdir(workspace);
-  const repository = fileURLToPath(new URL("../", import.meta.url));
+  })
+  const workspace = path.join(root, "workspace")
+  await Deno.mkdir(workspace)
+  const repository = fileURLToPath(new URL("../", import.meta.url))
   const manager = new ManagedOpenCodeServer({
     directory: workspace,
     extensionPath: repository,
     executablePath: options.executable,
     environment: isolatedEnvironment(root),
-  });
-  let client: OpenCodeClient | undefined;
-  const sessionIDs: string[] = [];
-  let failure: unknown;
+  })
+  let client: OpenCodeClient | undefined
+  const sessionIDs: string[] = []
+  let failure: unknown
   try {
-    const connection = await manager.start();
-    client = new OpenCodeClient(connection);
-    const health = await client.health();
+    const connection = await manager.start()
+    client = new OpenCodeClient(connection)
+    const health = await client.health()
     if (options.expectedVersion && health.version !== options.expectedVersion) {
       throw new Error(
         `Expected OpenCode ${options.expectedVersion}, received ${health.version}`,
-      );
+      )
     }
-    const auth = authorization(connection.username, connection.password);
+    const auth = authorization(connection.username, connection.password)
     const agents = await request(
       connection.baseUrl,
       workspace,
       auth,
       "GET",
       "/agent",
-    );
+    )
     const verifierAgent = Array.isArray(agents)
       ? agents.find((agent) => isRecord(agent) && agent.name === AGENT_NAME)
-      : undefined;
+      : undefined
     if (!isRecord(verifierAgent)) {
-      throw new Error("Isolated verifier agent was not registered");
+      throw new Error("Isolated verifier agent was not registered")
     }
 
-    const session = await client.createSession("Workbench verifier contract");
-    sessionIDs.push(session.id);
+    const session = await client.createSession("Workbench verifier contract")
+    sessionIDs.push(session.id)
     const prompt = {
       noReply: true,
       agent: AGENT_NAME,
@@ -224,10 +220,9 @@ export async function recordVerifierContract(
       format: { type: "json_schema", schema: VERDICT_SCHEMA, retryCount: 2 },
       parts: [{
         type: "text",
-        text:
-          "Evaluate the supplied synthetic evidence only: all deterministic checks passed.",
+        text: "Evaluate the supplied synthetic evidence only: all deterministic checks passed.",
       }],
-    };
+    }
     const promptAdmission = await responseStatus(
       connection.baseUrl,
       workspace,
@@ -235,15 +230,15 @@ export async function recordVerifierContract(
       "POST",
       `/session/${encodeURIComponent(session.id)}/prompt_async`,
       prompt,
-    );
+    )
     if (promptAdmission.status !== 204) {
       throw new Error(
         `OpenCode rejected the provider-free verifier prompt: HTTP ${promptAdmission.status}: ${
           promptAdmission.text.slice(0, 2_048)
         }`,
-      );
+      )
     }
-    let projected: JsonObject[] = [];
+    let projected: JsonObject[] = []
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const messages = await request(
         connection.baseUrl,
@@ -251,34 +246,30 @@ export async function recordVerifierContract(
         auth,
         "GET",
         `/api/session/${encodeURIComponent(session.id)}/message`,
-      );
-      projected = isRecord(messages) && Array.isArray(messages.data)
-        ? messages.data.filter(isRecord)
-        : [];
-      if (projected.some((message) => message.type === "user")) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      )
+      projected = isRecord(messages) && Array.isArray(messages.data) ? messages.data.filter(isRecord) : []
+      if (projected.some((message) => message.type === "user")) break
+      await new Promise((resolve) => setTimeout(resolve, 50))
     }
-    const user = projected.find((message) => message.type === "user");
-    const assistantPresent = projected.some((message) =>
-      message.type === "assistant"
-    );
+    const user = projected.find((message) => message.type === "user")
+    const assistantPresent = projected.some((message) => message.type === "assistant")
     const sessionState = await request(
       connection.baseUrl,
       workspace,
       auth,
       "GET",
       `/session/${encodeURIComponent(session.id)}`,
-    );
-    const storedSession = isRecord(sessionState) ? sessionState : {};
-    const model = isRecord(storedSession.model) ? storedSession.model : {};
+    )
+    const storedSession = isRecord(sessionState) ? sessionState : {}
+    const model = isRecord(storedSession.model) ? storedSession.model : {}
     const legacyTranscript = await responseStatus(
       connection.baseUrl,
       workspace,
       auth,
       "GET",
       `/session/${encodeURIComponent(session.id)}/message`,
-    );
-    const cancellationAccepted = await client.abort(session.id);
+    )
+    const cancellationAccepted = await client.abort(session.id)
 
     return {
       schemaVersion: 1,
@@ -288,9 +279,7 @@ export async function recordVerifierContract(
       verifier: {
         executionPath: "separate-opencode-session",
         agentName: AGENT_NAME,
-        agentMode: typeof verifierAgent.mode === "string"
-          ? verifierAgent.mode
-          : "unknown",
+        agentMode: typeof verifierAgent.mode === "string" ? verifierAgent.mode : "unknown",
         wildcardPermissionDenied: wildcardDenied(verifierAgent.permission),
         requestToolsDisabled: wildcardDenied(storedSession.permission),
         transcriptVisible: isRecord(user) &&
@@ -307,8 +296,7 @@ export async function recordVerifierContract(
         jsonSchemaAccepted: promptAdmission.status === 204 &&
           prompt.format.schema.type === "object" &&
           Array.isArray(prompt.format.schema.required),
-        structuredOutputLegacyTranscriptCompatible:
-          legacyTranscript.status === 200,
+        structuredOutputLegacyTranscriptCompatible: legacyTranscript.status === 200,
         retryCountAcceptedOnPrompt: promptAdmission.status === 204,
         retryCountTranscriptCompatible: legacyTranscript.status === 200,
         idleCancellationAccepted: cancellationAccepted,
@@ -318,8 +306,7 @@ export async function recordVerifierContract(
         {
           concern: "model selection",
           status: "proven-provider-free",
-          evidence:
-            "The admitted verifier user message persists the exact provider/model selected by OpenCode.",
+          evidence: "The admitted verifier user message persists the exact provider/model selected by OpenCode.",
         },
         {
           concern: "schema enforcement",
@@ -364,50 +351,46 @@ export async function recordVerifierContract(
             "noReply admits and persists the complete verifier request without creating an assistant message or contacting a model.",
         },
       ],
-    };
+    }
   } catch (error) {
-    failure = error;
-    throw error;
+    failure = error
+    throw error
   } finally {
-    const cleanupErrors: unknown[] = [];
+    const cleanupErrors: unknown[] = []
     if (client) {
       for (const sessionID of sessionIDs) {
-        await client.deleteSession(sessionID).catch((error) =>
-          cleanupErrors.push(error)
-        );
+        await client.deleteSession(sessionID).catch((error) => cleanupErrors.push(error))
       }
     }
-    await manager.stop().catch((error) => cleanupErrors.push(error));
-    await Deno.remove(root, { recursive: true }).catch((error) =>
-      cleanupErrors.push(error)
-    );
+    await manager.stop().catch((error) => cleanupErrors.push(error))
+    await Deno.remove(root, { recursive: true }).catch((error) => cleanupErrors.push(error))
     if (cleanupErrors.length && !failure) {
       throw new AggregateError(
         cleanupErrors,
         "Verifier contract cleanup failed",
-      );
+      )
     }
   }
 }
 
 function argument(name: string): string | undefined {
-  const index = Deno.args.indexOf(name);
-  return index >= 0 ? Deno.args[index + 1] : undefined;
+  const index = Deno.args.indexOf(name)
+  return index >= 0 ? Deno.args[index + 1] : undefined
 }
 
 if (import.meta.main) {
-  const executable = argument("--executable");
+  const executable = argument("--executable")
   if (!executable) {
     throw new Error(
       "Usage: --executable <absolute path> [--expected-version <version>] [--output <path>]",
-    );
+    )
   }
   const result = await recordVerifierContract({
     executable,
     expectedVersion: argument("--expected-version"),
-  });
-  const serialized = `${JSON.stringify(result, null, 2)}\n`;
-  const output = argument("--output");
-  if (output) await Deno.writeTextFile(output, serialized);
-  else console.log(serialized.trimEnd());
+  })
+  const serialized = `${JSON.stringify(result, null, 2)}\n`
+  const output = argument("--output")
+  if (output) await Deno.writeTextFile(output, serialized)
+  else console.log(serialized.trimEnd())
 }

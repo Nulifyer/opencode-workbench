@@ -2,7 +2,11 @@ export function configureNativeLsp(config: { lsp?: unknown }): void {
   if (config.lsp === undefined) config.lsp = {}
 }
 
-export function configureGoalCommand(config: { command?: Record<string, unknown> }, template: string, unlimitedTemplate: string): void {
+export function configureGoalCommand(
+  config: { command?: Record<string, unknown> },
+  template: string,
+  unlimitedTemplate: string,
+): void {
   config.command ??= {}
   if (config.command.goal === undefined) {
     config.command.goal = {

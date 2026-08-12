@@ -135,8 +135,10 @@ function sendSuccess(response: ServerResponse, result: unknown): void {
 
 function assertRegistryEndpoint(value: string): void {
   const url = new URL(value)
-  if (url.protocol !== "http:" || !["127.0.0.1", "[::1]", "::1"].includes(url.hostname) ||
-    url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+  if (
+    url.protocol !== "http:" || !["127.0.0.1", "[::1]", "::1"].includes(url.hostname) ||
+    url.username || url.password || url.pathname !== "/" || url.search || url.hash
+  ) {
     throw new Error("Invalid VS Code bridge registry endpoint")
   }
 }
@@ -147,14 +149,18 @@ function parseRegistry(value: unknown): BridgeRegistry {
   }
   const ids = new Set<string>()
   const entries = value.entries.map((entry): BridgeEntry => {
-    if (!isRecord(entry) || typeof entry.id !== "string" || entry.id.length === 0 || entry.id.length > 128 || ids.has(entry.id) ||
+    if (
+      !isRecord(entry) || typeof entry.id !== "string" || entry.id.length === 0 || entry.id.length > 128 ||
+      ids.has(entry.id) ||
       typeof entry.worktree !== "string" || entry.worktree.length === 0 || entry.worktree.length > 4_096 ||
       typeof entry.endpoint !== "string" || entry.endpoint.length === 0 || entry.endpoint.length > 2_048 ||
       typeof entry.token !== "string" || entry.token.length < 32 || entry.token.length > 512 ||
       !Number.isSafeInteger(entry.pid) || Number(entry.pid) <= 0 ||
       !Number.isSafeInteger(entry.updatedAt) || Number(entry.updatedAt) < 0 ||
-      !Array.isArray(entry.operations) || entry.operations.length === 0 || entry.operations.length > BRIDGE_OPERATIONS.length ||
-      !entry.operations.every(operationIsSupported) || new Set(entry.operations).size !== entry.operations.length) {
+      !Array.isArray(entry.operations) || entry.operations.length === 0 ||
+      entry.operations.length > BRIDGE_OPERATIONS.length ||
+      !entry.operations.every(operationIsSupported) || new Set(entry.operations).size !== entry.operations.length
+    ) {
       throw new Error("Invalid VS Code bridge registry entry")
     }
     assertRegistryEndpoint(entry.endpoint)
@@ -166,7 +172,9 @@ function parseRegistry(value: unknown): BridgeRegistry {
 
 async function readBody(request: IncomingMessage, signal: AbortSignal): Promise<unknown> {
   const contentLength = Number(request.headers["content-length"])
-  if (Number.isFinite(contentLength) && contentLength > REQUEST_LIMIT) throw new BridgeProtocolError("request_too_large")
+  if (Number.isFinite(contentLength) && contentLength > REQUEST_LIMIT) {
+    throw new BridgeProtocolError("request_too_large")
+  }
   const chunks: Buffer[] = []
   let size = 0
   try {
@@ -186,13 +194,19 @@ async function readBody(request: IncomingMessage, signal: AbortSignal): Promise<
 }
 
 function parseRequest(value: unknown): BridgeRequest {
-  if (!isRecord(value) || value.version !== 1 || typeof value.bridgeID !== "string" || value.bridgeID.length === 0 || value.bridgeID.length > 128 || !operationIsSupported(value.operation) ||
+  if (
+    !isRecord(value) || value.version !== 1 || typeof value.bridgeID !== "string" || value.bridgeID.length === 0 ||
+    value.bridgeID.length > 128 || !operationIsSupported(value.operation) ||
     !isRecord(value.params) || !isRecord(value.context) ||
-    typeof value.context.worktree !== "string" || value.context.worktree.length === 0 || value.context.worktree.length > 4_096 ||
-    typeof value.context.directory !== "string" || value.context.directory.length === 0 || value.context.directory.length > 4_096 ||
-    typeof value.context.sessionID !== "string" || value.context.sessionID.length === 0 || value.context.sessionID.length > 512 ||
+    typeof value.context.worktree !== "string" || value.context.worktree.length === 0 ||
+    value.context.worktree.length > 4_096 ||
+    typeof value.context.directory !== "string" || value.context.directory.length === 0 ||
+    value.context.directory.length > 4_096 ||
+    typeof value.context.sessionID !== "string" || value.context.sessionID.length === 0 ||
+    value.context.sessionID.length > 512 ||
     !onlyKeys(value, ["version", "bridgeID", "operation", "params", "context"]) ||
-    !onlyKeys(value.context, ["worktree", "directory", "sessionID"])) {
+    !onlyKeys(value.context, ["worktree", "directory", "sessionID"])
+  ) {
     throw new BridgeProtocolError("invalid_request")
   }
   return value as unknown as BridgeRequest
@@ -217,79 +231,127 @@ function abortable<T>(value: Promise<T> | T, signal: AbortSignal): Promise<T> {
 }
 
 function validateParams(operation: BridgeOperation, params: JsonRecord): JsonRecord {
-  if ([
-    "vscode_list_open_editors",
-    "vscode_get_selection",
-    "vscode_get_debug_context",
-    "vscode_list_tasks",
-  ].includes(operation)) {
+  if (
+    [
+      "vscode_list_open_editors",
+      "vscode_get_selection",
+      "vscode_get_debug_context",
+      "vscode_list_tasks",
+    ].includes(operation)
+  ) {
     if (!onlyKeys(params, [])) throw new BridgeProtocolError("invalid_params")
     return {}
   }
   if (operation === "vscode_get_active_buffer") {
-    if (!onlyKeys(params, ["scope", "maxCharacters"]) || !["selection", "visible", "document"].includes(String(params.scope ?? "visible")) ||
-      (params.maxCharacters !== undefined && (!Number.isSafeInteger(params.maxCharacters) || Number(params.maxCharacters) < 1 || Number(params.maxCharacters) > 48_000))) {
+    if (
+      !onlyKeys(params, ["scope", "maxCharacters"]) ||
+      !["selection", "visible", "document"].includes(String(params.scope ?? "visible")) ||
+      (params.maxCharacters !== undefined &&
+        (!Number.isSafeInteger(params.maxCharacters) || Number(params.maxCharacters) < 1 ||
+          Number(params.maxCharacters) > 48_000))
+    ) {
       throw new BridgeProtocolError("invalid_params")
     }
     return { scope: params.scope ?? "visible", maxCharacters: params.maxCharacters ?? 32_000 }
   }
   if (["vscode_get_definitions", "vscode_get_references"].includes(operation)) {
-    if (!onlyKeys(params, ["uri", "line", "column", "includeDeclaration"]) || typeof params.uri !== "string" || params.uri.length === 0 || params.uri.length > 4_096 ||
-      !Number.isSafeInteger(params.line) || Number(params.line) < 1 || Number(params.line) > 10_000_000 || !Number.isSafeInteger(params.column) || Number(params.column) < 1 || Number(params.column) > 10_000_000 ||
-      (params.includeDeclaration !== undefined && typeof params.includeDeclaration !== "boolean")) throw new BridgeProtocolError("invalid_params")
-    return { uri: params.uri, line: params.line, column: params.column, includeDeclaration: params.includeDeclaration ?? true }
+    if (
+      !onlyKeys(params, ["uri", "line", "column", "includeDeclaration"]) || typeof params.uri !== "string" ||
+      params.uri.length === 0 || params.uri.length > 4_096 ||
+      !Number.isSafeInteger(params.line) || Number(params.line) < 1 || Number(params.line) > 10_000_000 ||
+      !Number.isSafeInteger(params.column) || Number(params.column) < 1 || Number(params.column) > 10_000_000 ||
+      (params.includeDeclaration !== undefined && typeof params.includeDeclaration !== "boolean")
+    ) throw new BridgeProtocolError("invalid_params")
+    return {
+      uri: params.uri,
+      line: params.line,
+      column: params.column,
+      includeDeclaration: params.includeDeclaration ?? true,
+    }
   }
   if (operation === "vscode_get_symbols") {
-    if (!onlyKeys(params, ["uri"]) || typeof params.uri !== "string" || params.uri.length === 0 || params.uri.length > 4_096) throw new BridgeProtocolError("invalid_params")
+    if (
+      !onlyKeys(params, ["uri"]) || typeof params.uri !== "string" || params.uri.length === 0 ||
+      params.uri.length > 4_096
+    ) throw new BridgeProtocolError("invalid_params")
     return params
   }
   if (operation === "vscode_get_diagnostics") {
-    if (!onlyKeys(params, ["uri"]) || (params.uri !== undefined && (typeof params.uri !== "string" || params.uri.length === 0 || params.uri.length > 4_096))) {
+    if (
+      !onlyKeys(params, ["uri"]) ||
+      (params.uri !== undefined &&
+        (typeof params.uri !== "string" || params.uri.length === 0 || params.uri.length > 4_096))
+    ) {
       throw new BridgeProtocolError("invalid_params")
     }
     return { uri: params.uri }
   }
   if (operation === "vscode_open_file") {
-    if (!onlyKeys(params, ["path", "line", "column", "preview"]) || typeof params.path !== "string" ||
+    if (
+      !onlyKeys(params, ["path", "line", "column", "preview"]) || typeof params.path !== "string" ||
       params.path.length === 0 || params.path.length > 4_096 ||
-      (params.line !== undefined && (!Number.isSafeInteger(params.line) || Number(params.line) < 1 || Number(params.line) > 10_000_000)) ||
-      (params.column !== undefined && (!Number.isSafeInteger(params.column) || Number(params.column) < 1 || Number(params.column) > 10_000_000)) ||
-      (params.preview !== undefined && typeof params.preview !== "boolean")) {
+      (params.line !== undefined &&
+        (!Number.isSafeInteger(params.line) || Number(params.line) < 1 || Number(params.line) > 10_000_000)) ||
+      (params.column !== undefined &&
+        (!Number.isSafeInteger(params.column) || Number(params.column) < 1 || Number(params.column) > 10_000_000)) ||
+      (params.preview !== undefined && typeof params.preview !== "boolean")
+    ) {
       throw new BridgeProtocolError("invalid_params")
     }
     return params
   }
   if (operation === "vscode_execute_terminal") {
-    if (!onlyKeys(params, ["executable", "args"]) || typeof params.executable !== "string" ||
+    if (
+      !onlyKeys(params, ["executable", "args"]) || typeof params.executable !== "string" ||
       params.executable.length === 0 || params.executable.length > 4_096 ||
       (params.args !== undefined && (!Array.isArray(params.args) || params.args.length > 256 ||
-        !params.args.every((argument) => typeof argument === "string" && argument.length <= 32_768)))) {
+        !params.args.every((argument) => typeof argument === "string" && argument.length <= 32_768)))
+    ) {
       throw new BridgeProtocolError("invalid_params")
     }
     return { executable: params.executable, args: params.args ?? [] }
   }
   if (operation === "vscode_run_task") {
-    if (!onlyKeys(params, ["name", "source"]) || typeof params.name !== "string" || !params.name || params.name.length > 512 || typeof params.source !== "string" || !params.source || params.source.length > 512) throw new BridgeProtocolError("invalid_params")
+    if (
+      !onlyKeys(params, ["name", "source"]) || typeof params.name !== "string" || !params.name ||
+      params.name.length > 512 || typeof params.source !== "string" || !params.source || params.source.length > 512
+    ) throw new BridgeProtocolError("invalid_params")
     return params
   }
   if (operation === "vscode_get_code_actions") {
-    if (!onlyKeys(params, ["uri", "startLine", "startColumn", "endLine", "endColumn"]) || typeof params.uri !== "string" || !params.uri || params.uri.length > 4_096 ||
-      ![params.startLine, params.startColumn, params.endLine, params.endColumn].every((value) => Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 10_000_000)) throw new BridgeProtocolError("invalid_params")
+    if (
+      !onlyKeys(params, ["uri", "startLine", "startColumn", "endLine", "endColumn"]) ||
+      typeof params.uri !== "string" || !params.uri || params.uri.length > 4_096 ||
+      ![params.startLine, params.startColumn, params.endLine, params.endColumn].every((value) =>
+        Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 10_000_000
+      )
+    ) throw new BridgeProtocolError("invalid_params")
     return params
   }
   if (operation === "vscode_preview_rename") {
-    if (!onlyKeys(params, ["uri", "line", "column", "newName"]) || typeof params.uri !== "string" || !params.uri || params.uri.length > 4_096 || typeof params.newName !== "string" || !params.newName || params.newName.length > 1_024 ||
-      ![params.line, params.column].every((value) => Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 10_000_000)) throw new BridgeProtocolError("invalid_params")
+    if (
+      !onlyKeys(params, ["uri", "line", "column", "newName"]) || typeof params.uri !== "string" || !params.uri ||
+      params.uri.length > 4_096 || typeof params.newName !== "string" || !params.newName ||
+      params.newName.length > 1_024 ||
+      ![params.line, params.column].every((value) =>
+        Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 10_000_000
+      )
+    ) throw new BridgeProtocolError("invalid_params")
     return params
   }
   if (operation === "vscode_open_url") {
-    if (!onlyKeys(params, ["url"]) || typeof params.url !== "string" || params.url.length === 0 || params.url.length > 8_192) {
+    if (
+      !onlyKeys(params, ["url"]) || typeof params.url !== "string" || params.url.length === 0 ||
+      params.url.length > 8_192
+    ) {
       throw new BridgeProtocolError("invalid_params")
     }
     return params
   }
   if (operation === "vscode_request_opencode_reload") {
-    if (!onlyKeys(params, ["reason"]) || !["skill-activation", "configuration-change"].includes(String(params.reason))) {
+    if (
+      !onlyKeys(params, ["reason"]) || !["skill-activation", "configuration-change"].includes(String(params.reason))
+    ) {
       throw new BridgeProtocolError("invalid_params")
     }
     return { reason: params.reason }
@@ -360,7 +422,9 @@ export class VsCodeBridge implements vscode.Disposable {
       token: this.token,
       pid: process.pid,
       updatedAt: Date.now(),
-      operations: BRIDGE_OPERATIONS.filter((operation) => operation !== "vscode_request_opencode_reload" || this.options.requestOpenCodeReload),
+      operations: BRIDGE_OPERATIONS.filter((operation) =>
+        operation !== "vscode_request_opencode_reload" || this.options.requestOpenCodeReload
+      ),
     }
   }
 
@@ -416,7 +480,10 @@ export class VsCodeBridge implements vscode.Disposable {
       if (envelope.bridgeID !== this.id) throw new BridgeProtocolError("wrong_bridge")
       await this.validateContext(envelope.context)
       const params = validateParams(envelope.operation, envelope.params)
-      const result = await abortable(this.dispatch(envelope.operation, params, envelope.context, controller.signal), controller.signal)
+      const result = await abortable(
+        this.dispatch(envelope.operation, params, envelope.context, controller.signal),
+        controller.signal,
+      )
       if (!controller.signal.aborted && !response.destroyed) sendSuccess(response, result)
     } catch (error) {
       if (!response.destroyed) sendError(response, protocolError(error))
@@ -432,26 +499,49 @@ export class VsCodeBridge implements vscode.Disposable {
     }
   }
 
-  private dispatch(operation: BridgeOperation, params: JsonRecord, context: BridgeRequest["context"], signal: AbortSignal): Promise<unknown> | unknown {
+  private dispatch(
+    operation: BridgeOperation,
+    params: JsonRecord,
+    context: BridgeRequest["context"],
+    signal: AbortSignal,
+  ): Promise<unknown> | unknown {
     switch (operation) {
-      case "vscode_list_open_editors": return this.openEditors()
-      case "vscode_get_selection": return this.activeSelection()
-      case "vscode_get_active_buffer": return this.activeBuffer(params)
-      case "vscode_get_definitions": return this.locations(params, "vscode.executeDefinitionProvider")
-      case "vscode_get_references": return this.locations(params, "vscode.executeReferenceProvider")
-      case "vscode_get_symbols": return this.symbols(params)
-      case "vscode_get_diagnostics": return this.diagnostics(params.uri)
-      case "vscode_open_file": return this.openFile(params)
-      case "vscode_get_debug_context": return this.debugContext()
-      case "vscode_execute_terminal": return this.executeTerminal(params, context, signal)
-      case "vscode_list_tasks": return this.listTasks()
-      case "vscode_run_task": return this.runTask(params, context)
-      case "vscode_get_code_actions": return this.codeActions(params)
-      case "vscode_preview_rename": return this.previewRename(params)
-      case "vscode_open_url": return this.openUrl(params)
+      case "vscode_list_open_editors":
+        return this.openEditors()
+      case "vscode_get_selection":
+        return this.activeSelection()
+      case "vscode_get_active_buffer":
+        return this.activeBuffer(params)
+      case "vscode_get_definitions":
+        return this.locations(params, "vscode.executeDefinitionProvider")
+      case "vscode_get_references":
+        return this.locations(params, "vscode.executeReferenceProvider")
+      case "vscode_get_symbols":
+        return this.symbols(params)
+      case "vscode_get_diagnostics":
+        return this.diagnostics(params.uri)
+      case "vscode_open_file":
+        return this.openFile(params)
+      case "vscode_get_debug_context":
+        return this.debugContext()
+      case "vscode_execute_terminal":
+        return this.executeTerminal(params, context, signal)
+      case "vscode_list_tasks":
+        return this.listTasks()
+      case "vscode_run_task":
+        return this.runTask(params, context)
+      case "vscode_get_code_actions":
+        return this.codeActions(params)
+      case "vscode_preview_rename":
+        return this.previewRename(params)
+      case "vscode_open_url":
+        return this.openUrl(params)
       case "vscode_request_opencode_reload": {
         if (!this.options.requestOpenCodeReload) throw new BridgeProtocolError("unsupported_operation")
-        return this.options.requestOpenCodeReload({ sessionID: context.sessionID, reason: params.reason as OpenCodeReloadRequest["reason"] })
+        return this.options.requestOpenCodeReload({
+          sessionID: context.sessionID,
+          reason: params.reason as OpenCodeReloadRequest["reason"],
+        })
       }
     }
   }
@@ -472,8 +562,10 @@ export class VsCodeBridge implements vscode.Disposable {
       for (const tab of group.tabs) {
         if (tab.input instanceof vscode.TabInputText && await this.uriIsContained(tab.input.uri)) {
           result.push({ ...serializeUri(tab.input.uri), active: tab.isActive, dirty: tab.isDirty, label: tab.label })
-        } else if (tab.input instanceof vscode.TabInputTextDiff &&
-          await this.uriIsContained(tab.input.original) && await this.uriIsContained(tab.input.modified)) {
+        } else if (
+          tab.input instanceof vscode.TabInputTextDiff &&
+          await this.uriIsContained(tab.input.original) && await this.uriIsContained(tab.input.modified)
+        ) {
           result.push({
             type: "diff",
             original: serializeUri(tab.input.original),
@@ -512,7 +604,16 @@ export class VsCodeBridge implements vscode.Disposable {
     const limit = params.maxCharacters as number
     const ranges = scope === "selection"
       ? editor.selections.filter((range) => !range.isEmpty)
-      : scope === "visible" ? editor.visibleRanges : [new vscode.Range(0, 0, Math.max(0, editor.document.lineCount - 1), editor.document.lineAt(Math.max(0, editor.document.lineCount - 1)).text.length)]
+      : scope === "visible"
+      ? editor.visibleRanges
+      : [
+        new vscode.Range(
+          0,
+          0,
+          Math.max(0, editor.document.lineCount - 1),
+          editor.document.lineAt(Math.max(0, editor.document.lineCount - 1)).text.length,
+        ),
+      ]
     let remaining = limit
     let truncated = false
     const contents = ranges.slice(0, 20).flatMap((range) => {
@@ -531,10 +632,20 @@ export class VsCodeBridge implements vscode.Disposable {
       }]
     })
     if (ranges.length > 20) truncated = true
-    return { uri: serializeUri(editor.document.uri), languageId: editor.document.languageId, version: editor.document.version, dirty: editor.document.isDirty, scope, contents, truncated }
+    return {
+      uri: serializeUri(editor.document.uri),
+      languageId: editor.document.languageId,
+      version: editor.document.version,
+      dirty: editor.document.isDirty,
+      scope,
+      contents,
+      truncated,
+    }
   }
 
-  private async documentPosition(params: JsonRecord): Promise<{ uri: vscode.Uri; document: vscode.TextDocument; position: vscode.Position }> {
+  private async documentPosition(
+    params: JsonRecord,
+  ): Promise<{ uri: vscode.Uri; document: vscode.TextDocument; position: vscode.Position }> {
     const uri = vscode.Uri.parse(params.uri as string, true)
     if (!await this.uriIsContained(uri)) throw new BridgeProtocolError("path_outside_worktree")
     const document = await vscode.workspace.openTextDocument(uri)
@@ -545,10 +656,15 @@ export class VsCodeBridge implements vscode.Disposable {
     return { uri, document, position: new vscode.Position(line, column) }
   }
 
-  private async locations(params: JsonRecord, command: "vscode.executeDefinitionProvider" | "vscode.executeReferenceProvider"): Promise<unknown> {
+  private async locations(
+    params: JsonRecord,
+    command: "vscode.executeDefinitionProvider" | "vscode.executeReferenceProvider",
+  ): Promise<unknown> {
     const { uri, position } = await this.documentPosition(params)
     const raw = command === "vscode.executeReferenceProvider"
-      ? await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>(command, uri, position, { includeDeclaration: params.includeDeclaration as boolean })
+      ? await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>(command, uri, position, {
+        includeDeclaration: params.includeDeclaration as boolean,
+      })
       : await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>(command, uri, position)
     const output: unknown[] = []
     let characters = 0
@@ -559,7 +675,13 @@ export class VsCodeBridge implements vscode.Disposable {
       const serialized = serializeUri(targetUri)
       characters += serialized.uri.length + (serialized.fsPath?.length ?? 0)
       if (characters > 40_000) break
-      output.push({ uri: serialized, range: { start: { line: range.start.line + 1, column: range.start.character + 1 }, end: { line: range.end.line + 1, column: range.end.character + 1 } } })
+      output.push({
+        uri: serialized,
+        range: {
+          start: { line: range.start.line + 1, column: range.start.character + 1 },
+          end: { line: range.end.line + 1, column: range.end.character + 1 },
+        },
+      })
       if (output.length >= 100) break
     }
     return output
@@ -568,7 +690,10 @@ export class VsCodeBridge implements vscode.Disposable {
   private async symbols(params: JsonRecord): Promise<unknown> {
     const uri = vscode.Uri.parse(params.uri as string, true)
     if (!await this.uriIsContained(uri)) throw new BridgeProtocolError("path_outside_worktree")
-    const raw = await vscode.commands.executeCommand<(vscode.DocumentSymbol | vscode.SymbolInformation)[]>("vscode.executeDocumentSymbolProvider", uri)
+    const raw = await vscode.commands.executeCommand<(vscode.DocumentSymbol | vscode.SymbolInformation)[]>(
+      "vscode.executeDocumentSymbolProvider",
+      uri,
+    )
     const output: unknown[] = []
     let characters = 0
     const append = (symbol: vscode.DocumentSymbol, depth: number): void => {
@@ -576,7 +701,15 @@ export class VsCodeBridge implements vscode.Disposable {
       const name = symbol.name.slice(0, 1_024)
       const detail = symbol.detail.slice(0, 2_000)
       characters += name.length + detail.length
-      output.push({ name, detail, kind: vscode.SymbolKind[symbol.kind], range: { start: { line: symbol.range.start.line + 1, column: symbol.range.start.character + 1 }, end: { line: symbol.range.end.line + 1, column: symbol.range.end.character + 1 } } })
+      output.push({
+        name,
+        detail,
+        kind: vscode.SymbolKind[symbol.kind],
+        range: {
+          start: { line: symbol.range.start.line + 1, column: symbol.range.start.character + 1 },
+          end: { line: symbol.range.end.line + 1, column: symbol.range.end.character + 1 },
+        },
+      })
       for (const child of symbol.children) append(child, depth + 1)
     }
     for (const symbol of raw ?? []) {
@@ -699,7 +832,9 @@ export class VsCodeBridge implements vscode.Disposable {
   }
 
   private async integratedTerminal(signal: AbortSignal): Promise<vscode.Terminal> {
-    if (!this.terminal || this.terminal.exitStatus) this.terminal = vscode.window.createTerminal({ name: "OpenCode Bridge", cwd: this.workspaceRealPath })
+    if (!this.terminal || this.terminal.exitStatus) {
+      this.terminal = vscode.window.createTerminal({ name: "OpenCode Bridge", cwd: this.workspaceRealPath })
+    }
     return await this.waitForTerminalIntegration(this.terminal, signal)
   }
 
@@ -728,7 +863,11 @@ export class VsCodeBridge implements vscode.Disposable {
     })
   }
 
-  private async executeTerminal(params: JsonRecord, context: BridgeRequest["context"], signal: AbortSignal): Promise<unknown> {
+  private async executeTerminal(
+    params: JsonRecord,
+    context: BridgeRequest["context"],
+    signal: AbortSignal,
+  ): Promise<unknown> {
     const executable = params.executable as string
     const args = params.args as string[]
     const terminal = await this.integratedTerminal(signal)
@@ -741,7 +880,9 @@ export class VsCodeBridge implements vscode.Disposable {
         if (event.execution !== execution) return
         this.evidenceSubscriptions.delete(subscription)
         subscription.dispose()
-        try { this.options.terminalEvidence?.({ sessionID: context.sessionID, exitCode: event.exitCode }) } catch { /* Evidence capture must not affect terminal execution. */ }
+        try {
+          this.options.terminalEvidence?.({ sessionID: context.sessionID, exitCode: event.exitCode })
+        } catch { /* Evidence capture must not affect terminal execution. */ }
       })
       this.evidenceSubscriptions.add(subscription)
     }
@@ -755,8 +896,16 @@ export class VsCodeBridge implements vscode.Disposable {
     let characters = 0
     for (const task of tasks) {
       if (!await this.taskIsContained(task)) continue
-      const item = { name: task.name.slice(0, 512), source: task.source.slice(0, 512), scope: typeof task.scope === "object" ? task.scope.name : task.scope, group: task.group?.id, isBackground: task.isBackground, problemMatchers: task.problemMatchers.slice(0, 20) }
-      characters += item.name.length + item.source.length + item.problemMatchers.reduce((total, value) => total + value.length, 0)
+      const item = {
+        name: task.name.slice(0, 512),
+        source: task.source.slice(0, 512),
+        scope: typeof task.scope === "object" ? task.scope.name : task.scope,
+        group: task.group?.id,
+        isBackground: task.isBackground,
+        problemMatchers: task.problemMatchers.slice(0, 20),
+      }
+      characters += item.name.length + item.source.length +
+        item.problemMatchers.reduce((total, value) => total + value.length, 0)
       if (characters > 40_000) break
       output.push(item)
       if (output.length >= 200) break
@@ -767,7 +916,9 @@ export class VsCodeBridge implements vscode.Disposable {
   private async runTask(params: JsonRecord, context: BridgeRequest["context"]): Promise<unknown> {
     const tasks: vscode.Task[] = []
     for (const task of await vscode.tasks.fetchTasks()) {
-      if (task.name === params.name && task.source === params.source && await this.taskIsContained(task)) tasks.push(task)
+      if (task.name === params.name && task.source === params.source && await this.taskIsContained(task)) {
+        tasks.push(task)
+      }
     }
     if (tasks.length !== 1) throw new BridgeProtocolError(tasks.length ? "ambiguous_task" : "task_not_found")
     const execution = await vscode.tasks.executeTask(tasks[0]!)
@@ -777,7 +928,13 @@ export class VsCodeBridge implements vscode.Disposable {
         this.evidenceSubscriptions.delete(subscription)
         subscription.dispose()
         try {
-          this.options.taskEvidence?.({ sessionID: context.sessionID, name: execution.task.name, source: execution.task.source, group: execution.task.group?.id, exitCode: event.exitCode })
+          this.options.taskEvidence?.({
+            sessionID: context.sessionID,
+            name: execution.task.name,
+            source: execution.task.source,
+            group: execution.task.group?.id,
+            exitCode: event.exitCode,
+          })
         } catch { /* Evidence capture must not affect task execution. */ }
       })
       this.evidenceSubscriptions.add(subscription)
@@ -797,7 +954,10 @@ export class VsCodeBridge implements vscode.Disposable {
     return root === this.workspaceRealPath
   }
 
-  private async workspaceEditPreview(edit: vscode.WorkspaceEdit | undefined, characterLimit = 32_000): Promise<unknown[]> {
+  private async workspaceEditPreview(
+    edit: vscode.WorkspaceEdit | undefined,
+    characterLimit = 32_000,
+  ): Promise<unknown[]> {
     if (!edit) return []
     const output: unknown[] = []
     let characters = 0
@@ -811,7 +971,10 @@ export class VsCodeBridge implements vscode.Disposable {
         if (characters > characterLimit) return output
         output.push({
           uri: serialized,
-          range: { start: { line: item.range.start.line + 1, column: item.range.start.character + 1 }, end: { line: item.range.end.line + 1, column: item.range.end.character + 1 } },
+          range: {
+            start: { line: item.range.start.line + 1, column: item.range.start.character + 1 },
+            end: { line: item.range.end.line + 1, column: item.range.end.character + 1 },
+          },
           newText,
           truncated: item.newText.length > 8_000,
         })
@@ -828,15 +991,32 @@ export class VsCodeBridge implements vscode.Disposable {
     const position = (lineValue: unknown, columnValue: unknown): vscode.Position => {
       const line = Number(lineValue) - 1
       const column = Number(columnValue) - 1
-      if (line < 0 || line >= document.lineCount || column < 0 || column > document.lineAt(line).text.length) throw new BridgeProtocolError("invalid_position")
+      if (line < 0 || line >= document.lineCount || column < 0 || column > document.lineAt(line).text.length) {
+        throw new BridgeProtocolError("invalid_position")
+      }
       return new vscode.Position(line, column)
     }
-    const range = new vscode.Range(position(params.startLine, params.startColumn), position(params.endLine, params.endColumn))
-    const actions = await vscode.commands.executeCommand<(vscode.CodeAction | vscode.Command)[]>("vscode.executeCodeActionProvider", uri, range, undefined, 20)
+    const range = new vscode.Range(
+      position(params.startLine, params.startColumn),
+      position(params.endLine, params.endColumn),
+    )
+    const actions = await vscode.commands.executeCommand<(vscode.CodeAction | vscode.Command)[]>(
+      "vscode.executeCodeActionProvider",
+      uri,
+      range,
+      undefined,
+      20,
+    )
     const output: unknown[] = []
     for (const action of actions ?? []) {
       if (!(action instanceof vscode.CodeAction)) continue
-      output.push({ title: action.title.slice(0, 2_000), kind: action.kind?.value, preferred: action.isPreferred, disabled: action.disabled?.reason.slice(0, 2_000), edits: await this.workspaceEditPreview(action.edit, 4_000) })
+      output.push({
+        title: action.title.slice(0, 2_000),
+        kind: action.kind?.value,
+        preferred: action.isPreferred,
+        disabled: action.disabled?.reason.slice(0, 2_000),
+        edits: await this.workspaceEditPreview(action.edit, 4_000),
+      })
       if (output.length >= 10) break
     }
     return output
@@ -844,7 +1024,12 @@ export class VsCodeBridge implements vscode.Disposable {
 
   private async previewRename(params: JsonRecord): Promise<unknown> {
     const { uri, position } = await this.documentPosition(params)
-    const edit = await vscode.commands.executeCommand<vscode.WorkspaceEdit>("vscode.executeDocumentRenameProvider", uri, position, params.newName)
+    const edit = await vscode.commands.executeCommand<vscode.WorkspaceEdit>(
+      "vscode.executeDocumentRenameProvider",
+      uri,
+      position,
+      params.newName,
+    )
     return this.workspaceEditPreview(edit)
   }
 

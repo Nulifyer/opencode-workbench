@@ -3,14 +3,18 @@ export interface TaskProcessEvent<TExecution> {
   exitCode?: number
 }
 
-export interface DisposableSubscription { dispose(): void }
+export interface DisposableSubscription {
+  dispose(): void
+}
 
 export async function executeAndCaptureTask<TExecution>(
   execute: () => PromiseLike<TExecution>,
   subscribe: (listener: (event: TaskProcessEvent<TExecution>) => void) => DisposableSubscription,
   timeoutMilliseconds = 600_000,
 ): Promise<number | undefined> {
-  if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds < 1 || timeoutMilliseconds > 3_600_000) throw new Error("Invalid task evidence timeout")
+  if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds < 1 || timeoutMilliseconds > 3_600_000) {
+    throw new Error("Invalid task evidence timeout")
+  }
   return await new Promise<number | undefined>((resolve, reject) => {
     let execution: TExecution | undefined
     let settled = false

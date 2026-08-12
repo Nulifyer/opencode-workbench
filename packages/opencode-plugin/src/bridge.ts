@@ -2,11 +2,11 @@ import { readFile, realpath } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { ToolContext } from "@opencode-ai/plugin"
 import {
+  assertLoopbackEndpoint,
   BRIDGE_OPERATIONS,
   type BridgeEntry,
-  type BridgeOperation,
-  assertLoopbackEndpoint,
   bridgeEntryIsFresh,
+  type BridgeOperation,
   parseBridgeRegistry,
 } from "./bridge-policy.ts"
 import { LIMITS } from "./security.ts"
@@ -54,7 +54,13 @@ async function canonical(path: string): Promise<string> {
   return realpath(path).catch(() => resolve(path))
 }
 
-export async function selectBridge(registryPath: string, worktree: string, operation: BridgeOperation, affinity?: string, directory?: string): Promise<BridgeEntry> {
+export async function selectBridge(
+  registryPath: string,
+  worktree: string,
+  operation: BridgeOperation,
+  affinity?: string,
+  directory?: string,
+): Promise<BridgeEntry> {
   let contents: string
   try {
     contents = await readFile(registryPath, "utf8")
@@ -72,12 +78,20 @@ export async function selectBridge(registryPath: string, worktree: string, opera
   for (const entry of registry.entries) {
     if (!bridgeEntryIsFresh(entry, now, processIsAlive)) continue
     const registered = await canonical(entry.worktree)
-    if (!entry.operations.includes(operation) || (registered !== target && registered !== directoryTarget) || (affinity && entry.id !== affinity)) continue
+    if (
+      !entry.operations.includes(operation) || (registered !== target && registered !== directoryTarget) ||
+      (affinity && entry.id !== affinity)
+    ) continue
     assertLoopbackEndpoint(entry.endpoint)
     candidates.push(entry)
   }
-  if (!affinity && candidates.length > 1) throw new Error("Multiple VS Code bridges are registered for this worktree; use the managed Workbench server for exact window affinity")
-  const selected = candidates.sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))[0]
+  if (!affinity && candidates.length > 1) {
+    throw new Error(
+      "Multiple VS Code bridges are registered for this worktree; use the managed Workbench server for exact window affinity",
+    )
+  }
+  const selected =
+    candidates.sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))[0]
   if (!selected) throw new Error(`No fresh VS Code bridge for this worktree supports ${operation}`)
   return selected
 }
@@ -106,7 +120,9 @@ export async function proxyBridge(
     params,
     context: { worktree: context.worktree, directory: context.directory, sessionID: context.sessionID },
   })
-  if (Buffer.byteLength(encoded) > LIMITS.bridgeRequest) throw new Error("VS Code bridge request exceeds the size limit")
+  if (Buffer.byteLength(encoded) > LIMITS.bridgeRequest) {
+    throw new Error("VS Code bridge request exceeds the size limit")
+  }
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(new Error("VS Code bridge timed out")), 10_000)
   const abort = () => controller.abort(context.abort.reason)
@@ -121,9 +137,13 @@ export async function proxyBridge(
     })
     const body = await readLimitedResponse(response, LIMITS.bridgeResponse)
     const result: unknown = JSON.parse(body)
-    if (!isRecord(result) || result.version !== 1 || typeof result.ok !== "boolean") throw new Error("Invalid VS Code bridge response")
+    if (!isRecord(result) || result.version !== 1 || typeof result.ok !== "boolean") {
+      throw new Error("Invalid VS Code bridge response")
+    }
     if (!result.ok) {
-      const code = isRecord(result.error) && typeof result.error.code === "string" ? result.error.code.slice(0, 128) : "bridge_error"
+      const code = isRecord(result.error) && typeof result.error.code === "string"
+        ? result.error.code.slice(0, 128)
+        : "bridge_error"
       throw new Error(`VS Code bridge failed: ${code}`)
     }
     if (!response.ok) throw new Error(`VS Code bridge returned HTTP ${response.status}`)
