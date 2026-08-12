@@ -229,63 +229,254 @@ export function stripTerminalSequences(value: string): string {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
 }
 
+export function shellOutputWithoutCommandEcho(command: string, output: string): string {
+  if (command.includes("\n") || command.includes("\r")) return output
+  const normalizedCommand = command.trim()
+  const normalizedOutput = output.replace(/\r\n?/g, "\n")
+  if (!normalizedCommand) return normalizedOutput
+  for (const echo of [normalizedCommand, `$ ${normalizedCommand}`]) {
+    if (normalizedOutput === echo) return ""
+    if (normalizedOutput.startsWith(`${echo}\n`)) return normalizedOutput.slice(echo.length + 1)
+  }
+  return normalizedOutput
+}
+
 const ANSI_COLORS = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const
+const ANSI_REFERENCE_COLORS = [
+  [0, 0, 0],
+  [205, 0, 0],
+  [0, 205, 0],
+  [205, 205, 0],
+  [0, 0, 238],
+  [205, 0, 205],
+  [0, 205, 205],
+  [229, 229, 229],
+  [127, 127, 127],
+  [255, 0, 0],
+  [0, 255, 0],
+  [255, 255, 0],
+  [92, 92, 255],
+  [255, 0, 255],
+  [0, 255, 255],
+  [255, 255, 255],
+] as const
+
+interface TerminalCell {
+  value: string
+  classes: string
+}
 
 function escapeTerminalText(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
 
-/** Safely renders common SGR terminal colors while discarding all other control sequences. */
-export function terminalAnsiMarkup(value: string): string {
-  const source = value
-    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
-    .replace(/\x1B\[(?![0-9;]*m)[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1B(?!\[)[@-_]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1A\x1C-\x1F\x7F]/g, "")
-  let classes = new Set<string>()
+function ansiColorClass(prefix: "fg" | "bg", index: number): string {
+  const normalized = Math.max(0, Math.min(15, index))
+  return `ansi-${prefix}-${normalized >= 8 ? "bright-" : ""}${ANSI_COLORS[normalized % 8] ?? "white"}`
+}
+
+function xtermColor(index: number): readonly [number, number, number] {
+  const normalized = Math.max(0, Math.min(255, index))
+  if (normalized < 16) return ANSI_REFERENCE_COLORS[normalized] ?? ANSI_REFERENCE_COLORS[0]
+  if (normalized >= 232) {
+    const level = 8 + (normalized - 232) * 10
+    return [level, level, level]
+  }
+  const cube = [0, 95, 135, 175, 215, 255]
+  const offset = normalized - 16
+  return [cube[Math.floor(offset / 36)] ?? 0, cube[Math.floor(offset % 36 / 6)] ?? 0, cube[offset % 6] ?? 0]
+}
+
+function nearestAnsiColor(red: number, green: number, blue: number): number {
+  let nearest = 0
+  let distance = Number.POSITIVE_INFINITY
+  for (let index = 0; index < ANSI_REFERENCE_COLORS.length; index += 1) {
+    const candidate = ANSI_REFERENCE_COLORS[index] ?? ANSI_REFERENCE_COLORS[0]
+    const next = (red - candidate[0]) ** 2 + (green - candidate[1]) ** 2 + (blue - candidate[2]) ** 2
+    if (next < distance) {
+      nearest = index
+      distance = next
+    }
+  }
+  return nearest
+}
+
+function replaceAnsiColor(classes: Set<string>, prefix: "fg" | "bg", index?: number): Set<string> {
+  const next = new Set([...classes].filter((name) => !name.startsWith(`ansi-${prefix}-`)))
+  if (index !== undefined) next.add(ansiColorClass(prefix, index))
+  return next
+}
+
+function sgrCodes(parameters: string): number[] {
+  const normalized = parameters
+    .replace(/(38|48):2:[^:]*:(\d+):(\d+):(\d+)/g, "$1;2;$2;$3;$4")
+    .replace(/(38|48):2:(\d+):(\d+):(\d+)/g, "$1;2;$2;$3;$4")
+    .replace(/(38|48):5:(\d+)/g, "$1;5;$2")
+    .replace(/:/g, ";")
+  return (normalized || "0").split(";").map((code) => Number(code || 0))
+}
+
+function applySgr(classes: Set<string>, parameters: string): Set<string> {
+  const codes = sgrCodes(parameters)
+  let next = new Set(classes)
+  for (let index = 0; index < codes.length; index += 1) {
+    const code = codes[index] ?? 0
+    if (code === 0) next = new Set()
+    else if (code === 1) next.add("ansi-bold")
+    else if (code === 2) next.add("ansi-dim")
+    else if (code === 3) next.add("ansi-italic")
+    else if (code === 4 || code === 21) next.add("ansi-underline")
+    else if (code === 7) next.add("ansi-inverse")
+    else if (code === 8) next.add("ansi-hidden")
+    else if (code === 9) next.add("ansi-strike")
+    else if (code === 22) {
+      next.delete("ansi-bold")
+      next.delete("ansi-dim")
+    } else if (code === 23) next.delete("ansi-italic")
+    else if (code === 24) next.delete("ansi-underline")
+    else if (code === 27) next.delete("ansi-inverse")
+    else if (code === 28) next.delete("ansi-hidden")
+    else if (code === 29) next.delete("ansi-strike")
+    else if (code === 39) next = replaceAnsiColor(next, "fg")
+    else if (code === 49) next = replaceAnsiColor(next, "bg")
+    else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
+      next = replaceAnsiColor(next, "fg", code >= 90 ? code - 90 + 8 : code - 30)
+    } else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) {
+      next = replaceAnsiColor(next, "bg", code >= 100 ? code - 100 + 8 : code - 40)
+    } else if (
+      (code === 38 || code === 48) && codes[index + 1] === 5 && typeof codes[index + 2] === "number" &&
+      Number.isFinite(codes[index + 2])
+    ) {
+      const [red, green, blue] = xtermColor(codes[index + 2] ?? 0)
+      next = replaceAnsiColor(next, code === 38 ? "fg" : "bg", nearestAnsiColor(red, green, blue))
+      index += 2
+    } else if (
+      (code === 38 || code === 48) && codes[index + 1] === 2 &&
+      codes.slice(index + 2, index + 5).length === 3 && codes.slice(index + 2, index + 5).every(Number.isFinite)
+    ) {
+      const red = Math.max(0, Math.min(255, codes[index + 2] ?? 0))
+      const green = Math.max(0, Math.min(255, codes[index + 3] ?? 0))
+      const blue = Math.max(0, Math.min(255, codes[index + 4] ?? 0))
+      next = replaceAnsiColor(next, code === 38 ? "fg" : "bg", nearestAnsiColor(red, green, blue))
+      index += 4
+    }
+  }
+  return next
+}
+
+function renderTerminalLine(line: Array<TerminalCell | undefined>): string {
   let result = ""
-  let offset = 0
-  const pattern = /\x1B\[([0-9;]*)m/g
-  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
-    const text = source.slice(offset, match.index)
-    if (text) {
-      result += classes.size
-        ? `<span class="${[...classes].join(" ")}">${escapeTerminalText(text)}</span>`
-        : escapeTerminalText(text)
-    }
-    const codes = (match[1] || "0").split(";").map((code) => Number(code || 0))
-    for (const code of codes) {
-      if (code === 0) classes = new Set()
-      else if (code === 1) classes.add("ansi-bold")
-      else if (code === 2) classes.add("ansi-dim")
-      else if (code === 3) classes.add("ansi-italic")
-      else if (code === 4) classes.add("ansi-underline")
-      else if (code === 22) {
-        classes.delete("ansi-bold")
-        classes.delete("ansi-dim")
-      } else if (code === 23) classes.delete("ansi-italic")
-      else if (code === 24) classes.delete("ansi-underline")
-      else if (code === 39) classes = new Set([...classes].filter((name) => !name.startsWith("ansi-fg-")))
-      else if (code === 49) classes = new Set([...classes].filter((name) => !name.startsWith("ansi-bg-")))
-      else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
-        classes = new Set([...classes].filter((name) => !name.startsWith("ansi-fg-")))
-        classes.add(`ansi-fg-${code >= 90 ? "bright-" : ""}${ANSI_COLORS[code % 10]}`)
-      } else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) {
-        classes = new Set([...classes].filter((name) => !name.startsWith("ansi-bg-")))
-        classes.add(`ansi-bg-${code >= 100 ? "bright-" : ""}${ANSI_COLORS[code % 10]}`)
-      }
-    }
-    offset = pattern.lastIndex
+  let run = ""
+  let classes = ""
+  const flush = () => {
+    if (!run) return
+    const escaped = escapeTerminalText(run)
+    result += classes ? `<span class="${classes}">${escaped}</span>` : escaped
+    run = ""
   }
-  const tail = source.slice(offset)
-  if (tail) {
-    result += classes.size
-      ? `<span class="${[...classes].join(" ")}">${escapeTerminalText(tail)}</span>`
-      : escapeTerminalText(tail)
+  for (let index = 0; index < line.length; index += 1) {
+    const cell = line[index]
+    const nextClasses = cell?.classes || ""
+    if (nextClasses !== classes) {
+      flush()
+      classes = nextClasses
+    }
+    run += cell?.value || " "
   }
+  flush()
   return result
+}
+
+function terminalParameter(value: string, fallback: number): number {
+  const parsed = Number(value.split(";", 1)[0] || fallback)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+/**
+ * Safely renders a useful, non-interactive subset of terminal output. SGR styles,
+ * carriage-return progress, backspace overtyping, tabs, and erase-line are
+ * supported; unrelated terminal control sequences are discarded.
+ */
+export function terminalAnsiMarkup(value: string): string {
+  const renderedLines: string[] = []
+  let cells: Array<TerminalCell | undefined> = []
+  let column = 0
+  let classes = new Set<string>()
+  const write = (character: string) => {
+    cells[column] = { value: character, classes: [...classes].join(" ") }
+    column += 1
+  }
+
+  for (let offset = 0; offset < value.length;) {
+    const code = value.charCodeAt(offset)
+    if (code === 0x1b && value[offset + 1] === "[") {
+      let end = offset + 2
+      while (end < value.length && (value.charCodeAt(end) < 0x40 || value.charCodeAt(end) > 0x7e)) end += 1
+      if (end >= value.length) break
+      const parameters = value.slice(offset + 2, end).split(/[ -/]/, 1)[0] ?? ""
+      const final = value[end] ?? ""
+      if (final === "m") classes = applySgr(classes, parameters)
+      else if (final === "K") {
+        const mode = terminalParameter(parameters, 0)
+        if (mode === 0) cells.length = Math.min(cells.length, column)
+        else if (mode === 1) {
+          for (let index = 0; index <= column && index < cells.length; index += 1) cells[index] = undefined
+        } else if (mode === 2) cells = []
+      } else if (final === "G" || final === "`") {
+        column = Math.max(0, Math.min(10_000, terminalParameter(parameters, 1) - 1))
+      } else if (final === "C") column = Math.min(10_000, column + Math.max(1, terminalParameter(parameters, 1)))
+      else if (final === "D") column = Math.max(0, column - Math.max(1, terminalParameter(parameters, 1)))
+      offset = end + 1
+      continue
+    }
+    if (code === 0x1b && ["]", "P", "X", "^", "_"].includes(value[offset + 1] ?? "")) {
+      let end = offset + 2
+      while (
+        end < value.length && value.charCodeAt(end) !== 0x07 &&
+        !(value.charCodeAt(end) === 0x1b && value[end + 1] === "\\")
+      ) {
+        end += 1
+      }
+      offset = end >= value.length ? value.length : value.charCodeAt(end) === 0x07 ? end + 1 : end + 2
+      continue
+    }
+    if (code === 0x1b) {
+      offset += Math.min(2, value.length - offset)
+      continue
+    }
+    if (code === 0x0a) {
+      renderedLines.push(renderTerminalLine(cells))
+      cells = []
+      column = 0
+      offset += 1
+      continue
+    }
+    if (code === 0x0d) {
+      column = 0
+      offset += 1
+      continue
+    }
+    if (code === 0x08) {
+      column = Math.max(0, column - 1)
+      offset += 1
+      continue
+    }
+    if (code === 0x09) {
+      column = Math.min(10_000, (Math.floor(column / 8) + 1) * 8)
+      offset += 1
+      continue
+    }
+    if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+      offset += 1
+      continue
+    }
+    const character = String.fromCodePoint(value.codePointAt(offset) ?? code)
+    write(character)
+    offset += character.length
+  }
+
+  renderedLines.push(renderTerminalLine(cells))
+  return renderedLines.join("\n")
 }
 
 export function shouldSubmitComposerKey(
@@ -559,6 +750,10 @@ export function diffLineKind(line: string): DiffLineKind {
   if (line.startsWith("@@")) return "hunk"
   if (line.startsWith("*** ") || line.startsWith("+++") || line.startsWith("---")) return "meta"
   return "context"
+}
+
+export function diffHasLineNumbers(patch: string): boolean {
+  return /^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@/m.test(patch)
 }
 
 export type ToolKind =

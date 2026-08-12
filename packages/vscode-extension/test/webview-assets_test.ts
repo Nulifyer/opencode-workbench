@@ -1366,14 +1366,16 @@ Deno.test("expanded edited files do not repeat filename and stats", () => {
   }
 })
 
-Deno.test("inline edited-file previews shrink to their diff content", () => {
+Deno.test("inline edited-file previews use available width without forcing horizontal overflow", () => {
   for (
     const marker of [
-      ".edit-entry > .edit-patch-block { width: fit-content; max-width: calc(100% - 12px); }",
-      ".edit-entry > .edit-patch-block code { width: max-content; min-width: 0; }",
+      ".edit-entry > .edit-patch-block { width: auto; max-width: calc(100% - 12px); }",
       ".edit-entry > .edit-patch-block .diff-line-code { width: auto; }",
     ]
   ) if (!css.includes(marker)) throw new Error(`Inline diff sizing omits ${marker}`)
+  if (css.includes(".edit-entry > .edit-patch-block code { width: max-content;")) {
+    throw new Error("Inline diff code still forces content-width overflow")
+  }
 })
 
 Deno.test("activity wording follows actual state", () => {
@@ -1393,9 +1395,11 @@ Deno.test("shell and structured tool details use labeled sections", () => {
   if (
     !webview.includes('class="code-block shell-block shell-${kind}"') ||
     !webview.includes("stripTerminalSequences(content)") ||
+    !webview.includes("shellOutputWithoutCommandEcho(command, stringify(state.output))") ||
+    !webview.includes('class="activity activity-static tool-${escapeHtml(state)}"') ||
     !webview.includes("presentedTodos(part)") ||
     !webview.includes("Technical details") ||
-    !css.includes(".shell-command code::before") || !css.includes(".tool-todo-list")
+    !css.includes(".activity-static {") || !css.includes(".tool-todo-list")
   ) {
     throw new Error(
       "Known tool details are not presented as human-readable structured content",
@@ -1403,5 +1407,8 @@ Deno.test("shell and structured tool details use labeled sections", () => {
   }
   if (webview.includes('class="tool-detail-fields"') || css.includes(".tool-detail-fields > div")) {
     throw new Error("Legacy two-column tool detail layout is still present")
+  }
+  if (webview.includes('${shellBlock(command, "command")}${output}${error}')) {
+    throw new Error("Expanded shell details still repeat the command from the activity summary")
   }
 })

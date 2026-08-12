@@ -812,6 +812,12 @@ a {
 .terminal-ansi .ansi-underline {
   text-decoration: underline;
 }
+.terminal-ansi .ansi-strike {
+  text-decoration: line-through;
+}
+.terminal-ansi .ansi-hidden {
+  color: transparent;
+}
 .terminal-ansi .ansi-fg-black {
   color: var(--vscode-terminal-ansiBlack);
 }
@@ -907,6 +913,10 @@ a {
 }
 .terminal-ansi .ansi-bg-bright-white {
   background: var(--vscode-terminal-ansiBrightWhite);
+}
+.terminal-ansi .ansi-inverse {
+  color: var(--vscode-terminal-background, var(--vscode-editor-background));
+  background: var(--vscode-terminal-foreground, var(--vscode-editor-foreground));
 }
 .pending,
 .placeholder {
@@ -1062,6 +1072,14 @@ a {
   padding: 3px 22px;
   color: var(--vscode-descriptionForeground);
 }
+.activity-static {
+  min-height: 27px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 6px;
+  color: var(--vscode-descriptionForeground);
+}
 .reasoning:hover,
 .activity:hover {
   background: color-mix(in srgb, var(--vscode-foreground) 5%, var(--vscode-sideBar-background));
@@ -1152,6 +1170,8 @@ a {
 }
 .tool-running > summary > .activity-dot,
 .tool-pending > summary > .activity-dot,
+.activity-static.tool-running > .activity-dot,
+.activity-static.tool-pending > .activity-dot,
 .delegation-action-static.tool-running > .activity-dot,
 .delegation-action-static.tool-pending > .activity-dot {
   width: 12px;
@@ -1165,6 +1185,8 @@ a {
 }
 .tool-running > summary > .activity-dot::before,
 .tool-pending > summary > .activity-dot::before,
+.activity-static.tool-running > .activity-dot::before,
+.activity-static.tool-pending > .activity-dot::before,
 .delegation-action-static.tool-running > .activity-dot::before,
 .delegation-action-static.tool-pending > .activity-dot::before {
   content: "⠋";
@@ -1195,6 +1217,9 @@ a {
 .tool-error > summary > .activity-dot,
 .tool-failed > summary > .activity-dot,
 .tool-rejected > summary > .activity-dot,
+.activity-static.tool-error > .activity-dot,
+.activity-static.tool-failed > .activity-dot,
+.activity-static.tool-rejected > .activity-dot,
 .delegation-action-static.tool-error > .activity-dot,
 .delegation-action-static.tool-failed > .activity-dot,
 .delegation-action-static.tool-rejected > .activity-dot {
@@ -1203,6 +1228,9 @@ a {
 .tool-error > summary > .activity-dot::before,
 .tool-failed > summary > .activity-dot::before,
 .tool-rejected > summary > .activity-dot::before,
+.activity-static.tool-error > .activity-dot::before,
+.activity-static.tool-failed > .activity-dot::before,
+.activity-static.tool-rejected > .activity-dot::before,
 .delegation-action-static.tool-error > .activity-dot::before,
 .delegation-action-static.tool-failed > .activity-dot::before,
 .delegation-action-static.tool-rejected > .activity-dot::before {
@@ -1485,7 +1513,7 @@ a {
   margin: 3px 6px 8px;
 }
 .edit-entry > .edit-patch-block {
-  width: fit-content;
+  width: auto;
   max-width: calc(100% - 12px);
 }
 .edit-patch-block {
@@ -1541,10 +1569,6 @@ a {
 }
 .diff-code pre {
   padding-left: 0;
-}
-.edit-entry > .edit-patch-block code {
-  width: max-content;
-  min-width: 0;
 }
 .edit-entry > .edit-patch-block .diff-line-code {
   width: auto;

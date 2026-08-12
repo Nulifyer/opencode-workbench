@@ -28,6 +28,7 @@ import {
   connectionPresentation,
   currentTodoContent,
   delegationCompletionSummary,
+  diffHasLineNumbers,
   diffLineKind,
   fileReference,
   fileUriFromPath,
@@ -46,6 +47,7 @@ import {
   reasoningSummary,
   runtimeServicePresentation,
   sessionLoadPhase,
+  shellOutputWithoutCommandEcho,
   shouldCollapsePaste,
   stripTerminalSequences,
   terminalAnsiMarkup,
@@ -678,11 +680,13 @@ function detailBody(part: MessagePart): string {
   const input = record(state.input) ? state.input : undefined
   const command = toolKind(part) === "bash" && typeof input?.command === "string" ? input.command : undefined
   if (command) {
-    const output = state.output === undefined || state.output === ""
+    const outputText = state.output === undefined || state.output === ""
       ? ""
-      : shellBlock(stringify(state.output), "output")
+      : shellOutputWithoutCommandEcho(command, stringify(state.output))
+    const output = outputText ? shellBlock(outputText, "output") : ""
     const error = state.error === undefined || state.error === "" ? "" : shellBlock(stringify(state.error), "error")
-    return `<div class="tool-detail shell-detail">${shellBlock(command, "command")}${output}${error}</div>`
+    const body = `${output}${error}`
+    return body ? `<div class="tool-detail shell-detail">${body}</div>` : ""
   }
   const inputBody = input
     ? detailFields(input)
@@ -813,6 +817,7 @@ function diffStats(patch: string): { additions: number; deletions: number } {
 function diffMarkup(patch: string): string {
   let oldLine: number | undefined
   let newLine: number | undefined
+  const showLineNumbers = diffHasLineNumbers(patch)
   return patch.split("\n").map((line) => {
     const kind = diffLineKind(line)
     const hunk = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/.exec(line)
@@ -830,11 +835,12 @@ function diffMarkup(patch: string): string {
     }
     const marker = kind === "add" ? "+" : kind === "remove" ? "−" : " "
     const code = kind === "add" || kind === "remove" ? line.slice(1) : line
-    return `<span class="diff-line diff-${kind}"><span class="diff-line-number" aria-hidden="true">${
-      oldNumber ?? ""
-    }</span><span class="diff-line-number" aria-hidden="true">${
-      newNumber ?? ""
-    }</span><span class="diff-line-marker" aria-hidden="true">${marker}</span><span class="diff-line-code">${
+    const lineNumbers = showLineNumbers
+      ? `<span class="diff-line-number" aria-hidden="true">${
+        oldNumber ?? ""
+      }</span><span class="diff-line-number" aria-hidden="true">${newNumber ?? ""}</span>`
+      : ""
+    return `<span class="diff-line diff-${kind}">${lineNumbers}<span class="diff-line-marker" aria-hidden="true">${marker}</span><span class="diff-line-code">${
       escapeHtml(code || " ")
     }</span></span>`
   }).join("")
@@ -1116,11 +1122,14 @@ function toolHtml(part: MessagePart, key: string, active: boolean, specialize = 
   if (delegation) return delegationHtml(part, key, delegation, active)
   if (specialize && ["edit", "patch"].includes(toolKind(part))) return groupedEditsHtml([part], key, active)
   const detail = detailBody(part)
-  return `<details class="activity tool-${escapeHtml(state)}" data-detail-key="${
-    escapeHtml(key)
-  }"><summary><span class="activity-dot" aria-hidden="true"></span><span class="activity-title">${
+  const summary = `<span class="activity-dot" aria-hidden="true"></span><span class="activity-title">${
     escapeHtml(toolLabel(part, state))
-  }</span>${activityMetaHtml(part, state)}</summary>${detail}</details>`
+  }</span>${activityMetaHtml(part, state)}`
+  return detail
+    ? `<details class="activity tool-${escapeHtml(state)}" data-detail-key="${
+      escapeHtml(key)
+    }"><summary>${summary}</summary>${detail}</details>`
+    : `<div class="activity activity-static tool-${escapeHtml(state)}">${summary}</div>`
 }
 
 function groupedToolsHtml(parts: MessagePart[], kind: "skill" | "explore", key: string): string {

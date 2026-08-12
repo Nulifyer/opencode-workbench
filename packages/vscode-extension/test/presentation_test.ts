@@ -11,6 +11,7 @@ import {
   connectionPresentation,
   currentTodoContent,
   delegationCompletionSummary,
+  diffHasLineNumbers,
   diffLineKind,
   fileReference,
   fileUriFromPath,
@@ -30,6 +31,7 @@ import {
   runtimeServicePresentation,
   sessionGroup,
   sessionLoadPhase,
+  shellOutputWithoutCommandEcho,
   shouldCollapsePaste,
   shouldSubmitComposerKey,
   stripTerminalSequences,
@@ -395,10 +397,29 @@ Deno.test("command labels reflect execution state", () => {
 Deno.test("terminal output removes ANSI and unsafe control sequences", () => {
   assertEquals(stripTerminalSequences("\u001b[32mok\u001b[0m\r\nnext\u0007"), "ok\nnext")
   assertEquals(stripTerminalSequences("\u001b]0;title\u0007output"), "output")
+  assertEquals(shellOutputWithoutCommandEcho("git status", "git status\nclean"), "clean")
+  assertEquals(shellOutputWithoutCommandEcho("git status", "$ git status\r\nclean"), "clean")
+  assertEquals(shellOutputWithoutCommandEcho("git status", "git status: clean"), "git status: clean")
+  assertEquals(
+    shellOutputWithoutCommandEcho("echo a\necho b", "echo a\necho b\na\nb"),
+    "echo a\necho b\na\nb",
+  )
   assertEquals(terminalAnsiMarkup("\u001b[32mok\u001b[0m <next>"), '<span class="ansi-fg-green">ok</span> &lt;next&gt;')
   assertEquals(
     terminalAnsiMarkup("\u001b]0;private title\u0007\u001b[1;91mfail\u001b[0m"),
     '<span class="ansi-bold ansi-fg-bright-red">fail</span>',
+  )
+  assertEquals(terminalAnsiMarkup("Downloading 10%\rDownloading 100%\nDone"), "Downloading 100%\nDone")
+  assertEquals(terminalAnsiMarkup("abcdef\rxy\u001b[K"), "xy")
+  assertEquals(terminalAnsiMarkup("abc\bX"), "abX")
+  assertEquals(terminalAnsiMarkup("a\tb"), "a       b")
+  assertEquals(
+    terminalAnsiMarkup("old\r\u001b[2K\u001b[38;5;196mready\u001b[0m"),
+    '<span class="ansi-fg-bright-red">ready</span>',
+  )
+  assertEquals(
+    terminalAnsiMarkup("\u001b[38:2::0:255:0mgo\u001b[0m"),
+    '<span class="ansi-fg-bright-green">go</span>',
   )
 })
 
@@ -526,6 +547,8 @@ Deno.test("turns apply-patch envelopes into readable per-file diffs", () => {
   assertEquals(diffLineKind("-old"), "remove")
   assertEquals(diffLineKind("@@"), "hunk")
   assertEquals(diffLineKind("*** End Patch"), "meta")
+  assertEquals(diffHasLineNumbers("@@\n-old\n+new"), false)
+  assertEquals(diffHasLineNumbers("@@ -12,2 +12,2 @@\n-old\n+new"), true)
 })
 
 Deno.test("classifies streamed text after the last process action as final response", () => {
